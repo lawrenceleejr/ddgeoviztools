@@ -177,6 +177,14 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
 
     Default phi_min=0, phi_max=90 shows the first quadrant (upper right).
     """
+    # Blender 5.0 removed the ability to embed ShaderNode* types inside a
+    # GeometryNodeTree.  Saving a file with such a node group causes a SIGSEGV
+    # crash.  Skip phi-cutaway entirely on 5.0+; the scene is still valid.
+    if bpy.app.version >= (5, 0, 0):
+        print("  [INFO] Phi cutaway skipped (Blender 5.0+ no longer allows "
+              "ShaderNode* inside GeometryNodeTree).", flush=True)
+        return None
+
     NG_NAME = "PhiCutaway"
     if NG_NAME in bpy.data.node_groups:
         return bpy.data.node_groups[NG_NAME]
