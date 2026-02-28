@@ -41,7 +41,13 @@ if [ "$SRC_HASH" != "$IMG_HASH" ]; then
     echo "==> Build complete."
 fi
 
-# Run — mount current working directory as /data inside the container
+# Run — mount current working directory as /data inside the container.
+# Also mount a host-side logs directory to /tmp so that Blender's crash log
+# (written to /tmp/blender.crash.txt by the kernel on SIGSEGV) is preserved
+# on the host even though the container exits immediately.
+LOGS_DIR="$(pwd)/blender-logs"
+mkdir -p "$LOGS_DIR"
 exec docker run --rm \
     -v "$(pwd):/data" \
+    -v "$LOGS_DIR:/tmp" \
     "$IMAGE" "$@"

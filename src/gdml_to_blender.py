@@ -153,6 +153,45 @@ def _add_bevel(obj, width_mm: float = 0.2):
 # Phi-cutaway Geometry Node group
 # ---------------------------------------------------------------------------
 
+def _apply_phi_cutaway_bmesh(obj, phi_min_deg: float, phi_max_deg: float):
+    """
+    Apply phi cutaway by directly deleting out-of-range faces from the mesh.
+
+    Used as a guaranteed fallback when the geometry nodes approach is not
+    available (e.g. node type names changed in a new Blender release).  The
+    cut is baked into the mesh data — not interactively adjustable — but the
+    result is identical to the GN approach and requires no modifier support.
+    """
+    import bmesh
+    phi_min = math.radians(phi_min_deg)
+    phi_max = math.radians(phi_max_deg)
+    n_faces = len(obj.data.polygons)
+    print(f"  [PHI-BMESH] Applying bmesh cutaway to '{obj.name}' "
+          f"([{phi_min_deg:.1f}°, {phi_max_deg:.1f}°], {n_faces} faces) ...",
+          flush=True)
+
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.faces.ensure_lookup_table()
+
+    del_faces = []
+    for f in bm.faces:
+        n = len(f.verts)
+        cx = sum(v.co.x for v in f.verts) / n
+        cy = sum(v.co.y for v in f.verts) / n
+        phi = math.atan2(cy, cx)
+        if phi < phi_min or phi > phi_max:
+            del_faces.append(f)
+
+    print(f"  [PHI-BMESH]   → deleting {len(del_faces)} / {len(bm.faces)} faces",
+          flush=True)
+    bmesh.ops.delete(bm, geom=del_faces, context="FACES")
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+    print(f"  [PHI-BMESH]   → done; {len(obj.data.polygons)} faces remain", flush=True)
+
+
 def _precompute_phi_face_attribute(obj):
     """
     Compute phi = atan2(Y, X) in degrees for every face centroid and store
@@ -307,90 +346,133 @@ def _phi_cutaway_node_group_v5(phi_min_default: float, phi_max_default: float):
     Blender 5.0+ compatible phi-cutaway geometry node group.
 
     ShaderNode* types are not valid inside a GeometryNodeTree in Blender 5.0+,
-    so we cannot compute atan2 / degrees inside the node group.  Instead we
-    read a pre-computed 'phi_deg' face attribute (written to the mesh by
-    _precompute_phi_face_attribute) and only use nodes that are valid in 5.0+:
+    so atan2 is pre-computed in Python and stored as a face attribute "phi_deg"
+    by _precompute_phi_face_attribute.  This node group reads that attribute
+    using only node types that are valid in Blender 5.0+ geometry trees:
 
-      GeometryNodeInputNamedAttribute  — reads the pre-computed phi_deg field
+      GeometryNodeInputNamedAttribute  — reads "phi_deg" float field
       FunctionNodeCompare              — phi_deg > Phi Min / phi_deg < Phi Max
-      FunctionNodeBooleanMath          — AND the two conditions → inside
-                                         NOT inside               → outside
-      GeometryNodeDeleteGeometry       — delete faces where outside == True
+      FunctionNodeBooleanMath          — AND the two → inside; NOT → outside
+      GeometryNodeDeleteGeometry       — delete faces where outside is True
+
+    Returns None if any required node type does not exist or if wiring fails,
+    so the caller can fall back to _apply_phi_cutaway_bmesh.
     """
+    import traceback
     NG_NAME = "PhiCutaway"
     if NG_NAME in bpy.data.node_groups:
+        print(f"  [PHI-V5] Reusing existing '{NG_NAME}' node group.", flush=True)
         return bpy.data.node_groups[NG_NAME]
 
-    ng    = bpy.data.node_groups.new(NG_NAME, "GeometryNodeTree")
-    nodes = ng.nodes
-    links = ng.links
+    print(f"  [PHI-V5] Building Blender 5.0+ PhiCutaway node group "
+          f"(bpy {bpy.app.version_string}) ...", flush=True)
+    try:
+        ng    = bpy.data.node_groups.new(NG_NAME, "GeometryNodeTree")
+        nodes = ng.nodes
+        links = ng.links
+        print(f"  [PHI-V5] Node group created: {ng.name!r}", flush=True)
 
-    # ---- Interface ----
-    ng.interface.new_socket("Geometry", in_out="INPUT",  socket_type="NodeSocketGeometry")
-    s_min = ng.interface.new_socket("Phi Min", in_out="INPUT",  socket_type="NodeSocketFloat")
-    s_max = ng.interface.new_socket("Phi Max", in_out="INPUT",  socket_type="NodeSocketFloat")
-    ng.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+        # ---- Interface ----
+        ng.interface.new_socket("Geometry", in_out="INPUT",  socket_type="NodeSocketGeometry")
+        s_min = ng.interface.new_socket("Phi Min", in_out="INPUT",  socket_type="NodeSocketFloat")
+        s_max = ng.interface.new_socket("Phi Max", in_out="INPUT",  socket_type="NodeSocketFloat")
+        ng.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+        s_min.default_value = phi_min_default
+        s_max.default_value = phi_max_default
+        print(f"  [PHI-V5] Interface sockets: "
+              f"{[s.name for s in ng.interface.items_tree]}", flush=True)
 
-    s_min.default_value = phi_min_default
-    s_max.default_value = phi_max_default
+        def N(bl_type, x=0, y=0):
+            n = nodes.new(bl_type)
+            ins  = [s.name for s in n.inputs]  if n else []
+            outs = [s.name for s in n.outputs] if n else []
+            print(f"  [PHI-V5]   node {bl_type!r:45s} "
+                  f"in={ins}  out={outs}", flush=True)
+            if n:
+                n.location = (x, y)
+            return n
 
-    def N(bl_type, x=0, y=0):
-        n = nodes.new(bl_type)
-        n.location = (x, y)
-        return n
+        g_in      = N("NodeGroupInput",                     -700,    0)
+        g_out     = N("NodeGroupOutput",                     700,    0)
+        attr_node = N("GeometryNodeInputNamedAttribute",    -500,  -80)
+        gt        = N("FunctionNodeCompare",                -260,   80)
+        lt        = N("FunctionNodeCompare",                -260,  -80)
+        and_node  = N("FunctionNodeBooleanMath",             -60,    0)
+        not_node  = N("FunctionNodeBooleanMath",             100,    0)
+        delete    = N("GeometryNodeDeleteGeometry",          320,    0)
 
-    g_in  = N("NodeGroupInput",  -700,  0)
-    g_out = N("NodeGroupOutput",  700,  0)
+        missing = [name for name, n in (
+            ("NodeGroupInput",                  g_in),
+            ("NodeGroupOutput",                 g_out),
+            ("GeometryNodeInputNamedAttribute", attr_node),
+            ("FunctionNodeCompare (GT)",        gt),
+            ("FunctionNodeCompare (LT)",        lt),
+            ("FunctionNodeBooleanMath (AND)",   and_node),
+            ("FunctionNodeBooleanMath (NOT)",   not_node),
+            ("GeometryNodeDeleteGeometry",      delete),
+        ) if n is None]
+        if missing:
+            raise RuntimeError(f"These node types could not be created: {missing}")
 
-    # Read the pre-computed phi attribute (face domain, float)
-    attr_node = N("GeometryNodeInputNamedAttribute", -500, -80)
-    attr_node.data_type = "FLOAT"
-    attr_node.inputs["Name"].default_value = "phi_deg"
+        # Configure nodes
+        attr_node.data_type   = "FLOAT"
+        attr_node.inputs[0].default_value = "phi_deg"   # "Name" socket (index 0)
+        print(f"  [PHI-V5] NamedAttribute: data_type={attr_node.data_type!r}  "
+              f"name_input={attr_node.inputs[0].default_value!r}", flush=True)
 
-    # phi_deg > Phi Min → True means this face is above the lower bound
-    gt = N("FunctionNodeCompare", -260,  80)
-    gt.data_type = "FLOAT"
-    gt.operation = "GREATER_THAN"
-    gt.label     = "phi > phi_min"
+        gt.data_type = "FLOAT";  gt.operation = "GREATER_THAN";  gt.label = "phi > phi_min"
+        lt.data_type = "FLOAT";  lt.operation = "LESS_THAN";     lt.label = "phi < phi_max"
+        and_node.operation = "AND";  and_node.label = "inside"
+        not_node.operation = "NOT";  not_node.label = "outside"
+        delete.domain = "FACE";  delete.mode = "ALL"
 
-    # phi_deg < Phi Max → True means this face is below the upper bound
-    lt = N("FunctionNodeCompare", -260, -80)
-    lt.data_type = "FLOAT"
-    lt.operation = "LESS_THAN"
-    lt.label     = "phi < phi_max"
+        print(f"  [PHI-V5] GT  inputs={[s.name for s in gt.inputs]}  "
+              f"outputs={[s.name for s in gt.outputs]}", flush=True)
+        print(f"  [PHI-V5] AND inputs={[s.name for s in and_node.inputs]}  "
+              f"outputs={[s.name for s in and_node.outputs]}", flush=True)
+        print(f"  [PHI-V5] DEL inputs={[s.name for s in delete.inputs]}  "
+              f"outputs={[s.name for s in delete.outputs]}", flush=True)
 
-    # inside = gt AND lt
-    and_node = N("FunctionNodeBooleanMath", -60, 0)
-    and_node.operation = "AND"
-    and_node.label     = "inside"
+        # ---- Wiring (use indices throughout — socket names may vary by version) ----
+        def L(src, dst, tag=""):
+            lnk = links.new(src, dst)
+            ok = "OK" if lnk else "FAIL"
+            src_label = f"{src.node.bl_idname}[{src.name}]"
+            dst_label = f"{dst.node.bl_idname}[{dst.name}]"
+            print(f"  [PHI-V5]   link {ok}  {src_label} → {dst_label}"
+                  + (f"  ({tag})" if tag else ""), flush=True)
+            return lnk
 
-    # outside = NOT inside  (faces to delete)
-    not_node = N("FunctionNodeBooleanMath", 100, 0)
-    not_node.operation = "NOT"
-    not_node.label     = "outside"
+        phi_field = attr_node.outputs[0]  # float field from NamedAttribute
 
-    # Delete faces outside the phi range
-    delete = N("GeometryNodeDeleteGeometry", 320, 0)
-    delete.domain = "FACE"
-    delete.mode   = "ALL"
+        L(phi_field,                gt.inputs[0],             "phi→GT.A")
+        L(g_in.outputs["Phi Min"], gt.inputs[1],              "phi_min→GT.B")
+        L(phi_field,                lt.inputs[0],             "phi→LT.A")
+        L(g_in.outputs["Phi Max"], lt.inputs[1],              "phi_max→LT.B")
+        L(gt.outputs[0],            and_node.inputs[0],       "GT→AND[0]")
+        L(lt.outputs[0],            and_node.inputs[1],       "LT→AND[1]")
+        L(and_node.outputs[0],      not_node.inputs[0],       "AND→NOT")
+        L(g_in.outputs["Geometry"], delete.inputs["Geometry"],"Geo→DEL")
+        L(not_node.outputs[0],      delete.inputs["Selection"],"NOT→DEL.sel")
+        L(delete.outputs["Geometry"], g_out.inputs["Geometry"],"DEL→out")
 
-    # ---- Wiring ----
-    phi_field = attr_node.outputs[0]   # "Attribute" float field
+        print(f"  [PHI-V5] Node group complete. "
+              f"nodes={len(ng.nodes)}  links={len(ng.links)}", flush=True)
+        return ng
 
-    links.new(phi_field,                 gt.inputs["A"])
-    links.new(g_in.outputs["Phi Min"],   gt.inputs["B"])
-    links.new(phi_field,                 lt.inputs["A"])
-    links.new(g_in.outputs["Phi Max"],   lt.inputs["B"])
-
-    links.new(gt.outputs["Result"],      and_node.inputs[0])
-    links.new(lt.outputs["Result"],      and_node.inputs[1])
-    links.new(and_node.outputs[0],       not_node.inputs[0])
-
-    links.new(g_in.outputs["Geometry"],  delete.inputs["Geometry"])
-    links.new(not_node.outputs[0],       delete.inputs["Selection"])
-    links.new(delete.outputs["Geometry"], g_out.inputs["Geometry"])
-
-    return ng
+    except Exception as exc:
+        print(f"  [PHI-V5] ERROR: {exc}", flush=True)
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
+        if NG_NAME in bpy.data.node_groups:
+            try:
+                bpy.data.node_groups.remove(bpy.data.node_groups[NG_NAME])
+                print(f"  [PHI-V5] Removed incomplete node group to prevent save crash.",
+                      flush=True)
+            except Exception:
+                pass
+        print(f"  [PHI-V5] Will fall back to bmesh phi cutaway.", flush=True)
+        return None
 
 
 def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
@@ -779,7 +861,17 @@ def create_blender_scene(
             )
         except Exception:
             pass
+        print(f"  [PHI] Blender version: {bpy.app.version_string}", flush=True)
+        print(f"  [PHI] Creating PhiCutaway node group "
+              f"(phi_min={phi_min:.1f}°, phi_max={phi_max:.1f}°) ...", flush=True)
         ng = _phi_cutaway_node_group(phi_min, phi_max)
+        if ng is not None:
+            print(f"  [PHI] Node group ready: {ng.name!r}  "
+                  f"({len(ng.nodes)} nodes, {len(ng.links)} links)", flush=True)
+        else:
+            print(f"  [PHI] Node group unavailable — will use bmesh fallback "
+                  f"(phi cut baked into mesh, not interactively adjustable).",
+                  flush=True)
 
     # ---- Load each mesh ----
     loaded_objects: list = []
@@ -802,12 +894,17 @@ def create_blender_scene(
         if not no_bevel:
             _add_bevel(obj, width_mm=bevel_width_mm)
 
-        if not no_phi_cut and ng is not None and ctrl is not None:
-            # Blender 5.0+ node group reads a pre-computed face attribute;
-            # compute and store it now before the modifier is applied.
-            if bpy.app.version >= (5, 0, 0):
-                _precompute_phi_face_attribute(obj)
-            _add_phi_cutaway(obj, ng, phi_min, phi_max, ctrl)
+        if not no_phi_cut:
+            if ng is not None and ctrl is not None:
+                # Blender 5.0+: pre-compute phi_deg face attribute before
+                # the GN modifier tries to read it.
+                if bpy.app.version >= (5, 0, 0):
+                    _precompute_phi_face_attribute(obj)
+                _add_phi_cutaway(obj, ng, phi_min, phi_max, ctrl)
+            else:
+                # GN node group unavailable (Blender 5.0+ API changed and
+                # node type names differ); bake phi cut directly into mesh.
+                _apply_phi_cutaway_bmesh(obj, phi_min, phi_max)
 
         loaded_objects.append(obj)
         print(f"    → {len(obj.data.vertices)} verts, {len(obj.data.polygons)} faces"
@@ -914,7 +1011,9 @@ def create_blender_scene(
 
     # ---- Save ----
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"\n  Saving .blend → {output_path} ...", flush=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(output_path))
+    print(f"  Save complete.", flush=True)
     print(f"\n  Saved: {output_path}")
     print(f"  Objects: {len(loaded_objects)}")
     print(f"  Active camera: Cam_Transverse (XY cross-section, Z=beam into screen)")
