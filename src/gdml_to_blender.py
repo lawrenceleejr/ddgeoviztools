@@ -502,48 +502,40 @@ def _setup_render_and_compositor(scene):
         pass
 
     # Compositor — Glare node for IP glow bloom.
-    # Wrapped entirely in try/except: the compositor node API changed
-    # substantially in Blender 5.0 and properties like glare_type may not
-    # exist.  The render settings above are unaffected; bloom is optional.
-    try:
-        ctree = _get_compositor_tree(scene)
-        if ctree is None:
-            raise RuntimeError("compositor tree unavailable")
+    # The compositor API changed substantially in Blender 5.0 (node properties
+    # removed, node graph restructured) and a half-built graph causes a process
+    # crash on save.  Skip entirely on 5.0+; render settings above are intact.
+    if bpy.app.version >= (5, 0, 0):
+        print("  [INFO] Compositor bloom skipped (Blender 5.0+ compositor API changed).",
+              flush=True)
+        return
 
-        cnodes = ctree.nodes
-        clinks = ctree.links
+    ctree = _get_compositor_tree(scene)
+    if ctree is None:
+        print("  [WARN] Could not access compositor node tree; skipping bloom setup.",
+              flush=True)
+        return
 
-        # Clear default compositor nodes and rebuild
-        cnodes.clear()
+    cnodes = ctree.nodes
+    clinks = ctree.links
+    cnodes.clear()
 
-        render_layer = cnodes.new("CompositorNodeRLayers")
-        render_layer.location = (-400, 0)
+    render_layer = cnodes.new("CompositorNodeRLayers")
+    render_layer.location = (-400, 0)
 
-        glare = cnodes.new("CompositorNodeGlare")
-        # glare_type was renamed in Blender 5.0; try both spellings
-        for _attr, _val in (("glare_type", "FOG_GLOW"), ("type", "FOG_GLOW")):
-            try:
-                setattr(glare, _attr, _val)
-                break
-            except AttributeError:
-                pass
-        glare.size      = 7
-        glare.threshold = 0.8
-        glare.mix       = 0.0   # additive
-        glare.location  = (0, 0)
-        try:
-            glare.quality = "HIGH"
-        except AttributeError:
-            pass  # removed in some Blender 5.x builds
+    glare = cnodes.new("CompositorNodeGlare")
+    glare.glare_type = "FOG_GLOW"
+    glare.size       = 7
+    glare.threshold  = 0.8
+    glare.quality    = "HIGH"
+    glare.mix        = 0.0
+    glare.location   = (0, 0)
 
-        composite = cnodes.new("CompositorNodeComposite")
-        composite.location = (400, 0)
+    composite = cnodes.new("CompositorNodeComposite")
+    composite.location = (400, 0)
 
-        clinks.new(render_layer.outputs["Image"], glare.inputs["Image"])
-        clinks.new(glare.outputs["Image"],        composite.inputs["Image"])
-
-    except Exception as _exc:
-        print(f"  [WARN] Compositor bloom setup skipped: {_exc}", flush=True)
+    clinks.new(render_layer.outputs["Image"], glare.inputs["Image"])
+    clinks.new(glare.outputs["Image"],        composite.inputs["Image"])
 
 
 # ---------------------------------------------------------------------------
