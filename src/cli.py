@@ -305,9 +305,10 @@ def cmd_blender_scene(args: argparse.Namespace) -> int:
         return 1
 
     script = Path(__file__).parent / "gdml_to_blender.py"
+    # Use absolute paths so they resolve correctly inside Blender's working dir
     kwargs = json.dumps({
-        "mesh_dir":       str(mesh_dir),
-        "output_path":    str(output_path),
+        "mesh_dir":       str(mesh_dir.resolve()),
+        "output_path":    str(output_path.resolve()),
         "fmt":            args.format,
         "phi_min":        phi_min,
         "phi_max":        phi_max,
@@ -321,9 +322,19 @@ def cmd_blender_scene(args: argparse.Namespace) -> int:
     print(f"  Launching: blender --background --python {script.name} ...", flush=True)
     result = subprocess.run(cmd)
 
+    # Blender exits 0 even when a Python script raises an unhandled exception,
+    # so we validate success by confirming the output file was actually written.
+    output_abs = output_path.resolve()
     if result.returncode != 0:
         print(f"\nError: Blender exited with code {result.returncode}.", file=sys.stderr, flush=True)
         return result.returncode
+    if not output_abs.exists():
+        print(
+            f"\nError: Blender exited successfully but did not write {output_abs}.\n"
+            "Check the Blender output above for Python errors.",
+            file=sys.stderr, flush=True,
+        )
+        return 1
 
     print(f"\nDone — open {output_path} in Blender.", flush=True)
     print("  Active camera: Cam_Transverse (XY cross-section, Z=beam into screen).", flush=True)

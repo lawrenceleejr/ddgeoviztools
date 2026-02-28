@@ -787,7 +787,13 @@ if __name__ == "__main__":
         print("gdml_to_blender.py: missing JSON argument", file=sys.stderr)
         sys.exit(1)
 
-    kwargs = json.loads(script_args[0])
-    kwargs["mesh_dir"]    = Path(kwargs["mesh_dir"])
-    kwargs["output_path"] = Path(kwargs["output_path"])
-    create_blender_scene(**kwargs)
+    try:
+        kwargs = json.loads(script_args[0])
+        kwargs["mesh_dir"]    = Path(kwargs["mesh_dir"])
+        kwargs["output_path"] = Path(kwargs["output_path"])
+        create_blender_scene(**kwargs)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        print(f"\ngdml_to_blender.py: fatal error: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)

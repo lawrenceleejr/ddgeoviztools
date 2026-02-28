@@ -46,7 +46,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---------------------------------------------------------------------------
 WORKDIR /app
 COPY requirements.txt .
+
+# Install into the *system* Python used by the ENTRYPOINT (pyg4ometry, vtk, …)
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install into Blender's *bundled* Python, which is a separate interpreter.
+# gdml_to_blender.py is executed via "blender --background --python …" and
+# therefore runs in Blender's own Python (which has bpy/mathutils but not
+# third-party packages).  We use blender --python-expr to reach its pip.
+RUN blender --background --python-expr \
+        "import subprocess, sys; subprocess.check_call([sys.executable, '-m', 'ensurepip'])" \
+ && blender --background --python-expr \
+        "import subprocess, sys; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'trimesh'])"
 
 # ---------------------------------------------------------------------------
 # Application source
