@@ -533,6 +533,35 @@ def _setup_units():
 # Lighting — golden-hour area lights with colour temperature
 # ---------------------------------------------------------------------------
 
+def _kelvin_to_rgb(temp_kelvin: float) -> tuple:
+    """
+    Approximate sRGB for a blackbody colour temperature (Tanner Helland algo).
+
+    Used on Blender 5.0+ where ShaderNodeBlackbody is no longer safe to place
+    in a light data node tree; instead the colour is set directly on the light.
+    Returns an (r, g, b) tuple in [0, 1].
+    """
+    t = max(1000.0, min(40000.0, float(temp_kelvin))) / 100.0
+
+    # Red
+    r = 1.0 if t <= 66 else min(1.0, max(0.0,
+            329.698727446 * (t - 60) ** -0.1332047592 / 255.0))
+    # Green
+    if t <= 66:
+        g = min(1.0, max(0.0,
+            (99.4708025861 * math.log(t) - 161.1195681661) / 255.0))
+    else:
+        g = min(1.0, max(0.0,
+            288.1221695283 * (t - 60) ** -0.0755148492 / 255.0))
+    # Blue
+    if   t >= 66:  b = 1.0
+    elif t <= 19:  b = 0.0
+    else:          b = min(1.0, max(0.0,
+            (138.5177312231 * math.log(t - 10) - 305.0447927307) / 255.0))
+
+    return (r, g, b)
+
+
 def _area_light_with_temperature(
     name: str,
     location: tuple,
@@ -557,16 +586,26 @@ def _area_light_with_temperature(
     light_data.energy = energy
     light_data.size   = size
     light_data.shape  = "DISK"
-    light_data.use_nodes = True
 
-    tree     = light_data.node_tree
-    emission = next((n for n in tree.nodes if n.type == "EMISSION"), None)
-    if emission is not None:
-        bb = tree.nodes.new("ShaderNodeBlackbody")
-        bb.inputs["Temperature"].default_value = float(temp_kelvin)
-        tree.links.new(bb.outputs["Color"], emission.inputs["Color"])
-        # Strength is controlled by light_data.energy; leave it at 1.0
-        emission.inputs["Strength"].default_value = 1.0
+    # Blender 5.0 changed light node trees; ShaderNodeBlackbody inside a
+    # light's shader tree can crash save_as_mainfile with SIGSEGV.  On 5.0+
+    # we approximate the colour temperature in Python and set it directly.
+    if bpy.app.version >= (5, 0, 0):
+        r, g, b = _kelvin_to_rgb(temp_kelvin)
+        light_data.color = (r, g, b)
+        print(f"  [LIGHT] {name}  AREA  {energy:.0f} W  "
+              f"{temp_kelvin:.0f} K → rgb({r:.3f},{g:.3f},{b:.3f})", flush=True)
+    else:
+        light_data.use_nodes = True
+        tree     = light_data.node_tree
+        emission = next((n for n in tree.nodes if n.type == "EMISSION"), None)
+        if emission is not None:
+            bb = tree.nodes.new("ShaderNodeBlackbody")
+            bb.inputs["Temperature"].default_value = float(temp_kelvin)
+            tree.links.new(bb.outputs["Color"], emission.inputs["Color"])
+            emission.inputs["Strength"].default_value = 1.0
+        print(f"  [LIGHT] {name}  AREA  {energy:.0f} W  "
+              f"{temp_kelvin:.0f} K (node blackbody)", flush=True)
 
     light_obj = bpy.data.objects.new(name, light_data)
     bpy.data.scenes[0].collection.objects.link(light_obj)
@@ -608,7 +647,11 @@ def _setup_world():
     """
     Configure the world shader:
     - Near-black background (deep space blue)
-    - Subtle volumetric mist via a Principled Volume shader
+    - Subtle volumetric mist via Principled Volume (Blender 4.x only)
+
+    Blender 5.0 changed ShaderNodeVolumePrincipled internals; including it in
+    the world node tree causes save_as_mainfile to crash with SIGSEGV.  On
+    Blender 5.0+ we use a plain Background node only — same colour, no volume.
     """
     if bpy.data.worlds:
         world = bpy.data.worlds[0]
@@ -622,28 +665,32 @@ def _setup_world():
     links = tree.links
     nodes.clear()
 
-    # Background node — near-black deep-space blue
+    # Background — near-black deep-space blue
     bg = nodes.new("ShaderNodeBackground")
     bg.inputs["Color"].default_value    = (0.005, 0.005, 0.015, 1.0)
     bg.inputs["Strength"].default_value = 0.05
-
-    # Volumetric mist — extremely low density so it is only a hint
-    vol = nodes.new("ShaderNodeVolumePrincipled")
-    vol.inputs["Density"].default_value      = 1e-6
-    vol.inputs["Anisotropy"].default_value   = 0.2
-    # Scatter colour: cool blue-white mist
-    for key in ("Scatter Color", "Scattering Color"):
-        if key in vol.inputs:
-            vol.inputs[key].default_value = (0.70, 0.80, 1.0, 1.0)
-            break
+    bg.location = (0, 100)
 
     out = nodes.new("ShaderNodeOutputWorld")
     out.location = (400, 0)
-    bg.location  = (0, 100)
-    vol.location = (0, -100)
 
-    links.new(bg.outputs["Background"],  out.inputs["Surface"])
-    links.new(vol.outputs["Volume"],     out.inputs["Volume"])
+    if bpy.app.version >= (5, 0, 0):
+        # Skip volumetric mist — ShaderNodeVolumePrincipled crashes on save in 5.0
+        links.new(bg.outputs["Background"], out.inputs["Surface"])
+        print("  [WORLD] Background only (volume skipped on Blender 5.0+)", flush=True)
+    else:
+        # Volumetric mist — extremely low density, just a hint
+        vol = nodes.new("ShaderNodeVolumePrincipled")
+        vol.inputs["Density"].default_value    = 1e-6
+        vol.inputs["Anisotropy"].default_value = 0.2
+        for key in ("Scatter Color", "Scattering Color"):
+            if key in vol.inputs:
+                vol.inputs[key].default_value = (0.70, 0.80, 1.0, 1.0)
+                break
+        vol.location = (0, -100)
+        links.new(bg.outputs["Background"], out.inputs["Surface"])
+        links.new(vol.outputs["Volume"],    out.inputs["Volume"])
+        print("  [WORLD] Background + Principled Volume mist", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -832,15 +879,21 @@ def create_blender_scene(
     print(f"  Found {len(mesh_files)} {used_fmt.upper()} file(s) in {mesh_dir}")
 
     # ---- Initialize Blender scene ----
+    print(f"  [SETUP] Blender {bpy.app.version_string}  —  clearing scene ...", flush=True)
     _clear_scene()
     _setup_units()
+    print(f"  [SETUP] Scene cleared, units set (1 unit = 1 mm)", flush=True)
 
     # ---- World shader (background + volumetric mist) ----
+    print(f"  [SETUP] Setting up world shader ...", flush=True)
     _setup_world()
 
     # ---- Pre-create materials ----
+    print(f"  [SETUP] Pre-creating materials ...", flush=True)
     materials = _pre_create_materials()
     mat_cycle = cycle(materials)
+    print(f"  [SETUP] {len(materials)} materials ready: "
+          f"{[m.name for m in materials]}", flush=True)
 
     # ---- Phi-cutaway control object ----
     ctrl = None
@@ -925,6 +978,9 @@ def create_blender_scene(
     ortho_side  = max(z_max, y_max) * 2.2
 
     # ---- Cameras ----
+    print(f"  [SETUP] Creating cameras "
+          f"(r_trans={r_trans:.0f} r_side={r_side:.0f} r_persp={r_persp:.0f}) ...",
+          flush=True)
     # Transverse: camera on +Z axis looking toward origin
     #   → sees XY plane: X=right, Y=up, Z(beam) into screen
     cam_trans = _make_camera(
@@ -955,8 +1011,10 @@ def create_blender_scene(
 
     # Set default active camera to transverse view
     bpy.data.scenes[0].camera = cam_trans
+    print(f"  [SETUP] Cameras created (active: Cam_Transverse)", flush=True)
 
     # ---- Lighting ----
+    print(f"  [SETUP] Creating lights ...", flush=True)
     # Three-point golden-hour area lights with colour temperature.
     # Lamp energy scales with r² so the scene brightness is independent
     # of detector size.
@@ -1005,9 +1063,13 @@ def create_blender_scene(
         soft_size=r * 0.3,
     )
 
+    print(f"  [SETUP] Lights created", flush=True)
+
     # ---- Render settings + compositor bloom ----
+    print(f"  [SETUP] Configuring render settings ...", flush=True)
     scene = bpy.data.scenes[0]
     _setup_render_and_compositor(scene)
+    print(f"  [SETUP] Render settings done", flush=True)
 
     # ---- Save ----
     output_path.parent.mkdir(parents=True, exist_ok=True)
