@@ -447,6 +447,32 @@ def _setup_world():
 # Render settings and compositor
 # ---------------------------------------------------------------------------
 
+def _get_compositor_tree(scene):
+    """
+    Return the compositor NodeTree for both Blender 4.x and 5.0+.
+
+    Blender 4.x: scene.use_nodes = True  →  scene.node_tree
+    Blender 5.0+: scene.compositing_node_group  (scene.node_tree was removed)
+    Returns None if neither API is available so callers can skip gracefully.
+    """
+    # Blender 5.0+ path: compositor node tree is a detached node group
+    if hasattr(scene, "compositing_node_group"):
+        ng = scene.compositing_node_group
+        if ng is None:
+            try:
+                ng = bpy.data.node_groups.new("Compositor", "CompositorNodeTree")
+                scene.compositing_node_group = ng
+            except Exception:
+                return None
+        return ng
+    # Blender 4.x path (deprecated in 5.0, removed in 6.0)
+    try:
+        scene.use_nodes = True
+        return scene.node_tree
+    except AttributeError:
+        return None
+
+
 def _setup_render_and_compositor(scene):
     """
     Configure Cycles render settings (4 K, 128 samples, OIDN denoiser)
@@ -476,8 +502,12 @@ def _setup_render_and_compositor(scene):
         pass
 
     # Compositor — Glare node for IP glow bloom
-    scene.use_nodes = True
-    ctree  = scene.node_tree
+    ctree = _get_compositor_tree(scene)
+    if ctree is None:
+        print("  [WARN] Could not access compositor node tree; skipping bloom setup.",
+              flush=True)
+        return
+
     cnodes = ctree.nodes
     clinks = ctree.links
 
