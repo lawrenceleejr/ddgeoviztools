@@ -153,6 +153,30 @@ def _add_bevel(obj, width_mm: float = 0.2):
 # Phi-cutaway Geometry Node group
 # ---------------------------------------------------------------------------
 
+def _precompute_phi_face_attribute(obj):
+    """
+    Compute phi = atan2(Y, X) in degrees for every face centroid and store
+    it as a float FACE attribute named 'phi_deg' on the mesh.
+
+    Required for the Blender 5.0+ phi-cutaway node group, which cannot use
+    ShaderNodeMath to compute atan2 inside a GeometryNodeTree.  The GN
+    modifier reads this pre-computed attribute via GeometryNodeInputNamedAttribute
+    so it only needs FunctionNodeCompare / FunctionNodeBooleanMath — nodes
+    that remain valid in Blender 5.0+ geometry node trees.
+    """
+    mesh = obj.data
+    phi_values = []
+    for poly in mesh.polygons:
+        verts = poly.vertices
+        cx = sum(mesh.vertices[vi].co.x for vi in verts) / len(verts)
+        cy = sum(mesh.vertices[vi].co.y for vi in verts) / len(verts)
+        phi_values.append(math.degrees(math.atan2(cy, cx)))
+
+    attr = mesh.attributes.new("phi_deg", "FLOAT", "FACE")
+    for i, v in enumerate(phi_values):
+        attr.data[i].value = v
+
+
 def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
     """
     Build (or retrieve) the shared 'PhiCutaway' geometry node group.
@@ -177,13 +201,11 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
 
     Default phi_min=0, phi_max=90 shows the first quadrant (upper right).
     """
-    # Blender 5.0 removed the ability to embed ShaderNode* types inside a
-    # GeometryNodeTree.  Saving a file with such a node group causes a SIGSEGV
-    # crash.  Skip phi-cutaway entirely on 5.0+; the scene is still valid.
+    # Blender 5.0+ removed ShaderNode* from GeometryNodeTree.  Delegate to the
+    # 5.0-compatible implementation that reads a pre-computed face attribute
+    # instead of computing atan2 inside the node group.
     if bpy.app.version >= (5, 0, 0):
-        print("  [INFO] Phi cutaway skipped (Blender 5.0+ no longer allows "
-              "ShaderNode* inside GeometryNodeTree).", flush=True)
-        return None
+        return _phi_cutaway_node_group_v5(phi_min_default, phi_max_default)
 
     NG_NAME = "PhiCutaway"
     if NG_NAME in bpy.data.node_groups:
@@ -275,6 +297,97 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
     # Delete geometry
     links.new(merge.outputs["Geometry"],  delete.inputs["Geometry"])
     links.new(sub.outputs["Value"],       delete.inputs["Selection"])
+    links.new(delete.outputs["Geometry"], g_out.inputs["Geometry"])
+
+    return ng
+
+
+def _phi_cutaway_node_group_v5(phi_min_default: float, phi_max_default: float):
+    """
+    Blender 5.0+ compatible phi-cutaway geometry node group.
+
+    ShaderNode* types are not valid inside a GeometryNodeTree in Blender 5.0+,
+    so we cannot compute atan2 / degrees inside the node group.  Instead we
+    read a pre-computed 'phi_deg' face attribute (written to the mesh by
+    _precompute_phi_face_attribute) and only use nodes that are valid in 5.0+:
+
+      GeometryNodeInputNamedAttribute  — reads the pre-computed phi_deg field
+      FunctionNodeCompare              — phi_deg > Phi Min / phi_deg < Phi Max
+      FunctionNodeBooleanMath          — AND the two conditions → inside
+                                         NOT inside               → outside
+      GeometryNodeDeleteGeometry       — delete faces where outside == True
+    """
+    NG_NAME = "PhiCutaway"
+    if NG_NAME in bpy.data.node_groups:
+        return bpy.data.node_groups[NG_NAME]
+
+    ng    = bpy.data.node_groups.new(NG_NAME, "GeometryNodeTree")
+    nodes = ng.nodes
+    links = ng.links
+
+    # ---- Interface ----
+    ng.interface.new_socket("Geometry", in_out="INPUT",  socket_type="NodeSocketGeometry")
+    s_min = ng.interface.new_socket("Phi Min", in_out="INPUT",  socket_type="NodeSocketFloat")
+    s_max = ng.interface.new_socket("Phi Max", in_out="INPUT",  socket_type="NodeSocketFloat")
+    ng.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+
+    s_min.default_value = phi_min_default
+    s_max.default_value = phi_max_default
+
+    def N(bl_type, x=0, y=0):
+        n = nodes.new(bl_type)
+        n.location = (x, y)
+        return n
+
+    g_in  = N("NodeGroupInput",  -700,  0)
+    g_out = N("NodeGroupOutput",  700,  0)
+
+    # Read the pre-computed phi attribute (face domain, float)
+    attr_node = N("GeometryNodeInputNamedAttribute", -500, -80)
+    attr_node.data_type = "FLOAT"
+    attr_node.inputs["Name"].default_value = "phi_deg"
+
+    # phi_deg > Phi Min → True means this face is above the lower bound
+    gt = N("FunctionNodeCompare", -260,  80)
+    gt.data_type = "FLOAT"
+    gt.operation = "GREATER_THAN"
+    gt.label     = "phi > phi_min"
+
+    # phi_deg < Phi Max → True means this face is below the upper bound
+    lt = N("FunctionNodeCompare", -260, -80)
+    lt.data_type = "FLOAT"
+    lt.operation = "LESS_THAN"
+    lt.label     = "phi < phi_max"
+
+    # inside = gt AND lt
+    and_node = N("FunctionNodeBooleanMath", -60, 0)
+    and_node.operation = "AND"
+    and_node.label     = "inside"
+
+    # outside = NOT inside  (faces to delete)
+    not_node = N("FunctionNodeBooleanMath", 100, 0)
+    not_node.operation = "NOT"
+    not_node.label     = "outside"
+
+    # Delete faces outside the phi range
+    delete = N("GeometryNodeDeleteGeometry", 320, 0)
+    delete.domain = "FACE"
+    delete.mode   = "ALL"
+
+    # ---- Wiring ----
+    phi_field = attr_node.outputs[0]   # "Attribute" float field
+
+    links.new(phi_field,                 gt.inputs["A"])
+    links.new(g_in.outputs["Phi Min"],   gt.inputs["B"])
+    links.new(phi_field,                 lt.inputs["A"])
+    links.new(g_in.outputs["Phi Max"],   lt.inputs["B"])
+
+    links.new(gt.outputs["Result"],      and_node.inputs[0])
+    links.new(lt.outputs["Result"],      and_node.inputs[1])
+    links.new(and_node.outputs[0],       not_node.inputs[0])
+
+    links.new(g_in.outputs["Geometry"],  delete.inputs["Geometry"])
+    links.new(not_node.outputs[0],       delete.inputs["Selection"])
     links.new(delete.outputs["Geometry"], g_out.inputs["Geometry"])
 
     return ng
@@ -690,6 +803,10 @@ def create_blender_scene(
             _add_bevel(obj, width_mm=bevel_width_mm)
 
         if not no_phi_cut and ng is not None and ctrl is not None:
+            # Blender 5.0+ node group reads a pre-computed face attribute;
+            # compute and store it now before the modifier is applied.
+            if bpy.app.version >= (5, 0, 0):
+                _precompute_phi_face_attribute(obj)
             _add_phi_cutaway(obj, ng, phi_min, phi_max, ctrl)
 
         loaded_objects.append(obj)
