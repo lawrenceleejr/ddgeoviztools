@@ -1,8 +1,9 @@
-# ddgeoviztools — headless GDML splitter & mesh converter
+# ddgeoviztools — headless GDML splitter, mesh converter, and Blender scene builder
 #
-# Uses pyg4ometry (which depends on VTK) for GDML reading and OBJ/GLTF export.
-# Mesa software-rendering drivers are installed so VTK can render offscreen
-# with no GPU and no X display required.
+# Uses pyg4ometry (VTK) for GDML reading and OBJ/GLTF export.
+# Uses bpy (Blender 4.0 Python module) for .blend scene creation.
+# Mesa software-rendering drivers allow both VTK and bpy to run offscreen
+# with no GPU and no display required.
 #
 # Build:  docker build -t ddgeoviztools .
 # Run:    docker run --rm -v $(pwd):/data ddgeoviztools <subcommand> [args]
@@ -16,7 +17,8 @@ FROM python:3.10-slim
 #   libgles2                     — OpenGL ES 2 (required by some VTK paths)
 #   libgomp1                     — OpenMP (used by VTK for parallel rendering)
 #   libxrender1 libice6 libsm6   — X11 client libraries used by VTK internals
-#   libxt6 libx11-6 libxext6     — additional X11 deps
+#   libxt6 libx11-6 libxext6     — additional X11 / bpy deps
+#   libfreetype6 libfontconfig1  — font rendering used by bpy in background mode
 #   xvfb                         — virtual X framebuffer (fallback if EGL fails)
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -33,6 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxt6 \
         libx11-6 \
         libxext6 \
+        libfreetype6 \
+        libfontconfig1 \
         xvfb \
     && rm -rf /var/lib/apt/lists/*
 

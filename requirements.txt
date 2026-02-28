@@ -17,3 +17,11 @@ vtk>=9.2
 numpy>=1.24
 scipy>=1.10
 sympy>=1.7
+
+# Blender Python API — Blender 4.0 is the last release that uses Python 3.10.
+# bpy and vtk are never imported in the same process (lazy imports per subcommand)
+# so there is no runtime conflict between the two OpenGL stacks.
+bpy>=4.0,<4.1
+
+# Mesh I/O for the Blender scene builder (reads OBJ/GLTF/VTP → vertex/face arrays)
+trimesh>=4.0

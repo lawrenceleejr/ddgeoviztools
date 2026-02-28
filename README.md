@@ -5,6 +5,9 @@ CLI tools for working with ddsim/DD4hep GDML detector geometries:
 1. **Split** — divide a monolithic GDML into one file per sub-detector system.
 2. **Convert** — convert a GDML file to OBJ, GLTF, or VTP for visualization.
 3. **Split-convert** — do both in one command.
+4. **Blender-scene** — build a ready-to-use `.blend` file from the converted
+   meshes, with physics-inspired materials, a phi-cutaway, and standard HEP
+   camera views.
 
 Everything runs inside a Docker container — no local Python environment or
 library installation required.
@@ -178,6 +181,120 @@ output/
 
 ---
 
+### `blender-scene`
+
+```
+./run.sh blender-scene MESH_DIR --output FILE \
+    [--format gltf|obj|vtp] \
+    [--phi-cut DEGREES] [--phi-min DEGREES] [--no-phi-cut] \
+    [--weld-threshold MM]
+```
+
+Reads all `*.{format}` files from `MESH_DIR` (the output of `split-convert`)
+and produces a `.blend` file with:
+
+- One Blender object per sub-detector, each with a metal/matte material.
+- A **Weld modifier** on every object to merge duplicate vertices from VTK
+  tessellation (the primary mesh cleanup step).
+- A **phi-cutaway** Geometry Nodes modifier that deletes faces outside the
+  `[phi_min, phi_max]` sector. `phi = atan2(Y, X)` with Z = beam.
+- A **`PhiCutawayControl`** Empty object whose custom properties (`phi_min`,
+  `phi_max`) drive all sub-detectors simultaneously via Blender drivers.
+- Three pre-built cameras (see coordinate system below).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `gltf` | Input mesh format to look for in `MESH_DIR` |
+| `--phi-cut` | `180` | Angular width of the visible sector in degrees. `180` = upper half `[0°,180°]`. `360` = full detector. |
+| `--phi-min` | `0` | Starting angle of the visible sector (degrees). |
+| `--no-phi-cut` | off | Disable the cutaway entirely (load full geometry). |
+| `--weld-threshold` | `1e-4` | Distance (mm) for the Weld modifier. `0` to disable. |
+
+**Example — full workflow for MAIA_260226.gdml:**
+
+```bash
+# Step 1: split and convert to GLTF
+./run.sh split-convert \
+    /data/MAIA_260226.gdml \
+    --output-dir /data/output/ \
+    --format gltf
+
+# Step 2: build Blender scene (upper-half phi cut, default)
+./run.sh blender-scene \
+    /data/output/ \
+    --output /data/MAIA_260226.blend
+
+# Open MAIA_260226.blend in Blender
+```
+
+**More examples:**
+
+```bash
+# Full detector (no cutaway)
+./run.sh blender-scene /data/output/ \
+    --output /data/MAIA_full.blend --no-phi-cut
+
+# Quarter-detector cutaway (right quadrant: phi in [-90°, 90°])
+./run.sh blender-scene /data/output/ \
+    --output /data/MAIA_quarter.blend \
+    --phi-cut 180 --phi-min -90
+
+# Tighter weld threshold for very fine geometry
+./run.sh blender-scene /data/output/ \
+    --output /data/MAIA_260226.blend \
+    --weld-threshold 0.001
+```
+
+---
+
+## Coordinate system
+
+All three tools preserve the **collider physics convention** throughout:
+
+| Axis | Direction |
+|------|-----------|
+| **Z** | beam axis (horizontal) |
+| **Y** | up (towards sky) |
+| **X** | horizontal (right-hand rule: X = Y × Z is satisfied) |
+
+The GDML/Geant4 geometry is already in this frame; no rotation is applied.
+
+In the Blender scene, three cameras are provided:
+
+| Camera | Position | What you see |
+|--------|----------|--------------|
+| `Cam_Transverse` *(default)* | on +Z axis | XY cross-section — X right, Y up, Z(beam) into screen |
+| `Cam_Side` | on +X axis | ZY plane — Z(beam) horizontal-right, Y up |
+| `Cam_Perspective` | 3/4 angle | overview of the detector |
+
+Switch cameras via **Scene Properties → Camera** dropdown, or press
+`Numpad 0` to look through the active camera.
+
+---
+
+## Using the phi cutaway in Blender
+
+After opening the `.blend` file:
+
+1. Select the **`PhiCutawayControl`** Empty in the outliner.
+2. Go to **Object Properties** (orange square icon) → **Custom Properties**.
+3. Adjust `phi_min` and `phi_max` (in degrees). All sub-detectors update
+   simultaneously via Blender drivers.
+
+The phi convention: `phi = atan2(Y, X)` in the transverse plane (Z = beam).
+- `phi = 0°` → +X direction (3 o'clock)
+- `phi = 90°` → +Y direction (12 o'clock, towards sky)
+- `phi = 180°` → −X (9 o'clock)
+
+To animate the cutaway opening (e.g. for a video), keyframe `phi_max` over
+a frame range in the Custom Properties panel.
+
+You can also change the **Weld modifier threshold** per-object in
+**Properties → Modifiers → Weld** to control how aggressively duplicate
+vertices are merged.
+
+---
+
 ## Rebuilding the Docker image
 
 The image is built automatically on first use. To force a rebuild after
@@ -228,6 +345,30 @@ GDML and build a VTK scene, then exports using VTK's built-in exporters:
 VTK runs in fully offscreen mode via `xvfb-run` (a virtual framebuffer
 inside the container) — no GPU or display needed.
 
+### Blender scene creation (bpy + trimesh)
+
+The `blender-scene` command uses [bpy](https://pypi.org/project/bpy/) (the
+Blender 4.0 Python module) and [trimesh](https://trimesh.org/):
+
+1. **trimesh** reads each mesh file with `process=True`, which merges exactly
+   identical vertices and removes zero-area faces before any data enters
+   Blender. This is the primary geometry cleanup step and can significantly
+   reduce vertex count for VTK-tessellated CSG geometry.
+2. **bpy** creates Blender mesh objects from the cleaned vertex/face arrays,
+   assigns Principled BSDF materials (cycling through a 10-colour palette of
+   steel, brass, copper, and matte variants), and adds a **Weld modifier**
+   (secondary duplicate-vertex merge at a configurable distance threshold).
+3. A shared **Geometry Nodes** group (`PhiCutaway`) is built programmatically:
+   it computes `phi = atan2(Y, X)` per face, evaluates whether each face is
+   inside `[phi_min, phi_max]`, and deletes the outside faces. A
+   `Merge by Distance` node at the start of the GN chain handles any seam
+   duplicates from CSG tessellation boundaries.
+4. The `.blend` file is saved with `bpy.ops.wm.save_as_mainfile()`.
+
+bpy and VTK are **never imported in the same Python process** (each subcommand
+uses lazy imports), so there is no runtime conflict between the two OpenGL
+stacks.
+
 ---
 
 ## Troubleshooting
@@ -244,3 +385,25 @@ inside the container) — no GPU or display needed.
 **Build fails with "Could not find antlr4" or similar**
 > Ensure you are building the Docker image (not installing locally). The
 > `requirements.txt` pins `antlr4-python3-runtime` to a compatible 4.x version.
+
+**`blender-scene` exits with "No mesh files found"**
+> Run `split-convert` first to generate mesh files in the output directory.
+> Check that `--format` matches the format used in the convert step (default:
+> `gltf`).
+
+**Phi cutaway not updating when I change `PhiCutawayControl` properties**
+> In Blender, after changing a custom property that drives Geometry Nodes,
+> press **Alt+A** (Play Animation) briefly to force a dependency-graph update,
+> or add a small keyframe. This is a known Blender behaviour with GN drivers.
+
+**Weld modifier merging too much / too little geometry**
+> Adjust the threshold in **Properties → Modifiers → Weld → Merge Distance**.
+> The default (1e-4 mm = 0.1 µm) is conservative. For coarser geometry
+> use `0.001` mm; for very fine structures use `1e-6` mm or `0`.
+
+**Scene is very slow to interact with in Blender**
+> The Weld + PhiCutaway modifiers are evaluated in real time. For very complex
+> geometries, apply the Weld modifier (**Properties → Modifiers → ▼ → Apply**)
+> to bake it into the mesh. You can also hide sub-detectors you are not
+> currently working with (H key in the viewport, or the eye icon in the
+> outliner).
