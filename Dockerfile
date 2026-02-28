@@ -8,7 +8,9 @@
 # Build:  docker build -t ddgeoviztools .
 # Run:    docker run --rm -v $(pwd):/data ddgeoviztools <subcommand> [args]
 
-FROM python:3.10-slim
+#FROM python:3.10-slim
+FROM linuxserver/blender:5.0.1
+
 
 # ---------------------------------------------------------------------------
 # System libraries
@@ -23,7 +25,6 @@ FROM python:3.10-slim
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
-        libgl1-mesa-glx \
         libglu1-mesa \
         libegl1 \
         libegl-mesa0 \
