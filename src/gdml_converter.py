@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -23,6 +24,20 @@ import pyg4ometry as pg4
 
 
 SUPPORTED_FORMATS = ("gltf", "glb", "obj", "vtp")
+
+
+def _ts() -> str:
+    """Current wall-clock timestamp string, e.g. '18:23:01'."""
+    return time.strftime("%H:%M:%S")
+
+
+def _elapsed(t0: float) -> str:
+    """Human-readable elapsed seconds since t0."""
+    s = time.monotonic() - t0
+    if s < 60:
+        return f"{s:.1f}s"
+    m, s = divmod(s, 60)
+    return f"{int(m)}m{s:.0f}s"
 
 
 def _offscreen_viewer() -> pg4.visualisation.VtkViewer:
@@ -85,16 +100,23 @@ def convert_gdml(
             f"Unsupported format '{fmt}'. Choose from: {', '.join(SUPPORTED_FORMATS)}"
         )
 
+    t_total = time.monotonic()
+
     # ---- Read GDML ----
-    print(f"  Reading {input_path.name} ...")
+    t0 = time.monotonic()
+    print(f"  [{_ts()}] Reading {input_path.name} ...", flush=True)
     reader = pg4.gdml.Reader(str(input_path))
     reg    = reader.getRegistry()
     world  = reg.getWorldVolume()
+    n_volumes = len(reg.logicalVolumeDict)
+    print(f"  [{_ts()}] Read done ({_elapsed(t0)}) — {n_volumes} logical volumes", flush=True)
 
     # ---- Build scene ----
-    print(f"  Building geometry scene ...")
+    t0 = time.monotonic()
+    print(f"  [{_ts()}] Building geometry scene ...", flush=True)
     viewer = _offscreen_viewer()
     viewer.addLogicalVolume(world)
+    print(f"  [{_ts()}] Scene built ({_elapsed(t0)})", flush=True)
 
     # Locate renderer and render window from the (now populated) viewer
     ren    = viewer.ren
@@ -113,11 +135,16 @@ def convert_gdml(
         raise RuntimeError("VTK render window lost after addLogicalVolume().")
 
     renWin.SetOffScreenRendering(1)
+
+    t0 = time.monotonic()
+    print(f"  [{_ts()}] Rendering ...", flush=True)
     renWin.Render()
+    print(f"  [{_ts()}] Render done ({_elapsed(t0)})", flush=True)
 
     # ---- Export ----
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"  Exporting {fmt.upper()} → {output_path} ...")
+    t0 = time.monotonic()
+    print(f"  [{_ts()}] Exporting {fmt.upper()} → {output_path} ...", flush=True)
 
     if fmt in ("gltf", "glb"):
         exp = vtk.vtkGLTFExporter()
@@ -139,5 +166,12 @@ def convert_gdml(
         exp.SetFileName(str(output_path))
         exp.SetRenderWindow(renWin)
         exp.Write()
+
+    sz = output_path.stat().st_size if output_path.exists() else 0
+    print(
+        f"  [{_ts()}] Export done ({_elapsed(t0)}) — "
+        f"{sz/1e6:.1f} MB  total: {_elapsed(t_total)}",
+        flush=True,
+    )
 
     return output_path
