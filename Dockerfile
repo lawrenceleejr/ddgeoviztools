@@ -56,9 +56,14 @@ COPY src/ ./src/
 # Default working directory is /data — users volume-mount their files here
 WORKDIR /data
 
-# xvfb-run starts a throwaway virtual X server so VTK's render window works
-# in containers that lack EGL / GPU drivers.  The -a flag picks a free display
-# number automatically.  The window is never shown to the user.
-ENTRYPOINT ["xvfb-run", "-a", "--server-args=-screen 0 1x1x24", \
-            "python", "/app/src/cli.py"]
+# Force Mesa software rendering so VTK works headless without a GPU or X server.
+# PYOPENGL_PLATFORM=egl uses EGL (no display connection required).
+# LIBGL_ALWAYS_SOFTWARE=1 forces Mesa's CPU rasteriser even if a GPU is present.
+# These are only consulted by the convert/split-convert subcommands; split and
+# blender-scene do not import VTK at all.
+ENV PYOPENGL_PLATFORM=egl \
+    LIBGL_ALWAYS_SOFTWARE=1 \
+    GALLIUM_DRIVER=llvmpipe
+
+ENTRYPOINT ["python", "/app/src/cli.py"]
 CMD ["--help"]
