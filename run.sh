@@ -2,13 +2,14 @@
 # ---------------------------------------------------------------------------
 # run.sh — convenience wrapper for ddgeoviztools
 #
-# Automatically builds the Docker image on first use, then runs the container
-# with the current directory mounted at /data.
+# Automatically builds (or rebuilds) the Docker image whenever Dockerfile,
+# requirements.txt, or any file under src/ changes.
 #
 # Usage:
 #   ./run.sh split        /data/MAIA_260226.gdml --output-dir /data/split/
 #   ./run.sh convert      /data/MAIA_260226.gdml --output /data/MAIA.gltf
 #   ./run.sh split-convert /data/MAIA_260226.gdml --output-dir /data/output/
+#   ./run.sh blender-scene /data/output/ --output /data/scene.blend
 #   ./run.sh --help
 # ---------------------------------------------------------------------------
 
@@ -17,10 +18,26 @@ set -euo pipefail
 IMAGE="ddgeoviztools"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Build image if it does not exist yet (or if Dockerfile/requirements changed)
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "==> Building Docker image '$IMAGE' (first run — this may take a few minutes) ..."
-    docker build -t "$IMAGE" "$SCRIPT_DIR"
+# ---------------------------------------------------------------------------
+# Compute a hash of every file that affects the image build so we know when
+# to rebuild.  The hash is stored as a Docker image label "build.src_hash".
+# ---------------------------------------------------------------------------
+SRC_HASH=$(
+    find "$SCRIPT_DIR/src" \
+         "$SCRIPT_DIR/Dockerfile" \
+         "$SCRIPT_DIR/requirements.txt" \
+         -type f | sort | xargs md5sum 2>/dev/null | md5sum | cut -d' ' -f1
+)
+
+IMG_HASH=$(docker image inspect "$IMAGE" \
+               --format '{{index .Config.Labels "build.src_hash"}}' \
+               2>/dev/null || true)
+
+if [ "$SRC_HASH" != "$IMG_HASH" ]; then
+    echo "==> Building Docker image '$IMAGE' (source changed) ..."
+    docker build -t "$IMAGE" \
+        --label "build.src_hash=$SRC_HASH" \
+        "$SCRIPT_DIR"
     echo "==> Build complete."
 fi
 
