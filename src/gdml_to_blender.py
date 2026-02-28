@@ -14,6 +14,12 @@ Features
     Cam_Transverse  — looking along −Z, sees XY cross-section
     Cam_Side        — looking along −X, sees ZY (beam = horizontal, Y = up)
     Cam_Perspective — 3/4 overview
+- Golden-hour area lights with colour-temperature (Blackbody shader nodes).
+- Soft purple glow point light at the interaction-point origin.
+- Volumetric world mist (Principled Volume shader).
+- Optional microscopic edge chamfering (Bevel modifier) for specular highlights.
+- Default render: Cycles 4 K (3840 × 2160), 128 samples, OIDN denoiser,
+  Filmic colour management, compositor Glare bloom on the purple glow.
 - Saves as a .blend file readable by any Blender 4.x installation.
 """
 from __future__ import annotations
@@ -102,7 +108,7 @@ def _load_mesh(filepath: Path, name: str):
 
 
 # ---------------------------------------------------------------------------
-# Geometry simplification — Weld modifier (merges near-duplicate vertices)
+# Geometry modifiers
 # ---------------------------------------------------------------------------
 
 def _add_weld(obj, threshold: float = 1e-4):
@@ -113,6 +119,33 @@ def _add_weld(obj, threshold: float = 1e-4):
     """
     mod = obj.modifiers.new("Weld", "WELD")
     mod.merge_threshold = threshold
+    return mod
+
+
+def _add_bevel(obj, width_mm: float = 0.2):
+    """
+    Add a Bevel modifier with a tiny chamfer on sharp edges.
+
+    This adds micro-chamfers at angle-limited edges, which catches
+    specular highlights and gives the detector components a more
+    manufactured, physically-accurate appearance.
+
+    Parameters
+    ----------
+    width_mm : chamfer width in mm. 0.2 mm is microscopic — just enough
+               to produce a specular glint without visibly changing shape.
+               Set to 0 to skip.
+    """
+    if width_mm <= 0:
+        return None
+    mod = obj.modifiers.new("Bevel", "BEVEL")
+    mod.width = max(1e-6, width_mm)
+    mod.segments = 2
+    mod.limit_method = "ANGLE"
+    mod.angle_limit = math.radians(30)   # only sharp edges (>30°)
+    mod.use_clamp_overlap = True
+    mod.profile = 0.5
+    mod.harden_normals = True
     return mod
 
 
@@ -142,7 +175,7 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
     phi=0  → +X (horizontal right)
     phi=90 → +Y (up, towards sky)
 
-    Default phi_min=0, phi_max=180 shows the upper half of the detector.
+    Default phi_min=0, phi_max=90 shows the first quadrant (upper right).
     """
     NG_NAME = "PhiCutaway"
     if NG_NAME in bpy.data.node_groups:
@@ -293,16 +326,185 @@ def _setup_units():
     scene.unit_settings.length_unit  = "MILLIMETERS"
 
 
-def _add_sun(name: str, direction: tuple, energy: float):
-    light_data = bpy.data.lights.new(name=name, type="SUN")
+# ---------------------------------------------------------------------------
+# Lighting — golden-hour area lights with colour temperature
+# ---------------------------------------------------------------------------
+
+def _area_light_with_temperature(
+    name: str,
+    location: tuple,
+    target: tuple,
+    size: float,
+    energy: float,
+    temp_kelvin: float,
+):
+    """
+    Create an AREA light whose colour is set by a Blackbody shader node.
+
+    Parameters
+    ----------
+    name        : object name
+    location    : (x, y, z) in mm
+    target      : point the light faces
+    size        : diameter of the area light disk in mm
+    energy      : lamp energy (watts — Blender Cycles units)
+    temp_kelvin : colour temperature; 2000 K = deep amber, 6500 K = daylight
+    """
+    light_data        = bpy.data.lights.new(name, type="AREA")
     light_data.energy = energy
+    light_data.size   = size
+    light_data.shape  = "DISK"
+    light_data.use_nodes = True
+
+    tree     = light_data.node_tree
+    emission = next((n for n in tree.nodes if n.type == "EMISSION"), None)
+    if emission is not None:
+        bb = tree.nodes.new("ShaderNodeBlackbody")
+        bb.inputs["Temperature"].default_value = float(temp_kelvin)
+        tree.links.new(bb.outputs["Color"], emission.inputs["Color"])
+        # Strength is controlled by light_data.energy; leave it at 1.0
+        emission.inputs["Strength"].default_value = 1.0
+
     light_obj = bpy.data.objects.new(name, light_data)
     bpy.data.scenes[0].collection.objects.link(light_obj)
-    # Point sun in direction by computing rotation from (0,0,-1) → direction
-    fwd = Vector(direction).normalized()
-    light_obj.rotation_euler = fwd.to_track_quat("-Z", "Y").to_euler()
+    light_obj.location = Vector(location)
+
+    direction = (Vector(target) - Vector(location)).normalized()
+    light_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
     return light_obj
 
+
+def _add_point_light(
+    name: str,
+    location: tuple,
+    energy: float,
+    color_rgb: tuple,
+    soft_size: float,
+):
+    """
+    Create a point light with a fixed colour (not temperature-based).
+
+    soft_size controls the shadow softness radius.
+    """
+    light_data        = bpy.data.lights.new(name, type="POINT")
+    light_data.energy = energy
+    light_data.color  = color_rgb
+    light_data.shadow_soft_size = soft_size
+
+    light_obj = bpy.data.objects.new(name, light_data)
+    bpy.data.scenes[0].collection.objects.link(light_obj)
+    light_obj.location = Vector(location)
+    return light_obj
+
+
+# ---------------------------------------------------------------------------
+# World shader — dark space background + volumetric mist
+# ---------------------------------------------------------------------------
+
+def _setup_world():
+    """
+    Configure the world shader:
+    - Near-black background (deep space blue)
+    - Subtle volumetric mist via a Principled Volume shader
+    """
+    if bpy.data.worlds:
+        world = bpy.data.worlds[0]
+    else:
+        world = bpy.data.worlds.new("World")
+    bpy.data.scenes[0].world = world
+    world.use_nodes = True
+
+    tree  = world.node_tree
+    nodes = tree.nodes
+    links = tree.links
+    nodes.clear()
+
+    # Background node — near-black deep-space blue
+    bg = nodes.new("ShaderNodeBackground")
+    bg.inputs["Color"].default_value    = (0.005, 0.005, 0.015, 1.0)
+    bg.inputs["Strength"].default_value = 0.05
+
+    # Volumetric mist — extremely low density so it is only a hint
+    vol = nodes.new("ShaderNodeVolumePrincipled")
+    vol.inputs["Density"].default_value      = 1e-6
+    vol.inputs["Anisotropy"].default_value   = 0.2
+    # Scatter colour: cool blue-white mist
+    for key in ("Scatter Color", "Scattering Color"):
+        if key in vol.inputs:
+            vol.inputs[key].default_value = (0.70, 0.80, 1.0, 1.0)
+            break
+
+    out = nodes.new("ShaderNodeOutputWorld")
+    out.location = (400, 0)
+    bg.location  = (0, 100)
+    vol.location = (0, -100)
+
+    links.new(bg.outputs["Background"],  out.inputs["Surface"])
+    links.new(vol.outputs["Volume"],     out.inputs["Volume"])
+
+
+# ---------------------------------------------------------------------------
+# Render settings and compositor
+# ---------------------------------------------------------------------------
+
+def _setup_render_and_compositor(scene):
+    """
+    Configure Cycles render settings (4 K, 128 samples, OIDN denoiser)
+    and add a compositor Glare node for bloom on the purple IP light.
+    """
+    # Engine
+    scene.render.engine = "CYCLES"
+
+    # Resolution — 4 K UHD
+    scene.render.resolution_x          = 3840
+    scene.render.resolution_y          = 2160
+    scene.render.resolution_percentage = 100
+
+    # Cycles samples
+    scene.cycles.samples         = 128
+    scene.cycles.use_denoising  = True
+    try:
+        scene.cycles.denoiser = "OPENIMAGEDENOISE"
+    except TypeError:
+        pass  # older bpy builds may not accept the string assignment
+
+    # Colour management — Filmic for cinematic look
+    try:
+        scene.view_settings.view_transform = "Filmic"
+        scene.view_settings.look           = "Medium Contrast"
+    except Exception:
+        pass
+
+    # Compositor — Glare node for IP glow bloom
+    scene.use_nodes = True
+    ctree  = scene.node_tree
+    cnodes = ctree.nodes
+    clinks = ctree.links
+
+    # Clear default compositor nodes and rebuild
+    cnodes.clear()
+
+    render_layer = cnodes.new("CompositorNodeRLayers")
+    render_layer.location = (-400, 0)
+
+    glare = cnodes.new("CompositorNodeGlare")
+    glare.glare_type  = "FOG_GLOW"
+    glare.size        = 7
+    glare.threshold   = 0.8
+    glare.quality     = "HIGH"
+    glare.mix         = 0.0       # additive: 0 = full effect over original
+    glare.location    = (0, 0)
+
+    composite = cnodes.new("CompositorNodeComposite")
+    composite.location = (400, 0)
+
+    clinks.new(render_layer.outputs["Image"], glare.inputs["Image"])
+    clinks.new(glare.outputs["Image"],        composite.inputs["Image"])
+
+
+# ---------------------------------------------------------------------------
+# Camera helpers
+# ---------------------------------------------------------------------------
 
 def _make_camera(name: str, location: tuple, target: tuple,
                  ortho: bool = True, ortho_scale: float = 10000.0):
@@ -322,6 +524,10 @@ def _make_camera(name: str, location: tuple, target: tuple,
     return cam_obj
 
 
+# ---------------------------------------------------------------------------
+# Scene bounds helper
+# ---------------------------------------------------------------------------
+
 def _scene_bounds(objects: list) -> tuple[float, float, float]:
     """Return (x_max, y_max, z_max) of the combined bounding box (in mm)."""
     xs, ys, zs = [], [], []
@@ -339,26 +545,30 @@ def _scene_bounds(objects: list) -> tuple[float, float, float]:
 # ---------------------------------------------------------------------------
 
 def create_blender_scene(
-    mesh_dir:    Path,
-    output_path: Path,
-    fmt:         str   = "gltf",
-    phi_min:     float = 0.0,
-    phi_max:     float = 180.0,
-    no_phi_cut:  bool  = False,
+    mesh_dir:       Path,
+    output_path:    Path,
+    fmt:            str   = "gltf",
+    phi_min:        float = 0.0,
+    phi_max:        float = 90.0,
+    no_phi_cut:     bool  = False,
     weld_threshold: float = 1e-4,
+    bevel_width_mm: float = 0.2,
+    no_bevel:       bool  = False,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
 
     Parameters
     ----------
-    mesh_dir     : directory containing *.{fmt} files (one per sub-detector)
-    output_path  : where to write the .blend file
-    fmt          : input mesh format ('gltf', 'glb', 'obj', 'vtp')
-    phi_min      : initial phi cutaway minimum (degrees), default 0
-    phi_max      : initial phi cutaway maximum (degrees), default 180
-    no_phi_cut   : if True, skip phi-cutaway modifier entirely
+    mesh_dir       : directory containing *.{fmt} files (one per sub-detector)
+    output_path    : where to write the .blend file
+    fmt            : input mesh format ('gltf', 'glb', 'obj', 'vtp')
+    phi_min        : initial phi cutaway minimum (degrees), default 0
+    phi_max        : initial phi cutaway maximum (degrees), default 90 (π/2)
+    no_phi_cut     : if True, skip phi-cutaway modifier entirely
     weld_threshold : distance for Weld modifier in mm (default 1e-4)
+    bevel_width_mm : edge chamfer width in mm for specular highlights (default 0.2)
+    no_bevel       : if True, skip the Bevel modifier
     """
     mesh_dir    = Path(mesh_dir)
     output_path = Path(output_path)
@@ -385,6 +595,9 @@ def create_blender_scene(
     # ---- Initialize Blender scene ----
     _clear_scene()
     _setup_units()
+
+    # ---- World shader (background + volumetric mist) ----
+    _setup_world()
 
     # ---- Pre-create materials ----
     materials = _pre_create_materials()
@@ -426,10 +639,12 @@ def create_blender_scene(
         mat = next(mat_cycle)
         obj.data.materials.append(mat)
 
-        # Weld modifier (mesh cleanup — merges near-duplicate vertices)
+        # Modifier stack: Weld → Bevel → PhiCutaway
         _add_weld(obj, threshold=weld_threshold)
 
-        # Phi cutaway
+        if not no_bevel:
+            _add_bevel(obj, width_mm=bevel_width_mm)
+
         if not no_phi_cut and ng is not None and ctrl is not None:
             _add_phi_cutaway(obj, ng, phi_min, phi_max, ctrl)
 
@@ -440,13 +655,15 @@ def create_blender_scene(
     if not loaded_objects:
         raise RuntimeError("No mesh files could be loaded.")
 
-    # ---- Compute scene bounds for camera placement ----
+    # ---- Compute scene bounds for light / camera placement ----
     x_max, y_max, z_max = _scene_bounds(loaded_objects)
-    r_trans = max(x_max, y_max) * 1.6   # radius for transverse camera (XY)
-    r_side  = max(z_max, y_max) * 1.6   # radius for side camera (ZY)
-    r_persp = max(x_max, y_max, z_max) * 2.2
+    r = max(x_max, y_max, z_max)   # overall scale radius in mm
 
-    ortho_trans = max(x_max, y_max) * 2.2   # orthographic scale in mm
+    r_trans  = max(x_max, y_max) * 1.6
+    r_side   = max(z_max, y_max) * 1.6
+    r_persp  = max(x_max, y_max, z_max) * 2.2
+
+    ortho_trans = max(x_max, y_max) * 2.2
     ortho_side  = max(z_max, y_max) * 2.2
 
     # ---- Cameras ----
@@ -482,10 +699,57 @@ def create_blender_scene(
     bpy.data.scenes[0].camera = cam_trans
 
     # ---- Lighting ----
-    # Key light (from upper-right-front in physics coords)
-    _add_sun("Sun_Key",  direction=( 0.5, -0.5,  1.0), energy=3.0)
-    # Fill light (softer, from upper-left)
-    _add_sun("Sun_Fill", direction=(-0.8,  0.6,  0.4), energy=1.5)
+    # Three-point golden-hour area lights with colour temperature.
+    # Lamp energy scales with r² so the scene brightness is independent
+    # of detector size.
+    energy_base = r * r * 1e-3   # normalised energy coefficient
+
+    # Key light — warm golden-hour glow from upper-right-front
+    # 3000 K ≈ incandescent / warm candlelight
+    _area_light_with_temperature(
+        "Light_Key_Golden",
+        location=( r * 1.4, -r * 0.2,  r * 0.3),
+        target=(0, 0, 0),
+        size=r * 0.6,
+        energy=energy_base * 400.0,
+        temp_kelvin=3000.0,
+    )
+
+    # Fill light — cooler sky blue from upper-left-back
+    # 7500 K ≈ overcast skylight
+    _area_light_with_temperature(
+        "Light_Fill_Sky",
+        location=(-r * 0.9,  r * 0.6,  r * 0.8),
+        target=(0, 0, 0),
+        size=r * 0.48,
+        energy=energy_base * 72.0,
+        temp_kelvin=7500.0,
+    )
+
+    # Rim light — warm backlight to separate detector from background
+    # 4500 K ≈ neutral warm white
+    _area_light_with_temperature(
+        "Light_Rim_Warm",
+        location=( r * 0.2,  r * 0.4, -r * 1.3),
+        target=(0, 0, 0),
+        size=r * 0.3,
+        energy=energy_base * 120.0,
+        temp_kelvin=4500.0,
+    )
+
+    # Purple glow at the interaction point (IP / beam origin)
+    # Soft point light — evocative of Cherenkov / beams
+    _add_point_light(
+        "Light_IP_Purple_Glow",
+        location=(0, 0, 0),
+        energy=energy_base * 80.0,
+        color_rgb=(0.45, 0.0, 1.0),
+        soft_size=r * 0.3,
+    )
+
+    # ---- Render settings + compositor bloom ----
+    scene = bpy.data.scenes[0]
+    _setup_render_and_compositor(scene)
 
     # ---- Save ----
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -496,5 +760,8 @@ def create_blender_scene(
     if not no_phi_cut:
         print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°]  "
               f"— adjust via PhiCutawayControl → Custom Properties")
+    print(f"  Render: Cycles 4 K, 128 samples, OIDN denoiser")
+    print(f"  Lighting: golden-hour (3000 K key) + sky fill (7500 K) + rim (4500 K)"
+          f" + purple IP glow")
 
     return output_path

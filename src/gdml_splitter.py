@@ -7,10 +7,17 @@ Sub-detectors are identified by traversing N levels below the world volume
 """
 from __future__ import annotations
 
+import sys
+import time
 from copy import deepcopy
 from pathlib import Path
 
 from lxml import etree
+
+
+def _log(msg: str) -> None:
+    """Print a timestamped progress message, flushing immediately."""
+    print(f"  [{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +106,10 @@ class _Collector:
         self._vis_solids: set[str] = set()
         self._vis_logvols: set[str] = set()
 
+        # Progress counters (updated during traversal)
+        self._lv_count: int = 0
+        self._last_report: int = 0
+
     # ---- public entry points ----
 
     def collect_logvol(self, name: str) -> None:
@@ -130,6 +141,13 @@ class _Collector:
 
         self.needed_logvols.add(name)
         self.logvol_order.append(name)
+
+        # Emit a progress dot every 500 unique logical volumes visited
+        self._lv_count += 1
+        if self._lv_count - self._last_report >= 500:
+            self._last_report = self._lv_count
+            print(f"    ... {self._lv_count} logical volumes collected so far",
+                  flush=True)
 
     def collect_solid(self, name: str) -> None:
         if name in self._vis_solids:
@@ -228,38 +246,55 @@ def split_gdml(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ---- Step 1: parse ----
+    file_size_mb = input_path.stat().st_size / 1_048_576
+    _log(f"Parsing {input_path.name} ({file_size_mb:.1f} MB) …")
+    t0 = time.monotonic()
     parser = etree.XMLParser(remove_blank_text=True)
     tree = etree.parse(str(input_path), parser)
     root = tree.getroot()
+    _log(f"Parse complete ({time.monotonic() - t0:.1f}s)")
 
-    # Build element indexes
+    # ---- Step 2: build element indexes ----
+    _log("Building element indexes …")
+    t0 = time.monotonic()
     defines    = _build_index(root, "./define/*")
     materials  = _build_index(root, "./materials/*")
     solids_map = _build_index(root, "./solids/*")
     # Both <volume> and <assembly> elements live in <structure>
     logvols    = _build_index(root, "./structure/*")
+    _log(
+        f"Indexes built ({time.monotonic() - t0:.1f}s): "
+        f"{len(defines)} defines, {len(materials)} materials, "
+        f"{len(solids_map)} solids, {len(logvols)} logical volumes"
+    )
 
-    # Locate the world volume from <setup><world ref="..."/>
+    # ---- Step 3: locate world volume ----
     world_ref_el = root.find("setup/world")
     if world_ref_el is None:
         raise ValueError("Cannot find <setup><world ref=...> in GDML")
     world_name = world_ref_el.get("ref")
+    _log(f"World volume: {world_name!r}")
 
     world_lv = logvols.get(world_name)
     if world_lv is None:
         raise ValueError(f"World volume '{world_name}' not found in <structure>")
 
     # World solid (reused as enclosing box in each output GDML)
-    world_solidref = world_lv.find("solidref")
+    world_solidref   = world_lv.find("solidref")
     world_solid_name = world_solidref.get("ref") if world_solidref is not None else None
 
-    # Find sub-detectors at the requested depth
+    # ---- Step 4: find sub-detectors ----
+    _log(f"Finding sub-detectors at depth={depth} …")
     subdet_list = _physvols_at_depth(world_name, logvols, depth)
     if not subdet_list:
         raise ValueError(
             f"No sub-detectors found at depth={depth} below world "
             f"volume '{world_name}'. Try a smaller --depth value."
         )
+    _log(f"Found {len(subdet_list)} sub-detector(s) at depth={depth}")
+    for lv_name, _ in subdet_list:
+        print(f"    {lv_name}", flush=True)
 
     # Optional name filter
     if detectors:
@@ -271,17 +306,28 @@ def split_gdml(
                 f"depth={depth}. Available: "
                 + ", ".join(n for n, _ in _physvols_at_depth(world_name, logvols, depth))
             )
+        _log(f"After filter: {len(subdet_list)} sub-detector(s) selected")
 
     results: list[tuple[str, Path]] = []
 
-    for lv_name, placement_pv in subdet_list:
+    for idx, (lv_name, placement_pv) in enumerate(subdet_list, 1):
+        _log(
+            f"[{idx}/{len(subdet_list)}] Collecting dependencies for {lv_name!r} …"
+        )
+        t0 = time.monotonic()
         c = _Collector(defines, materials, solids_map, logvols)
         c.collect_logvol(lv_name)
         c.collect_placement_defines(placement_pv)
         if world_solid_name:
             c.collect_solid(world_solid_name)
+        _log(
+            f"    Collected in {time.monotonic() - t0:.1f}s: "
+            f"{len(c.logvol_order)} logvols, {len(c.solid_order)} solids, "
+            f"{len(c.needed_materials)} materials, {len(c.needed_defines)} defines"
+        )
 
         # ---- Assemble output GDML tree ----
+        _log(f"    Assembling GDML tree …")
         nsmap = root.nsmap
         new_root = etree.Element("gdml", nsmap=nsmap)
         xsi = "http://www.w3.org/2001/XMLSchema-instance"
@@ -327,16 +373,19 @@ def split_gdml(
         new_setup = etree.SubElement(new_root, "setup", name="Default", version="1.0")
         etree.SubElement(new_setup, "world", ref=new_world_name)
 
-        # Write file
-        stem = _clean_name(lv_name)
+        # ---- Write file ----
+        stem     = _clean_name(lv_name)
         out_path = output_dir / f"{stem}.gdml"
+        _log(f"    Writing {out_path.name} …")
         etree.ElementTree(new_root).write(
             str(out_path),
             pretty_print=True,
             xml_declaration=True,
             encoding="UTF-8",
         )
-        print(f"  Wrote {out_path.name}")
+        out_size_mb = out_path.stat().st_size / 1_048_576
+        _log(f"    Done → {out_path.name} ({out_size_mb:.2f} MB)")
         results.append((lv_name, out_path))
 
+    _log(f"Split complete — {len(results)} file(s) written to {output_dir}/")
     return results

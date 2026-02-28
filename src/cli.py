@@ -30,10 +30,10 @@ def cmd_split(args: argparse.Namespace) -> int:
         else None
     )
 
-    print(f"Splitting {args.gdml_file}")
-    print(f"  depth={args.depth}  output-dir={args.output_dir}")
+    print(f"Splitting {args.gdml_file}", flush=True)
+    print(f"  depth={args.depth}  output-dir={args.output_dir}", flush=True)
     if detectors:
-        print(f"  filter: {detectors}")
+        print(f"  filter: {detectors}", flush=True)
 
     try:
         results = split_gdml(
@@ -43,12 +43,12 @@ def cmd_split(args: argparse.Namespace) -> int:
             detectors=detectors,
         )
     except Exception as exc:
-        print(f"\nError: {exc}", file=sys.stderr)
+        print(f"\nError: {exc}", file=sys.stderr, flush=True)
         return 1
 
-    print(f"\nDone — {len(results)} GDML file(s) written to {args.output_dir}/")
+    print(f"\nDone — {len(results)} GDML file(s) written to {args.output_dir}/", flush=True)
     for lv_name, path in results:
-        print(f"  {lv_name:50s}  →  {path.name}")
+        print(f"  {lv_name:50s}  →  {path.name}", flush=True)
     return 0
 
 
@@ -65,7 +65,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
         )
         return 1
 
-    print(f"Converting {args.gdml_file}  →  {output_path}  [{fmt.upper()}]")
+    print(f"Converting {args.gdml_file}  →  {output_path}  [{fmt.upper()}]", flush=True)
     try:
         convert_gdml(
             input_path=args.gdml_file,
@@ -73,10 +73,10 @@ def cmd_convert(args: argparse.Namespace) -> int:
             fmt=fmt,
         )
     except Exception as exc:
-        print(f"\nError: {exc}", file=sys.stderr)
+        print(f"\nError: {exc}", file=sys.stderr, flush=True)
         return 1
 
-    print(f"\nDone — wrote {output_path}")
+    print(f"\nDone — wrote {output_path}", flush=True)
     return 0
 
 
@@ -95,8 +95,8 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
     )
 
     # --- Step 1: split ---
-    print(f"[1/2] Splitting {args.gdml_file}")
-    print(f"      depth={args.depth}  gdml output → {gdml_dir}/")
+    print(f"[1/2] Splitting {args.gdml_file}", flush=True)
+    print(f"      depth={args.depth}  gdml output → {gdml_dir}/", flush=True)
     try:
         gdml_files = split_gdml(
             input_path=args.gdml_file,
@@ -105,17 +105,17 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
             detectors=detectors,
         )
     except Exception as exc:
-        print(f"\nSplit error: {exc}", file=sys.stderr)
+        print(f"\nSplit error: {exc}", file=sys.stderr, flush=True)
         return 1
 
-    print(f"\n      {len(gdml_files)} sub-detector(s) found.\n")
+    print(f"\n      {len(gdml_files)} sub-detector(s) found.\n", flush=True)
 
     # --- Step 2: convert each ---
-    print(f"[2/2] Converting to {fmt.upper()} → {output_dir}/")
+    print(f"[2/2] Converting to {fmt.upper()} → {output_dir}/", flush=True)
     errors: list[tuple[str, Exception]] = []
     for lv_name, gdml_path in gdml_files:
         out_path = output_dir / f"{gdml_path.stem}.{fmt}"
-        print(f"\n  [{lv_name}]")
+        print(f"\n  [{lv_name}]", flush=True)
         try:
             convert_gdml(
                 input_path=gdml_path,
@@ -123,21 +123,22 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
                 fmt=fmt,
             )
         except Exception as exc:
-            print(f"  [WARN] conversion failed: {exc}", file=sys.stderr)
+            print(f"  [WARN] conversion failed: {exc}", file=sys.stderr, flush=True)
             errors.append((lv_name, exc))
             if args.fail_fast:
-                print("Aborting (--fail-fast).", file=sys.stderr)
+                print("Aborting (--fail-fast).", file=sys.stderr, flush=True)
                 return 1
 
     n_ok = len(gdml_files) - len(errors)
     print(
         f"\nDone — {n_ok}/{len(gdml_files)} sub-detector(s) converted "
-        f"successfully.  Output in {output_dir}/"
+        f"successfully.  Output in {output_dir}/",
+        flush=True,
     )
     if errors:
-        print("\nFailed sub-detectors:", file=sys.stderr)
+        print("\nFailed sub-detectors:", file=sys.stderr, flush=True)
         for name, exc in errors:
-            print(f"  {name}: {exc}", file=sys.stderr)
+            print(f"  {name}: {exc}", file=sys.stderr, flush=True)
         return 1
     return 0
 
@@ -156,12 +157,14 @@ def cmd_blender_scene(args: argparse.Namespace) -> int:
         phi_min = args.phi_min if args.phi_min is not None else 0.0
         phi_max = phi_min + args.phi_cut
 
-    print(f"Building Blender scene from {mesh_dir}/")
-    print(f"  format={args.format}  output={output_path}")
+    print(f"Building Blender scene from {mesh_dir}/", flush=True)
+    print(f"  format={args.format}  output={output_path}", flush=True)
     if not args.no_phi_cut:
-        print(f"  phi cutaway: [{phi_min:.1f}°, {phi_max:.1f}°]")
+        print(f"  phi cutaway: [{phi_min:.1f}°, {phi_max:.1f}°]", flush=True)
     else:
-        print(f"  phi cutaway: disabled (full detector)")
+        print(f"  phi cutaway: disabled (full detector)", flush=True)
+    if not args.no_bevel:
+        print(f"  edge bevel: {args.bevel_width} mm", flush=True)
 
     try:
         create_blender_scene(
@@ -172,16 +175,18 @@ def cmd_blender_scene(args: argparse.Namespace) -> int:
             phi_max=phi_max,
             no_phi_cut=args.no_phi_cut,
             weld_threshold=args.weld_threshold,
+            bevel_width_mm=args.bevel_width,
+            no_bevel=args.no_bevel,
         )
     except Exception as exc:
-        print(f"\nError: {exc}", file=sys.stderr)
+        print(f"\nError: {exc}", file=sys.stderr, flush=True)
         return 1
 
-    print(f"\nDone — open {output_path} in Blender.")
-    print("  Active camera: Cam_Transverse (XY cross-section, Z=beam into screen).")
+    print(f"\nDone — open {output_path} in Blender.", flush=True)
+    print("  Active camera: Cam_Transverse (XY cross-section, Z=beam into screen).", flush=True)
     if not args.no_phi_cut:
-        print("  Phi cutaway: select 'PhiCutawayControl' → Object Properties")
-        print("               → Custom Properties → adjust phi_min / phi_max.")
+        print("  Phi cutaway: select 'PhiCutawayControl' → Object Properties", flush=True)
+        print("               → Custom Properties → adjust phi_min / phi_max.", flush=True)
     return 0
 
 
@@ -295,11 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mesh format to look for in MESH_DIR (default: gltf).",
     )
     p_bl.add_argument(
-        "--phi-cut", type=float, default=180.0, metavar="DEGREES",
+        "--phi-cut", type=float, default=90.0, metavar="DEGREES",
         help=(
-            "Angular width of the visible phi sector in degrees (default: 180). "
+            "Angular width of the visible phi sector in degrees (default: 90 = π/2). "
             "phi=atan2(Y,X); Z=beam. "
-            "180 = upper half [0°,180°]. 360 = full detector. "
+            "90 = first quadrant [0°,90°]. 180 = upper half. 360 = full detector. "
             "Ignored if --no-phi-cut is set."
         ),
     )
@@ -320,6 +325,19 @@ def build_parser() -> argparse.ArgumentParser:
             "Distance threshold for the Weld modifier that merges duplicate "
             "vertices (mm, default: 1e-4). Set to 0 to disable."
         ),
+    )
+    p_bl.add_argument(
+        "--bevel-width", type=float, default=0.2, metavar="MM",
+        dest="bevel_width",
+        help=(
+            "Width of the microscopic edge chamfer added to all sub-detectors "
+            "(mm, default: 0.2). Produces specular highlights on sharp edges. "
+            "Set to 0 or use --no-bevel to disable."
+        ),
+    )
+    p_bl.add_argument(
+        "--no-bevel", action="store_true",
+        help="Disable the Bevel modifier (no edge chamfering).",
     )
     p_bl.set_defaults(func=cmd_blender_scene)
 
