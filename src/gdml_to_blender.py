@@ -145,7 +145,11 @@ def _add_bevel(obj, width_mm: float = 0.2):
     mod.angle_limit = math.radians(30)   # only sharp edges (>30°)
     mod.use_clamp_overlap = True
     mod.profile = 0.5
-    mod.harden_normals = True
+    # harden_normals was removed from the Bevel modifier in Blender 4.2+
+    try:
+        mod.harden_normals = True
+    except AttributeError:
+        pass
     return mod
 
 
@@ -491,6 +495,18 @@ def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
             elif item.name == "Phi Max":
                 id_max = item.identifier
 
+    print(f"  [PHI] Socket identifiers: Phi Min={id_min!r}  Phi Max={id_max!r}", flush=True)
+
+    # In Blender 5.0+ the GN modifier input storage changed; driver paths of the
+    # form mod["Socket_X"] may no longer map to valid FCurve targets and a
+    # half-configured FCurve will crash save_as_mainfile with SIGSEGV.
+    # Skip driver wiring on 5.0+ — the modifier still applies the cutaway at
+    # the baked default values; drivers can be re-added manually if needed.
+    _skip_drivers = bpy.app.version >= (5, 0, 0)
+    if _skip_drivers:
+        print("  [PHI] Blender 5.0+: skipping driver wiring to avoid serialiser crash.",
+              flush=True)
+
     for identifier, prop_name, default in (
         (id_min, "phi_min", phi_min),
         (id_max, "phi_max", phi_max),
@@ -499,6 +515,10 @@ def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
             continue
         mod[identifier] = default
 
+        if _skip_drivers:
+            continue
+
+        fc = None
         try:
             fc  = mod.driver_add(f'["{identifier}"]')
             drv = fc.driver
@@ -509,8 +529,16 @@ def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
             var.targets[0].id        = ctrl_obj
             var.targets[0].data_path = f'["{prop_name}"]'
             drv.expression = "val"
-        except Exception:
-            pass  # drivers are cosmetic; don't abort scene creation
+            print(f"  [PHI] Driver OK: mod[{identifier!r}] ← ctrl[{prop_name!r}]",
+                  flush=True)
+        except Exception as exc:
+            # Log and clean up — a partial FCurve is worse than none.
+            print(f"  [PHI] Driver warning ({identifier!r}): {exc}", flush=True)
+            if fc is not None:
+                try:
+                    mod.driver_remove(f'["{identifier}"]')
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -631,7 +659,11 @@ def _add_point_light(
     light_data        = bpy.data.lights.new(name, type="POINT")
     light_data.energy = energy
     light_data.color  = color_rgb
-    light_data.shadow_soft_size = soft_size
+    # shadow_soft_size was renamed/removed in Blender 5.0; try the new name first
+    if hasattr(light_data, "shadow_source_angle"):
+        light_data.shadow_source_angle = soft_size * 0.01  # rough conversion
+    elif hasattr(light_data, "shadow_soft_size"):
+        light_data.shadow_soft_size = soft_size
 
     light_obj = bpy.data.objects.new(name, light_data)
     bpy.data.scenes[0].collection.objects.link(light_obj)
@@ -741,8 +773,8 @@ def _setup_render_and_compositor(scene):
     scene.cycles.use_denoising  = True
     try:
         scene.cycles.denoiser = "OPENIMAGEDENOISE"
-    except TypeError:
-        pass  # older bpy builds may not accept the string assignment
+    except Exception:
+        pass  # older / newer bpy builds may not accept the string assignment
 
     # Colour management — Filmic for cinematic look
     try:
