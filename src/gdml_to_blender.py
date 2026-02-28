@@ -765,3 +765,29 @@ def create_blender_scene(
           f" + purple IP glow")
 
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# Entry point when run as a Blender script:
+#   blender --background --python gdml_to_blender.py -- '{"mesh_dir": ...}'
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import json
+
+    # Blender passes everything after its own '--' separator as regular sys.argv.
+    # Find '--' and take the single JSON-encoded argument that follows it.
+    try:
+        sep = sys.argv.index("--")
+        script_args = sys.argv[sep + 1:]
+    except ValueError:
+        script_args = sys.argv[1:]
+
+    if not script_args:
+        print("gdml_to_blender.py: missing JSON argument", file=sys.stderr)
+        sys.exit(1)
+
+    kwargs = json.loads(script_args[0])
+    kwargs["mesh_dir"]    = Path(kwargs["mesh_dir"])
+    kwargs["output_path"] = Path(kwargs["output_path"])
+    create_blender_scene(**kwargs)

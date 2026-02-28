@@ -13,7 +13,10 @@ Subcommands
 from __future__ import annotations
 
 import argparse
+import json
 import multiprocessing
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -268,8 +271,6 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
 
 
 def cmd_blender_scene(args: argparse.Namespace) -> int:
-    from gdml_to_blender import create_blender_scene
-
     mesh_dir    = Path(args.mesh_dir)
     output_path = Path(args.output)
 
@@ -290,21 +291,39 @@ def cmd_blender_scene(args: argparse.Namespace) -> int:
     if not args.no_bevel:
         print(f"  edge bevel: {args.bevel_width} mm", flush=True)
 
-    try:
-        create_blender_scene(
-            mesh_dir=mesh_dir,
-            output_path=output_path,
-            fmt=args.format,
-            phi_min=phi_min,
-            phi_max=phi_max,
-            no_phi_cut=args.no_phi_cut,
-            weld_threshold=args.weld_threshold,
-            bevel_width_mm=args.bevel_width,
-            no_bevel=args.no_bevel,
+    # gdml_to_blender.py uses bpy which is only available inside Blender's
+    # bundled Python interpreter.  Spawn Blender headlessly and pass it our
+    # script; arguments are JSON-encoded after the '--' separator.
+    blender_exe = shutil.which("blender")
+    if blender_exe is None:
+        print(
+            "Error: 'blender' not found in PATH. "
+            "Make sure Blender is installed in the container.",
+            file=sys.stderr,
+            flush=True,
         )
-    except Exception as exc:
-        print(f"\nError: {exc}", file=sys.stderr, flush=True)
         return 1
+
+    script = Path(__file__).parent / "gdml_to_blender.py"
+    kwargs = json.dumps({
+        "mesh_dir":       str(mesh_dir),
+        "output_path":    str(output_path),
+        "fmt":            args.format,
+        "phi_min":        phi_min,
+        "phi_max":        phi_max,
+        "no_phi_cut":     args.no_phi_cut,
+        "weld_threshold": args.weld_threshold,
+        "bevel_width_mm": args.bevel_width,
+        "no_bevel":       args.no_bevel,
+    })
+
+    cmd = [blender_exe, "--background", "--python", str(script), "--", kwargs]
+    print(f"  Launching: blender --background --python {script.name} ...", flush=True)
+    result = subprocess.run(cmd)
+
+    if result.returncode != 0:
+        print(f"\nError: Blender exited with code {result.returncode}.", file=sys.stderr, flush=True)
+        return result.returncode
 
     print(f"\nDone — open {output_path} in Blender.", flush=True)
     print("  Active camera: Cam_Transverse (XY cross-section, Z=beam into screen).", flush=True)
