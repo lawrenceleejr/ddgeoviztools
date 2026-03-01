@@ -316,6 +316,7 @@ def cmd_blender_scene(args: argparse.Namespace) -> int:
         "weld_threshold": args.weld_threshold,
         "bevel_width_mm": args.bevel_width,
         "no_bevel":       args.no_bevel,
+        "no_env_sphere":  args.no_env_sphere,
     })
 
     cmd = [blender_exe, "--background", "--python", str(script), "--", kwargs]
@@ -516,6 +517,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_bl.add_argument(
         "--no-bevel", action="store_true",
         help="Disable the Bevel modifier (no edge chamfering).",
+    )
+    p_bl.add_argument(
+        "--no-env-sphere", action="store_true",
+        help=(
+            "Disable the matte environment sphere that surrounds the detector "
+            "and acts as a soft-light dome."
+        ),
     )
     p_bl.set_defaults(func=cmd_blender_scene)
 

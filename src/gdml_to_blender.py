@@ -52,6 +52,51 @@ _PALETTE = [
     ("Oxidized_Copper",  (0.25, 0.50, 0.40),       0.60,     0.65),
 ]
 
+# Keyword → (base_RGB, metallic, roughness)
+# Matched against the lowercased filename stem of each sub-detector GLTF.
+# First match wins; fall back to cycling _PALETTE if nothing matches.
+_DETECTOR_MATERIALS = [
+    # ECal / EM calorimeter — crystal or lead glass (pale aqua, semi-reflective)
+    (("ecal", "emcal", "em_cal", "crystal", "preshower", "pbwo4"),
+     (0.35, 0.62, 0.52), 0.10, 0.25),
+    # HCal / hadronic calorimeter — iron/brass absorber
+    (("hcal", "hcalo", "hadcal", "hcalorimeter"),
+     (0.52, 0.38, 0.22), 0.85, 0.40),
+    # Solenoid / superconducting coil — bright copper
+    (("solenoid", "coil", "solen", "magnet_coil"),
+     (0.72, 0.42, 0.22), 0.95, 0.20),
+    # Yoke / iron flux return — dark iron
+    (("yoke", "iron_yoke", "muon_iron", "flux_return"),
+     (0.30, 0.28, 0.26), 0.92, 0.55),
+    # Tracker / silicon strips
+    (("tracker", "trk", "sit", "svt", "ftd", "set", "etd", "tracking"),
+     (0.22, 0.38, 0.60), 0.70, 0.35),
+    # TPC — brushed aluminium cylinder
+    (("tpc",),
+     (0.78, 0.79, 0.80), 0.90, 0.35),
+    # Silicon pixel / vertex detector — bright steel blue
+    (("pixel", "vxd", "vtx", "velo", "pxd"),
+     (0.28, 0.45, 0.72), 0.85, 0.25),
+    # Muon detectors (drift tubes, RPCs, …) — matte blue-grey
+    (("muon", "mdt", "rpc", "tgc", "csc", "gem", "me0"),
+     (0.55, 0.50, 0.68), 0.20, 0.70),
+    # TOF / RICH / PID / Cherenkov — gold/brass
+    (("tof", "btof", "rich", "dirc", "aerogel", "cherenkov", "pid"),
+     (0.68, 0.58, 0.28), 0.80, 0.22),
+    # Beam pipe / vacuum chamber — bright stainless steel
+    (("beampipe", "beam_pipe", "vacuumchamber", "bpipe"),
+     (0.78, 0.79, 0.82), 0.95, 0.12),
+    # Nozzle / heavy-metal shielding — dark tungsten-grey
+    (("nozzle", "tungsten", "shielding", "shield"),
+     (0.28, 0.27, 0.25), 0.85, 0.60),
+    # Generic calorimeter label
+    (("calorimeter", "calo"),
+     (0.42, 0.55, 0.38), 0.10, 0.75),
+    # Support / dead material
+    (("support", "dead", "frame", "structure"),
+     (0.40, 0.40, 0.42), 0.60, 0.65),
+]
+
 
 def _make_material(name: str, color_rgb: tuple, metallic: float, roughness: float):
     mat = bpy.data.materials.new(name=name)
@@ -73,9 +118,59 @@ def _pre_create_materials() -> list:
     return [_make_material(*entry) for entry in _PALETTE]
 
 
+def _material_for_detector(stem: str, mat_cycle):
+    """
+    Return a Blender material inferred from the sub-detector filename stem.
+
+    Matches against _DETECTOR_MATERIALS keyword lists (first hit wins).
+    Re-uses an already-created material of the same category so identical
+    sub-detectors share one material block.  Falls back to the cycling
+    _PALETTE when no keyword matches.
+    """
+    n = stem.lower()
+    for keywords, color, metallic, roughness in _DETECTOR_MATERIALS:
+        if any(kw in n for kw in keywords):
+            mat_name = f"Det_{keywords[0].title()}"   # e.g. "Det_Solenoid"
+            existing = bpy.data.materials.get(mat_name)
+            if existing:
+                return existing
+            return _make_material(mat_name, color, metallic, roughness)
+    return next(mat_cycle)
+
+
 # ---------------------------------------------------------------------------
 # Mesh loading with duplicate-vertex cleanup
 # ---------------------------------------------------------------------------
+
+def _filter_world_volumes(sub_meshes: list, factor: float = 8.0) -> list:
+    """
+    Remove obvious GDML world-volume meshes from a list of trimesh objects.
+
+    The world volume is always a large axis-aligned box that encloses the
+    entire detector.  VTK's GLTF exporter embeds it as mesh0 in every file.
+    Any sub-mesh whose bounding-box diagonal is more than *factor* times the
+    median diagonal of the rest is considered a world volume and dropped.
+
+    Returns a non-empty list (never removes every mesh).
+    """
+    if len(sub_meshes) <= 1:
+        return sub_meshes
+
+    diags = [float(np.linalg.norm(m.extents)) for m in sub_meshes]
+    median_diag = float(np.median(diags))
+
+    kept, removed = [], 0
+    for m, d in zip(sub_meshes, diags):
+        if median_diag > 0 and d > factor * median_diag:
+            print(f"    [FILTER] Dropping world-volume mesh "
+                  f"(bbox diag {d:.0f} mm, {d/median_diag:.0f}× median)",
+                  flush=True)
+            removed += 1
+        else:
+            kept.append(m)
+
+    return kept if kept else sub_meshes   # safety: never return empty
+
 
 def _load_mesh(filepath: Path, name: str):
     """
@@ -88,11 +183,13 @@ def _load_mesh(filepath: Path, name: str):
     raw = trimesh.load(str(filepath), force="mesh", process=True)
 
     if isinstance(raw, trimesh.Scene):
-        # Flatten a multi-mesh scene into one mesh
-        meshes = list(raw.geometry.values())
-        if not meshes:
+        # Flatten a multi-mesh scene into one mesh, but first remove any
+        # world-volume box that VTK's GLTF exporter embeds in every file.
+        sub_meshes = list(raw.geometry.values())
+        if not sub_meshes:
             raise ValueError(f"No geometry found in {filepath}")
-        raw = trimesh.util.concatenate(meshes)
+        sub_meshes = _filter_world_volumes(sub_meshes)
+        raw = trimesh.util.concatenate(sub_meshes)
         raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
 
     verts = raw.vertices.tolist()   # list of [x, y, z]
@@ -159,19 +256,19 @@ def _add_bevel(obj, width_mm: float = 0.2):
 
 def _apply_phi_cutaway_bmesh(obj, phi_min_deg: float, phi_max_deg: float):
     """
-    Apply phi cutaway by directly deleting out-of-range faces from the mesh.
+    Apply phi cutaway by deleting faces whose centroid phi lies *inside*
+    [phi_min_deg, phi_max_deg].  This removes a wedge-shaped sector from the
+    detector so the interior is visible — everything *outside* the range is
+    kept.
 
-    Used as a guaranteed fallback when the geometry nodes approach is not
-    available (e.g. node type names changed in a new Blender release).  The
-    cut is baked into the mesh data — not interactively adjustable — but the
-    result is identical to the GN approach and requires no modifier support.
+    phi = atan2(Y, X) in radians; Z is the beam axis.
     """
     import bmesh
     phi_min = math.radians(phi_min_deg)
     phi_max = math.radians(phi_max_deg)
     n_faces = len(obj.data.polygons)
-    print(f"  [PHI-BMESH] Applying bmesh cutaway to '{obj.name}' "
-          f"([{phi_min_deg:.1f}°, {phi_max_deg:.1f}°], {n_faces} faces) ...",
+    print(f"  [PHI-BMESH] Cutting sector [{phi_min_deg:.1f}°, {phi_max_deg:.1f}°] "
+          f"from '{obj.name}' ({n_faces} faces) ...",
           flush=True)
 
     bm = bmesh.new()
@@ -184,7 +281,8 @@ def _apply_phi_cutaway_bmesh(obj, phi_min_deg: float, phi_max_deg: float):
         cx = sum(v.co.x for v in f.verts) / n
         cy = sum(v.co.y for v in f.verts) / n
         phi = math.atan2(cy, cx)
-        if phi < phi_min or phi > phi_max:
+        # Delete faces whose phi falls inside the cut sector
+        if phi_min <= phi <= phi_max:
             del_faces.append(f)
 
     print(f"  [PHI-BMESH]   → deleting {len(del_faces)} / {len(bm.faces)} faces",
@@ -542,6 +640,55 @@ def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
 
 
 # ---------------------------------------------------------------------------
+# Environment sphere
+# ---------------------------------------------------------------------------
+
+def _add_environment_sphere(radius: float):
+    """
+    Place a large matte sphere around the detector that acts as a soft-light
+    environment dome.
+
+    Normals are flipped inward so the surface faces the scene interior.
+    The off-white Lambertian material diffusely reflects the area lights back
+    onto the detector, producing soft fill light without a visible background
+    wall.  Shadow casting is disabled so the sphere itself doesn't block the
+    lights.
+    """
+    import bmesh as _bm
+    mesh = bpy.data.meshes.new("EnvironmentSphere")
+    bm = _bm.new()
+    _bm.ops.create_uvsphere(bm, u_segments=48, v_segments=24, radius=radius)
+    _bm.ops.reverse_faces(bm, faces=bm.faces)   # normals point inward
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+
+    obj = bpy.data.objects.new("EnvironmentSphere", mesh)
+    bpy.data.scenes[0].collection.objects.link(obj)
+
+    mat = bpy.data.materials.new("EnvironmentMatte")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf:
+        bsdf.inputs["Base Color"].default_value = (0.88, 0.88, 0.90, 1.0)
+        bsdf.inputs["Metallic"].default_value   = 0.0
+        bsdf.inputs["Roughness"].default_value  = 1.0
+    obj.data.materials.append(mat)
+
+    # Don't block the lights or cast shadows onto the detector
+    try:
+        obj.visible_shadow = False
+    except AttributeError:
+        try:
+            obj.cycles_visibility.shadow = False
+        except AttributeError:
+            pass
+
+    print(f"  [SETUP] Environment sphere: radius={radius:.0f} mm", flush=True)
+    return obj
+
+
+# ---------------------------------------------------------------------------
 # Scene utilities
 # ---------------------------------------------------------------------------
 
@@ -872,6 +1019,7 @@ def create_blender_scene(
     weld_threshold: float = 1e-4,
     bevel_width_mm: float = 0.2,
     no_bevel:       bool  = False,
+    no_env_sphere:  bool  = False,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
@@ -881,12 +1029,15 @@ def create_blender_scene(
     mesh_dir       : directory containing *.{fmt} files (one per sub-detector)
     output_path    : where to write the .blend file
     fmt            : input mesh format ('gltf', 'glb', 'obj', 'vtp')
-    phi_min        : initial phi cutaway minimum (degrees), default 0
-    phi_max        : initial phi cutaway maximum (degrees), default 90 (π/2)
-    no_phi_cut     : if True, skip phi-cutaway modifier entirely
+    phi_min        : phi cut-sector start angle (degrees, default 0).
+                     Faces whose centroid phi lies in [phi_min, phi_max] are
+                     removed, exposing the detector interior.
+    phi_max        : phi cut-sector end angle (degrees, default 90)
+    no_phi_cut     : if True, skip phi-cutaway entirely (show full detector)
     weld_threshold : distance for Weld modifier in mm (default 1e-4)
     bevel_width_mm : edge chamfer width in mm for specular highlights (default 0.2)
     no_bevel       : if True, skip the Bevel modifier
+    no_env_sphere  : if True, skip the matte environment sphere
     """
     mesh_dir    = Path(mesh_dir)
     output_path = Path(output_path)
@@ -984,8 +1135,8 @@ def create_blender_scene(
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
 
-        # Material
-        mat = next(mat_cycle)
+        # Material — try to infer from the sub-detector name, else cycle palette
+        mat = _material_for_detector(name, mat_cycle)
         obj.data.materials.append(mat)
 
         # Modifier stack: Weld → Bevel → PhiCutaway
@@ -1023,6 +1174,10 @@ def create_blender_scene(
 
     ortho_trans = max(x_max, y_max) * 2.2
     ortho_side  = max(z_max, y_max) * 2.2
+
+    # ---- Environment sphere ----
+    if not no_env_sphere:
+        _add_environment_sphere(r * 1.8)
 
     # ---- Cameras ----
     print(f"  [SETUP] Creating cameras "
