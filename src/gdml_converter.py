@@ -94,19 +94,24 @@ def _max_placements_for_lv(lv_name: str) -> int:
 # GDML across the entire <structure> section.  Even with per-LV caps,
 # a geometry with many different LV names can still produce thousands of
 # physvols.  This cap guarantees memory safety regardless of nesting depth.
-# Empirically: ~400 physvols → 4–5 GB peak VTK memory; reduce to 50 to keep
-# peak below ~500 MB.  Very complex scenes are handled by the auto-split path.
-_GLOBAL_PHYSVOL_BUDGET = 50
+# Empirically: ~100 physvols → 1–2 GB peak VTK memory from tessellation
+# of boolean solids.  Keep at 30 so peak stays under ~500 MB per chunk.
+_GLOBAL_PHYSVOL_BUDGET = 30
 
 # If the pruned GDML still has more than this many physvols, automatically
 # split it into per-sub-detector GDMLs and convert each independently.
 # This bounds peak memory per conversion to roughly _GLOBAL_PHYSVOL_BUDGET × 10 MB.
-_AUTO_SPLIT_PHYSVOL_THRESHOLD = 40
+_AUTO_SPLIT_PHYSVOL_THRESHOLD = 25
 
 # GDML files larger than this (in bytes) are always processed via the
 # auto-split path regardless of physvol count, because the XML tree itself
 # can consume several GB of RAM for very large files.
-_AUTO_SPLIT_FILESIZE_BYTES = 80 * 1024 * 1024   # 80 MB
+_AUTO_SPLIT_FILESIZE_BYTES = 50 * 1024 * 1024   # 50 MB
+
+# Maximum recursion depth for re-splitting sub-detector GDMLs that still
+# exceed thresholds after the initial split.  Each level splits at one
+# level deeper in the GDML structure hierarchy.
+_MAX_RESPLIT_DEPTH = 3
 
 
 def _limit_gdml_placements(
@@ -365,6 +370,12 @@ def _auto_split_and_convert(
     convert each piece independently so that peak VTK memory is bounded by
     _GLOBAL_PHYSVOL_BUDGET × tessellation cost rather than the whole scene.
 
+    If a sub-detector chunk still exceeds thresholds after the first split,
+    it is recursively re-split at a deeper level in the GDML hierarchy (up to
+    _MAX_RESPLIT_DEPTH levels deep).  This handles deeply nested sub-detectors
+    (e.g. tracker staves inside layers inside barrels) that remain too large
+    after the initial depth=1 split.
+
     Each output file is named  <output_path.stem>_det<NNN>_<lv_name>.<fmt>.
     Returns the list of successfully written output paths.
     """
@@ -381,50 +392,74 @@ def _auto_split_and_convert(
               f"— falling back to single-pass (high memory)", flush=True)
         return _convert_single(gdml_path, output_path, fmt, t_total)
 
-    split_dir = Path(tempfile.mkdtemp(prefix="ddgeo_split_"))
-    print(f"  [{_ts()}] [AUTO-SPLIT] Splitting into per-sub-detector GDMLs → "
-          f"{split_dir}/", flush=True)
-    try:
-        split_files = split_gdml(gdml_path, split_dir, depth=1)
-    except Exception as exc:
-        print(f"  [{_ts()}] [AUTO-SPLIT] Split failed: {exc} — "
-              f"falling back to single-pass", flush=True)
-        shutil.rmtree(split_dir, ignore_errors=True)
-        return _convert_single(gdml_path, output_path, fmt, t_total)
-
-    if not split_files:
-        print(f"  [{_ts()}] [AUTO-SPLIT] No sub-detectors found — "
-              f"falling back to single-pass", flush=True)
-        shutil.rmtree(split_dir, ignore_errors=True)
-        return _convert_single(gdml_path, output_path, fmt, t_total)
-
     output_dir = output_path.parent
     stem       = output_path.stem
     results: list[Path] = []
+    chunk_counter = [0]   # mutable counter for unique filenames across recursion
 
-    for i, (lv_name, sub_gdml) in enumerate(split_files):
-        safe_name  = lv_name[:30].replace("/", "_").replace(" ", "_")
-        chunk_path = output_dir / f"{stem}_det{i:03d}_{safe_name}.{fmt}"
-        print(f"  [{_ts()}] [AUTO-SPLIT] [{i+1}/{len(split_files)}] "
-              f"Converting {lv_name!r} → {chunk_path.name}", flush=True)
+    def _split_and_convert_recursive(gdml_to_split, split_depth, label_prefix):
+        """Recursively split and convert a GDML file."""
+        split_dir = Path(tempfile.mkdtemp(prefix=f"ddgeo_split_d{split_depth}_"))
         try:
-            # Prune the sub-GDML but always call _convert_single directly —
-            # do NOT recurse into convert_gdml to avoid runaway re-splitting
-            # that produces a flood of "Done — 0 file(s)" messages.
+            print(f"  [{_ts()}] [SPLIT d={split_depth}] Splitting {label_prefix} → "
+                  f"{split_dir.name}/", flush=True)
+            split_files = split_gdml(gdml_to_split, split_dir, depth=1)
+        except Exception as exc:
+            print(f"  [{_ts()}] [SPLIT d={split_depth}] Split failed: {exc}",
+                  flush=True)
+            shutil.rmtree(split_dir, ignore_errors=True)
+            # Fall back to converting this chunk directly
+            _convert_chunk(gdml_to_split, label_prefix)
+            return
+
+        if not split_files:
+            shutil.rmtree(split_dir, ignore_errors=True)
+            _convert_chunk(gdml_to_split, label_prefix)
+            return
+
+        for i, (lv_name, sub_gdml) in enumerate(split_files):
+            sub_label = f"{label_prefix}/{lv_name}"
             pruned_sub = _limit_gdml_placements(sub_gdml)
-            partial = _convert_single(pruned_sub, chunk_path, fmt, t_total)
+
+            # Check if this chunk still needs further splitting
+            sub_size = Path(pruned_sub).stat().st_size
+            sub_pvs = _count_physvols_in_gdml(pruned_sub)
+
+            still_too_large = (
+                sub_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD
+                or sub_size > _AUTO_SPLIT_FILESIZE_BYTES
+            )
+
+            if still_too_large and split_depth < _MAX_RESPLIT_DEPTH:
+                print(f"  [{_ts()}] [SPLIT d={split_depth}] Chunk {lv_name!r} still large "
+                      f"({sub_pvs} pvs, {sub_size/1e6:.1f} MB) — re-splitting at d={split_depth+1}",
+                      flush=True)
+                _split_and_convert_recursive(pruned_sub, split_depth + 1, sub_label)
+            else:
+                _convert_chunk(pruned_sub, sub_label)
+
+        shutil.rmtree(split_dir, ignore_errors=True)
+
+    def _convert_chunk(chunk_gdml, label):
+        """Convert a single GDML chunk to mesh format."""
+        safe_name = label.split("/")[-1][:30].replace("/", "_").replace(" ", "_")
+        idx = chunk_counter[0]
+        chunk_counter[0] += 1
+        chunk_path = output_dir / f"{stem}_det{idx:03d}_{safe_name}.{fmt}"
+        print(f"  [{_ts()}] [CONVERT] {label} → {chunk_path.name}", flush=True)
+        try:
+            partial = _convert_single(chunk_gdml, chunk_path, fmt, t_total)
             results.extend(partial)
         except Exception as exc:
-            print(f"  [{_ts()}] [AUTO-SPLIT] [{lv_name}] failed: {exc}",
-                  flush=True)
+            print(f"  [{_ts()}] [CONVERT] {label} failed: {exc}", flush=True)
         # Aggressively release VTK/pyg4ometry objects from the previous chunk.
         # VTK render windows and mappers hold large C++ allocations that Python
-        # gc alone won't reclaim.  Collecting twice ensures weak references and
-        # ref cycles are fully broken.
+        # gc alone won't reclaim.  Delete the viewer/registry references and
+        # collect twice to break weak references and ref cycles.
         gc.collect()
         gc.collect()
 
-    shutil.rmtree(split_dir, ignore_errors=True)
+    _split_and_convert_recursive(gdml_path, split_depth=1, label_prefix=Path(gdml_path).stem)
 
     total_sz = sum(p.stat().st_size for p in results if p.exists()) / 1e6
     print(
@@ -445,60 +480,86 @@ def _convert_single(
     Inner single-GDML conversion pipeline (build VTK scene, render, export).
     Called by convert_gdml after pruning has already been applied.
     Returns a one-element list containing the output path on success.
+
+    All VTK/pyg4ometry objects are explicitly deleted after export so that
+    gc can reclaim the (often very large) C++ allocations before the next
+    chunk is processed.
     """
-    # ---- Read GDML ----
-    t0 = time.monotonic()
-    print(f"  [{_ts()}] Reading {Path(gdml_path).name} ...", flush=True)
-    reader = pg4.gdml.Reader(str(gdml_path))
-    reg    = reader.getRegistry()
-    world  = reg.getWorldVolume()
-    n_volumes = len(reg.logicalVolumeDict)
-    print(f"  [{_ts()}] Read done ({_elapsed(t0)}) — {n_volumes} logical volumes",
-          flush=True)
+    import gc
 
-    # ---- Build scene ----
-    t0 = time.monotonic()
-    print(f"  [{_ts()}] Building geometry scene ...", flush=True)
-    viewer = _offscreen_viewer()
-    viewer.addLogicalVolume(world)
-    print(f"  [{_ts()}] Scene built ({_elapsed(t0)})", flush=True)
+    reader = None
+    viewer = None
+    ren    = None
+    renWin = None
 
-    ren    = viewer.ren
-    renWin = _find_renwin(viewer)
-    renWin.SetOffScreenRendering(1)
+    try:
+        # ---- Read GDML ----
+        t0 = time.monotonic()
+        print(f"  [{_ts()}] Reading {Path(gdml_path).name} ...", flush=True)
+        reader = pg4.gdml.Reader(str(gdml_path))
+        reg    = reader.getRegistry()
+        world  = reg.getWorldVolume()
+        n_volumes = len(reg.logicalVolumeDict)
+        print(f"  [{_ts()}] Read done ({_elapsed(t0)}) — {n_volumes} logical volumes",
+              flush=True)
 
-    # ---- Pre-render decimation: caps peak VTK render memory ----
-    # Complex solids (polycones, tessellated volumes) can produce millions of
-    # faces per actor after pyg4ometry tessellation.  Decimating the mapper
-    # inputs *before* Render() prevents the renderer from holding all that
-    # data in RAM simultaneously.  This is the most effective point to
-    # reduce memory for intricate geometries.
-    t0 = time.monotonic()
-    _decimate_vtk_actors(ren, target_faces_per_actor=10_000)
-    print(f"  [{_ts()}] Pre-render decimation done ({_elapsed(t0)})", flush=True)
+        # ---- Build scene ----
+        t0 = time.monotonic()
+        print(f"  [{_ts()}] Building geometry scene ...", flush=True)
+        viewer = _offscreen_viewer()
+        viewer.addLogicalVolume(world)
+        print(f"  [{_ts()}] Scene built ({_elapsed(t0)})", flush=True)
 
-    t0 = time.monotonic()
-    print(f"  [{_ts()}] Rendering ...", flush=True)
-    renWin.Render()
-    print(f"  [{_ts()}] Render done ({_elapsed(t0)})", flush=True)
+        ren    = viewer.ren
+        renWin = _find_renwin(viewer)
+        renWin.SetOffScreenRendering(1)
 
-    # ---- Post-render decimation (safety net for any geometry added by render) ----
-    t0 = time.monotonic()
-    _decimate_vtk_actors(ren, target_faces_per_actor=20_000)
-    print(f"  [{_ts()}] Post-render decimation done ({_elapsed(t0)})", flush=True)
+        # ---- Pre-render decimation: caps peak VTK render memory ----
+        # Complex solids (polycones, tessellated volumes) can produce millions of
+        # faces per actor after pyg4ometry tessellation.  Decimating the mapper
+        # inputs *before* Render() prevents the renderer from holding all that
+        # data in RAM simultaneously.  This is the most effective point to
+        # reduce memory for intricate geometries.
+        t0 = time.monotonic()
+        _decimate_vtk_actors(ren, target_faces_per_actor=10_000)
+        print(f"  [{_ts()}] Pre-render decimation done ({_elapsed(t0)})", flush=True)
 
-    # ---- Export ----
-    t0 = time.monotonic()
-    print(f"  [{_ts()}] Exporting {fmt.upper()} → {output_path} ...", flush=True)
-    _write_vtk_export(ren, renWin, output_path, fmt)
+        t0 = time.monotonic()
+        print(f"  [{_ts()}] Rendering ...", flush=True)
+        renWin.Render()
+        print(f"  [{_ts()}] Render done ({_elapsed(t0)})", flush=True)
 
-    sz = output_path.stat().st_size if output_path.exists() else 0
-    print(
-        f"  [{_ts()}] Export done ({_elapsed(t0)}) — "
-        f"{sz/1e6:.1f} MB  total: {_elapsed(t_total)}",
-        flush=True,
-    )
-    return [output_path]
+        # ---- Post-render decimation (safety net for geometry added by render) ----
+        t0 = time.monotonic()
+        _decimate_vtk_actors(ren, target_faces_per_actor=20_000)
+        print(f"  [{_ts()}] Post-render decimation done ({_elapsed(t0)})", flush=True)
+
+        # ---- Export ----
+        t0 = time.monotonic()
+        print(f"  [{_ts()}] Exporting {fmt.upper()} → {output_path} ...", flush=True)
+        _write_vtk_export(ren, renWin, output_path, fmt)
+
+        sz = output_path.stat().st_size if output_path.exists() else 0
+        print(
+            f"  [{_ts()}] Export done ({_elapsed(t0)}) — "
+            f"{sz/1e6:.1f} MB  total: {_elapsed(t_total)}",
+            flush=True,
+        )
+        return [output_path]
+
+    finally:
+        # ---- Explicit cleanup ----
+        # VTK render windows, mappers, and pyg4ometry registries hold large
+        # C++ allocations.  Explicitly finalize and delete them so gc can
+        # reclaim memory before the next chunk is processed.
+        if renWin is not None:
+            try:
+                renWin.Finalize()
+            except Exception:
+                pass
+        del renWin, ren, viewer, reader
+        gc.collect()
+        gc.collect()
 
 
 def _offscreen_viewer() -> pg4.visualisation.VtkViewer:

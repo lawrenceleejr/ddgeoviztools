@@ -1121,6 +1121,16 @@ def _setup_units():
     scene.unit_settings.scale_length = 0.001   # 1 Blender unit = 1 mm
     scene.unit_settings.length_unit  = "MILLIMETERS"
 
+    # Set 3D viewport clip distance so the full detector is visible when
+    # orbiting interactively.  At native mm scale the detector is 5000–12000 mm.
+    # Default clip_end of 1000 BU clips everything beyond 1 m.
+    for area in bpy.context.screen.areas if hasattr(bpy.context, 'screen') else []:
+        if area.type == 'VIEW_3D':
+            for space in area.spaces:
+                if space.type == 'VIEW_3D':
+                    space.clip_start = 1.0        # 1 mm
+                    space.clip_end   = 100000.0   # 100 m
+
 
 # ---------------------------------------------------------------------------
 # Lighting — golden-hour area lights with colour temperature
@@ -1627,6 +1637,11 @@ def _make_camera(name: str, location: tuple, target: tuple,
                  ortho: bool = True, ortho_scale: float = 10000.0):
     cam_data = bpy.data.cameras.new(name)
     cam_data.type = "ORTHO" if ortho else "PERSP"
+    # At native GDML mm scale, the detector can be 5000–12000 mm across.
+    # Default clip_end of 1000 BU (= 1 m) clips the scene.  Set clip range
+    # wide enough to see the entire detector from any camera position.
+    cam_data.clip_start = 1.0       # 1 mm — avoids Z-fighting at close range
+    cam_data.clip_end   = 100000.0  # 100 m — comfortably encloses any detector
     if ortho:
         cam_data.ortho_scale = ortho_scale
     else:
