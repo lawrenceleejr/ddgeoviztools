@@ -19,11 +19,185 @@ from pathlib import Path
 os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
+import tempfile
+
 import vtk
 import pyg4ometry as pg4
 
 
 SUPPORTED_FORMATS = ("gltf", "glb", "obj", "vtp")
+
+
+# ---------------------------------------------------------------------------
+# GDML pre-processing — limit repeated physical-volume placements
+# ---------------------------------------------------------------------------
+
+# Name fragments that identify highly-repeated sub-detector types.
+# These come last in a depth-first traversal, so pyg4ometry materialises
+# every placement as a separate VTK actor — the dominant source of slowness.
+_TRACKER_KEYS = (
+    "tracker", "trk", "tpc", "silicon", "strip", "stave",
+    "module", "disk", "petal", "ring", "endcap", "barrel_layer",
+    "sensitive",
+)
+_CALO_KEYS = (
+    "ecal", "hcal", "calo", "calorimeter", "absorber",
+    "scint", "crystal", "pbwo", "preshower", "emcal",
+)
+
+
+def _max_placements_for_lv(lv_name: str) -> int:
+    """
+    Return the maximum number of physical-volume daughters to materialise
+    for a logical volume whose name contains recognisable keywords.
+
+    Trackers have hundreds-to-thousands of replicated modules; 20 is enough
+    to convey the structure.  Calorimeters often have 50-100+ layers; 8 is
+    sufficient for visualisation.  Everything else is left uncapped (returns
+    a very large number so nothing is removed).
+    """
+    n = lv_name.lower()
+    if any(k in n for k in _CALO_KEYS):
+        return 8
+    if any(k in n for k in _TRACKER_KEYS):
+        return 20
+    return 10_000   # effectively unlimited
+
+
+def _limit_gdml_placements(
+    gdml_path: "Path",
+    default_max: int = 50,
+) -> "Path":
+    """
+    Parse *gdml_path* with lxml and remove excess repeated physical-volume
+    placements from each logical volume in the <structure> section.
+
+    For each logical volume the daughters are grouped by the logical-volume
+    they reference (via <volumeref ref="…">).  If a single referenced LV
+    appears more than *max* times, the excess placements are deleted.  The
+    name-specific cap from _max_placements_for_lv() is applied per child LV.
+
+    Returns the path to a temporary GDML file if any placements were removed,
+    otherwise returns the original path unchanged (no temp file written).
+    """
+    try:
+        from lxml import etree
+    except ImportError:
+        print("  [GDML-LIMIT] lxml not available — skipping placement pruning",
+              flush=True)
+        return gdml_path
+
+    tree = etree.parse(str(gdml_path))
+    root = tree.getroot()
+
+    # Handle optional XML namespace
+    ns_map   = root.nsmap
+    ns_uri   = ns_map.get(None, "")
+    ns_pfx   = f"{{{ns_uri}}}" if ns_uri else ""
+
+    def tag(local):
+        return f"{ns_pfx}{local}"
+
+    structure = root.find(tag("structure"))
+    if structure is None:
+        return gdml_path
+
+    total_removed = 0
+
+    for lv_el in structure.findall(tag("volume")):
+        # Collect all <physvol> children
+        physvols = lv_el.findall(tag("physvol"))
+        if not physvols:
+            continue
+
+        # Group by referenced logical volume name
+        from collections import defaultdict
+        groups: dict[str, list] = defaultdict(list)
+        for pv in physvols:
+            ref_el = pv.find(tag("volumeref"))
+            ref    = ref_el.get("ref", "") if ref_el is not None else "__unknown__"
+            groups[ref].append(pv)
+
+        for ref_lv, pvs in groups.items():
+            cap = _max_placements_for_lv(ref_lv)
+            if len(pvs) <= cap:
+                continue
+            for pv in pvs[cap:]:
+                lv_el.remove(pv)
+                total_removed += 1
+
+        # Also apply the default global cap across ALL daughters of this LV
+        remaining = lv_el.findall(tag("physvol"))
+        if len(remaining) > default_max * len(groups):
+            cap_all = default_max * max(1, len(groups))
+            for pv in remaining[cap_all:]:
+                lv_el.remove(pv)
+                total_removed += 1
+
+    if total_removed == 0:
+        return gdml_path   # nothing changed — reuse original
+
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".gdml", delete=False, prefix="ddgeo_pruned_"
+    )
+    tree.write(tmp.name, pretty_print=True,
+               xml_declaration=True, encoding="UTF-8")
+    tmp.close()
+    print(f"  [GDML-LIMIT] Removed {total_removed} excess placements → {tmp.name}",
+          flush=True)
+    return type(gdml_path)(tmp.name)   # return same type (Path or str)
+
+
+# ---------------------------------------------------------------------------
+# VTK post-render mesh decimation
+# ---------------------------------------------------------------------------
+
+def _decimate_vtk_actors(ren, target_faces_per_actor: int = 20_000):
+    """
+    Apply vtkQuadricDecimation to every polydata actor in *ren* that has
+    more than *target_faces_per_actor* cells.
+
+    This runs AFTER pyg4ometry/VTK has built and rendered the full scene,
+    immediately before the GLTF/OBJ/VTP exporter writes to disk.  It does
+    not change the scene geometry used during rendering (shadows, lighting)
+    — only the polydata stored in each mapper, which is what the exporter
+    serialises.
+
+    Reducing per-actor face counts from tens-of-thousands down to ~20 K
+    can cut GLTF file sizes (and subsequent loading times) by 10–100×
+    for tracker-heavy geometries.
+    """
+    actors = ren.GetActors()
+    actors.InitTraversal()
+    n_decimated = 0
+    n_actors    = 0
+
+    actor = actors.GetNextActor()
+    while actor is not None:
+        mapper = actor.GetMapper()
+        if mapper is not None:
+            try:
+                poly = mapper.GetInput()
+            except Exception:
+                poly = None
+            if poly is not None:
+                n_cells = poly.GetNumberOfCells()
+                n_actors += 1
+                if n_cells > target_faces_per_actor:
+                    ratio = target_faces_per_actor / n_cells
+                    dec   = vtk.vtkQuadricDecimation()
+                    dec.SetInputData(poly)
+                    dec.SetTargetReduction(1.0 - ratio)
+                    dec.Update()
+                    out = dec.GetOutput()
+                    if out.GetNumberOfCells() > 0:
+                        mapper.SetInputData(out)
+                        n_decimated += 1
+
+        actor = actors.GetNextActor()
+
+    print(f"  [VTK-DECIM] Decimated {n_decimated}/{n_actors} actors "
+          f"(target ≤{target_faces_per_actor:,} faces each)", flush=True)
 
 
 def _ts() -> str:
@@ -102,10 +276,19 @@ def convert_gdml(
 
     t_total = time.monotonic()
 
+    # ---- Pre-process GDML: limit repeated physical-volume placements ----
+    # This prunes hundreds of identical tracker modules / calorimeter layers
+    # before pyg4ometry ever touches them, which is far cheaper than letting
+    # VTK materialise all of them and then discarding them.
+    t0 = time.monotonic()
+    gdml_to_load = _limit_gdml_placements(input_path)
+    if gdml_to_load != input_path:
+        print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
+
     # ---- Read GDML ----
     t0 = time.monotonic()
-    print(f"  [{_ts()}] Reading {input_path.name} ...", flush=True)
-    reader = pg4.gdml.Reader(str(input_path))
+    print(f"  [{_ts()}] Reading {Path(gdml_to_load).name} ...", flush=True)
+    reader = pg4.gdml.Reader(str(gdml_to_load))
     reg    = reader.getRegistry()
     world  = reg.getWorldVolume()
     n_volumes = len(reg.logicalVolumeDict)
@@ -140,6 +323,15 @@ def convert_gdml(
     print(f"  [{_ts()}] Rendering ...", flush=True)
     renWin.Render()
     print(f"  [{_ts()}] Render done ({_elapsed(t0)})", flush=True)
+
+    # ---- Decimate VTK actors before export ----
+    # Reduces per-actor face counts to ≤20 K triangles via QEM decimation.
+    # This shrinks GLTF file sizes dramatically for tracker-heavy geometries
+    # (thousands of small modules with dense tessellations) while keeping all
+    # visible shapes intact for photorealistic rendering.
+    t0 = time.monotonic()
+    _decimate_vtk_actors(ren, target_faces_per_actor=20_000)
+    print(f"  [{_ts()}] Actor decimation done ({_elapsed(t0)})", flush=True)
 
     # ---- Export ----
     output_path.parent.mkdir(parents=True, exist_ok=True)
