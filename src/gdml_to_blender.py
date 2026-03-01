@@ -279,7 +279,21 @@ def _phi_cut_trimesh(
     keep_idx = np.where(keep)[0]
     if len(keep_idx) == 0:
         return mesh   # safety: never produce an empty mesh
-    return mesh.submesh([keep_idx], append=True)
+    cut = mesh.submesh([keep_idx], append=True)
+
+    # Close the two open cross-sections left by the phi cut.
+    # fill_holes finds every connected boundary-edge loop and triangulates it
+    # with a fan from the loop centroid.  For GDML solid volumes the boundary
+    # at each cut plane is a roughly rectangular (convex) closed loop per
+    # detector layer, so fan triangulation produces correct planar cap faces.
+    try:
+        trimesh.repair.fill_holes(cut)
+        print(f"    [PHI-TRI] Cut faces capped ({len(cut.faces)} faces total)",
+              flush=True)
+    except Exception as exc:
+        print(f"    [PHI-TRI] fill_holes warning: {exc}", flush=True)
+
+    return cut
 
 
 def _load_mesh(
