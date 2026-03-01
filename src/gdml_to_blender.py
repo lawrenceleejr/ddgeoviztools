@@ -1208,12 +1208,29 @@ def create_blender_scene(
                 # node type names differ); bake phi cut directly into mesh.
                 _apply_phi_cutaway_bmesh(obj, phi_min, phi_max)
 
+        # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
+        # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
+        # line horizontal along the Blender X axis.  The phi-cutaway above
+        # operated on local (GDML) coordinates where Z=beam and XY=transverse,
+        # so it remains geometrically correct after this object rotation.
+        # Scale down 100× so the detector fits comfortably in Blender's
+        # working viewport (e.g. solenoid goes from ±2300 BU to ±23 BU).
+        obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
+        obj.scale = (0.01, 0.01, 0.01)
+
         loaded_objects.append(obj)
         print(f"    → {len(obj.data.vertices)} verts, {len(obj.data.polygons)} faces"
               f"  material: {mat.name}")
 
     if not loaded_objects:
         raise RuntimeError("No mesh files could be loaded.")
+
+    # Flush object transforms so matrix_world reflects the rotation+scale
+    # we just set before _scene_bounds reads the bounding boxes.
+    try:
+        bpy.context.view_layer.update()
+    except Exception:
+        pass
 
     # ---- Compute scene bounds for light / camera placement ----
     x_max, y_max, z_max = _scene_bounds(loaded_objects)
