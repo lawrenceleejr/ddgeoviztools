@@ -350,14 +350,19 @@ def _phi_cut_trimesh(
 def _load_mesh(
     filepath: Path,
     name: str,
+    phi_min_deg: float | None = None,
+    phi_max_deg: float | None = None,
 ):
     """
     Read a mesh file with trimesh, merge duplicate vertices and remove
-    degenerate faces, then create a bpy Mesh object.
+    degenerate faces, optionally bake a phi-sector cutaway, and create a
+    bpy Mesh object.
 
-    The phi-sector cutaway is applied as a Boolean modifier (using a separate
-    PhiWedge cutter object) rather than being baked into the mesh data here.
-    This keeps the cutaway non-destructive and live-adjustable in Blender.
+    phi_min_deg / phi_max_deg : when both are supplied, faces whose centroid
+    phi = atan2(-X_local, Y_local) lies in [phi_min_deg, phi_max_deg] are
+    removed before importing into Blender and the open edges are capped.
+    Applying the cut here (trimesh stage, before Blender import) is far more
+    reliable than a Boolean modifier for intricate or non-manifold geometries.
 
     Returns the new bpy Object.
     """
@@ -390,8 +395,14 @@ def _load_mesh(
     raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
 
     # Quadric decimation — keeps face count manageable for Blender's modifier
-    # stack (Weld + Boolean + Bevel) without degrading visual quality.
+    # stack (Weld + Bevel) without degrading visual quality.
     raw = _decimate_trimesh(raw, max_faces=30_000)
+
+    # Bake phi-sector cutaway before Blender import.  Trimesh-stage cutting is
+    # reliable for all geometry types (no manifold-cutter requirement) and
+    # works correctly with complex/intricate detector geometries.
+    if phi_min_deg is not None and phi_max_deg is not None:
+        raw = _phi_cut_trimesh(raw, phi_min_deg, phi_max_deg)
 
     verts = raw.vertices.tolist()   # list of [x, y, z]
     faces = raw.faces.tolist()      # list of [i, j, k]
@@ -1727,7 +1738,11 @@ def create_blender_scene(
         name = mesh_path.stem
         print(f"  Loading {mesh_path.name} ...")
         try:
-            obj = _load_mesh(mesh_path, name)
+            obj = _load_mesh(
+                mesh_path, name,
+                phi_min_deg=phi_min if not no_phi_cut else None,
+                phi_max_deg=phi_max if not no_phi_cut else None,
+            )
         except Exception as exc:
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
@@ -1782,31 +1797,24 @@ def create_blender_scene(
     ortho_trans = max(y_max, z_max) * 2.2
     ortho_side  = max(x_max, y_max) * 2.2
 
-    # ---- Phi-wedge Boolean cutter ----
-    # Created after scene bounds so the wedge is sized to fully cover the detector.
-    # Applied as the second modifier (after Weld, before Bevel) so edge-chamfering
-    # works on the cut surface too.
+    # ---- Phi-wedge visual reference ----
+    # The phi cut is already baked into each mesh at load time (_load_mesh above).
+    # Create a wireframe PhiWedge in the scene purely so the user can see the
+    # cut boundary in the viewport.  No Boolean modifier is applied.
     wedge_obj = None
     if not no_phi_cut:
-        # Wedge radius: 2× transverse extent covers the detector plus margin.
-        # Depth: 3× beam extent so the wedge fully brackets the longest detector.
         w_radius = max(y_max, z_max) * 2.5
         w_depth  = x_max * 3.0
         wedge_obj = _create_phi_wedge_cutter(
             phi_min, phi_max, w_radius, w_depth, col_cutters
         )
-        # Boolean + Bevel: second pass over every loaded detector object
-        for obj in loaded_objects:
-            _apply_boolean_phi_cut(obj, wedge_obj)
-            if not no_bevel:
-                _add_bevel(obj, width_mm=bevel_width_mm)
-        print(f"  [PHI] Boolean phi-cut applied to {len(loaded_objects)} objects",
-              flush=True)
-    else:
-        # No phi cut — just add Bevel
-        for obj in loaded_objects:
-            if not no_bevel:
-                _add_bevel(obj, width_mm=bevel_width_mm)
+        print(f"  [PHI] Phi cut baked into {len(loaded_objects)} mesh(es); "
+              f"PhiWedge kept as visual reference.", flush=True)
+
+    # Bevel: applied to all loaded objects (with or without phi cut)
+    for obj in loaded_objects:
+        if not no_bevel:
+            _add_bevel(obj, width_mm=bevel_width_mm)
 
     # ---- Environment sphere ----
     if not no_env_sphere:
@@ -1993,7 +2001,7 @@ def create_blender_scene(
     print(f"  Cam_Side: elevation view (X=beam left-right, Y=up)")
     if not no_phi_cut:
         print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°]  "
-              f"(live Boolean via PhiWedge cutter — adjust Phi Min/Max in modifier panel)")
+              f"(baked into mesh geometry at load time — re-run to change angles)")
     print(f"  Render: Cycles 4 K, 128 samples, OIDN denoiser")
     print(f"  Lighting: golden-hour (3000 K key) + sky fill (7500 K) + rim (4500 K)"
           f" + interior fill (warm white) + purple IP glow")

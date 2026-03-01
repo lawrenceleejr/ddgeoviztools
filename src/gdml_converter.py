@@ -96,12 +96,12 @@ def _max_placements_for_lv(lv_name: str) -> int:
 # physvols.  This cap guarantees memory safety regardless of nesting depth.
 # Empirically: ~400 physvols → 4–5 GB peak VTK memory; reduce to 100 to keep
 # peak below ~1 GB.  Very complex scenes are handled by the auto-split path.
-_GLOBAL_PHYSVOL_BUDGET = 100
+_GLOBAL_PHYSVOL_BUDGET = 50
 
 # If the pruned GDML still has more than this many physvols, automatically
 # split it into per-sub-detector GDMLs and convert each independently.
 # This bounds peak memory per conversion to roughly _GLOBAL_PHYSVOL_BUDGET × 10 MB.
-_AUTO_SPLIT_PHYSVOL_THRESHOLD = 80
+_AUTO_SPLIT_PHYSVOL_THRESHOLD = 40
 
 
 def _limit_gdml_placements(
@@ -456,15 +456,25 @@ def _convert_single(
     renWin = _find_renwin(viewer)
     renWin.SetOffScreenRendering(1)
 
+    # ---- Pre-render decimation: caps peak VTK render memory ----
+    # Complex solids (polycones, tessellated volumes) can produce millions of
+    # faces per actor after pyg4ometry tessellation.  Decimating the mapper
+    # inputs *before* Render() prevents the renderer from holding all that
+    # data in RAM simultaneously.  This is the most effective point to
+    # reduce memory for intricate geometries.
+    t0 = time.monotonic()
+    _decimate_vtk_actors(ren, target_faces_per_actor=10_000)
+    print(f"  [{_ts()}] Pre-render decimation done ({_elapsed(t0)})", flush=True)
+
     t0 = time.monotonic()
     print(f"  [{_ts()}] Rendering ...", flush=True)
     renWin.Render()
     print(f"  [{_ts()}] Render done ({_elapsed(t0)})", flush=True)
 
-    # ---- Decimate VTK actors before export ----
+    # ---- Post-render decimation (safety net for any geometry added by render) ----
     t0 = time.monotonic()
     _decimate_vtk_actors(ren, target_faces_per_actor=20_000)
-    print(f"  [{_ts()}] Actor decimation done ({_elapsed(t0)})", flush=True)
+    print(f"  [{_ts()}] Post-render decimation done ({_elapsed(t0)})", flush=True)
 
     # ---- Export ----
     t0 = time.monotonic()
