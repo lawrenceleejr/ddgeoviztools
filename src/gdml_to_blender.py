@@ -236,9 +236,16 @@ def _load_mesh(filepath: Path, name: str):
     if isinstance(raw, trimesh.Scene):
         # Flatten a multi-mesh scene into one mesh, but first remove any
         # world-volume box that VTK's GLTF exporter embeds in every file.
-        sub_meshes = list(raw.geometry.values())
+        # GLTF files can also contain camera/light/curve nodes that trimesh
+        # deserialises as Path3D or other non-Trimesh types — drop those first.
+        all_geoms = list(raw.geometry.values())
+        sub_meshes = [m for m in all_geoms if isinstance(m, trimesh.Trimesh)]
+        n_skipped = len(all_geoms) - len(sub_meshes)
+        if n_skipped:
+            print(f"    [LOAD] Skipped {n_skipped} non-triangle geometry object(s) "
+                  f"(Path3D / camera / curve nodes)", flush=True)
         if not sub_meshes:
-            raise ValueError(f"No geometry found in {filepath}")
+            raise ValueError(f"No triangle meshes found in {filepath}")
         sub_meshes = _filter_world_volumes(sub_meshes)
         sub_meshes = _thin_repeated_layers(sub_meshes)
         raw = trimesh.util.concatenate(sub_meshes)
