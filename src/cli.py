@@ -120,7 +120,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
     print(f"Converting {args.gdml_file}  →  {output_path}  [{fmt.upper()}]", flush=True)
     try:
-        convert_gdml(
+        written = convert_gdml(
             input_path=args.gdml_file,
             output_path=output_path,
             fmt=fmt,
@@ -129,7 +129,12 @@ def cmd_convert(args: argparse.Namespace) -> int:
         print(f"\nError: {exc}", file=sys.stderr, flush=True)
         return 1
 
-    print(f"\nDone — wrote {output_path}", flush=True)
+    if len(written) == 1:
+        print(f"\nDone — wrote {written[0]}", flush=True)
+    else:
+        print(f"\nDone — wrote {len(written)} file(s):", flush=True)
+        for p in written:
+            print(f"  {p}", flush=True)
     return 0
 
 

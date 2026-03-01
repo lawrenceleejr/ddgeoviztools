@@ -94,7 +94,14 @@ def _max_placements_for_lv(lv_name: str) -> int:
 # GDML across the entire <structure> section.  Even with per-LV caps,
 # a geometry with many different LV names can still produce thousands of
 # physvols.  This cap guarantees memory safety regardless of nesting depth.
-_GLOBAL_PHYSVOL_BUDGET = 400
+# Empirically: ~400 physvols → 4–5 GB peak VTK memory; reduce to 100 to keep
+# peak below ~1 GB.  Very complex scenes are handled by the auto-split path.
+_GLOBAL_PHYSVOL_BUDGET = 100
+
+# If the pruned GDML still has more than this many physvols, automatically
+# split it into per-sub-detector GDMLs and convert each independently.
+# This bounds peak memory per conversion to roughly _GLOBAL_PHYSVOL_BUDGET × 10 MB.
+_AUTO_SPLIT_PHYSVOL_THRESHOLD = 80
 
 
 def _limit_gdml_placements(
@@ -263,6 +270,71 @@ def _decimate_vtk_actors(ren, target_faces_per_actor: int = 20_000):
           f"(target ≤{target_faces_per_actor:,} faces each)", flush=True)
 
 
+def _count_physvols_in_gdml(gdml_path: "Path") -> int:
+    """
+    Count the total number of <physvol> elements in a GDML file's <structure>
+    section.  Uses lxml for speed; returns 0 if lxml is unavailable.
+    """
+    try:
+        from lxml import etree
+    except ImportError:
+        return 0
+    try:
+        tree = etree.parse(str(gdml_path))
+        root = tree.getroot()
+        ns_uri = root.nsmap.get(None, "")
+        ns_pfx = f"{{{ns_uri}}}" if ns_uri else ""
+        structure = root.find(f"{ns_pfx}structure")
+        if structure is None:
+            return 0
+        return sum(
+            len(lv.findall(f"{ns_pfx}physvol"))
+            for lv in structure.findall(f"{ns_pfx}volume")
+        )
+    except Exception:
+        return 0
+
+
+def _write_vtk_export(
+    ren: "vtk.vtkRenderer",
+    renWin: "vtk.vtkRenderWindow",
+    output_path: "Path",
+    fmt: str,
+) -> None:
+    """Write the current VTK scene to *output_path* in the requested format."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if fmt in ("gltf", "glb"):
+        exp = vtk.vtkGLTFExporter()
+        exp.SetFileName(str(output_path))
+        exp.SetActiveRenderer(ren)
+        exp.SetRenderWindow(renWin)
+        exp.InlineDataOn()
+        exp.Write()
+    elif fmt == "obj":
+        prefix = str(output_path.with_suffix(""))
+        exp = vtk.vtkOBJExporter()
+        exp.SetFilePrefix(prefix)
+        exp.SetRenderWindow(renWin)
+        exp.Write()
+    elif fmt == "vtp":
+        exp = vtk.vtkSingleVTPExporter()
+        exp.SetFileName(str(output_path))
+        exp.SetRenderWindow(renWin)
+        exp.Write()
+
+
+def _find_renwin(viewer) -> "vtk.vtkRenderWindow":
+    """Locate the vtkRenderWindow inside a VtkViewer instance."""
+    for attr in ("renWin", "renderWindow", "window", "_renWin"):
+        candidate = getattr(viewer, attr, None)
+        if isinstance(candidate, vtk.vtkRenderWindow):
+            return candidate
+    for val in vars(viewer).values():
+        if isinstance(val, vtk.vtkRenderWindow):
+            return val
+    raise RuntimeError("Could not locate a vtkRenderWindow on the VtkViewer object.")
+
+
 def _ts() -> str:
     """Current wall-clock timestamp string, e.g. '18:23:01'."""
     return time.strftime("%H:%M:%S")
@@ -275,6 +347,137 @@ def _elapsed(t0: float) -> str:
         return f"{s:.1f}s"
     m, s = divmod(s, 60)
     return f"{int(m)}m{s:.0f}s"
+
+
+def _auto_split_and_convert(
+    gdml_path: "Path",
+    output_path: "Path",
+    fmt: str,
+    t_total: float,
+) -> "list[Path]":
+    """
+    Split *gdml_path* into per-sub-detector GDMLs using gdml_splitter, then
+    convert each piece independently so that peak VTK memory is bounded by
+    _GLOBAL_PHYSVOL_BUDGET × tessellation cost rather than the whole scene.
+
+    Each output file is named  <output_path.stem>_det<NNN>_<lv_name>.<fmt>.
+    Returns the list of successfully written output paths.
+    """
+    import gc
+    import shutil
+    import tempfile
+
+    # Import the GDML splitter (pure lxml, no VTK/pyg4ometry needed here)
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from gdml_splitter import split_gdml
+    except ImportError as exc:
+        print(f"  [{_ts()}] [AUTO-SPLIT] Cannot import gdml_splitter: {exc} "
+              f"— falling back to single-pass (high memory)", flush=True)
+        return _convert_single(gdml_path, output_path, fmt, t_total)
+
+    split_dir = Path(tempfile.mkdtemp(prefix="ddgeo_split_"))
+    print(f"  [{_ts()}] [AUTO-SPLIT] Splitting into per-sub-detector GDMLs → "
+          f"{split_dir}/", flush=True)
+    try:
+        split_files = split_gdml(gdml_path, split_dir, depth=1)
+    except Exception as exc:
+        print(f"  [{_ts()}] [AUTO-SPLIT] Split failed: {exc} — "
+              f"falling back to single-pass", flush=True)
+        shutil.rmtree(split_dir, ignore_errors=True)
+        return _convert_single(gdml_path, output_path, fmt, t_total)
+
+    if not split_files:
+        print(f"  [{_ts()}] [AUTO-SPLIT] No sub-detectors found — "
+              f"falling back to single-pass", flush=True)
+        shutil.rmtree(split_dir, ignore_errors=True)
+        return _convert_single(gdml_path, output_path, fmt, t_total)
+
+    output_dir = output_path.parent
+    stem       = output_path.stem
+    results: list[Path] = []
+
+    for i, (lv_name, sub_gdml) in enumerate(split_files):
+        safe_name  = lv_name[:30].replace("/", "_").replace(" ", "_")
+        chunk_path = output_dir / f"{stem}_det{i:03d}_{safe_name}.{fmt}"
+        print(f"  [{_ts()}] [AUTO-SPLIT] [{i+1}/{len(split_files)}] "
+              f"Converting {lv_name!r} → {chunk_path.name}", flush=True)
+        try:
+            # Recursive call: each sub-GDML will be pruned again; if it's still
+            # above threshold we recurse, but in practice split pieces are small.
+            partial = convert_gdml(sub_gdml, chunk_path, fmt)
+            results.extend(partial)
+        except Exception as exc:
+            print(f"  [{_ts()}] [AUTO-SPLIT] [{lv_name}] failed: {exc}",
+                  flush=True)
+        # Encourage Python/VTK to release the previous chunk's memory
+        gc.collect()
+
+    shutil.rmtree(split_dir, ignore_errors=True)
+
+    total_sz = sum(p.stat().st_size for p in results if p.exists()) / 1e6
+    print(
+        f"  [{_ts()}] [AUTO-SPLIT] Done — {len(results)} file(s), "
+        f"{total_sz:.1f} MB total  ({_elapsed(t_total)})",
+        flush=True,
+    )
+    return results
+
+
+def _convert_single(
+    gdml_path: "Path",
+    output_path: "Path",
+    fmt: str,
+    t_total: float,
+) -> "list[Path]":
+    """
+    Inner single-GDML conversion pipeline (build VTK scene, render, export).
+    Called by convert_gdml after pruning has already been applied.
+    Returns a one-element list containing the output path on success.
+    """
+    # ---- Read GDML ----
+    t0 = time.monotonic()
+    print(f"  [{_ts()}] Reading {Path(gdml_path).name} ...", flush=True)
+    reader = pg4.gdml.Reader(str(gdml_path))
+    reg    = reader.getRegistry()
+    world  = reg.getWorldVolume()
+    n_volumes = len(reg.logicalVolumeDict)
+    print(f"  [{_ts()}] Read done ({_elapsed(t0)}) — {n_volumes} logical volumes",
+          flush=True)
+
+    # ---- Build scene ----
+    t0 = time.monotonic()
+    print(f"  [{_ts()}] Building geometry scene ...", flush=True)
+    viewer = _offscreen_viewer()
+    viewer.addLogicalVolume(world)
+    print(f"  [{_ts()}] Scene built ({_elapsed(t0)})", flush=True)
+
+    ren    = viewer.ren
+    renWin = _find_renwin(viewer)
+    renWin.SetOffScreenRendering(1)
+
+    t0 = time.monotonic()
+    print(f"  [{_ts()}] Rendering ...", flush=True)
+    renWin.Render()
+    print(f"  [{_ts()}] Render done ({_elapsed(t0)})", flush=True)
+
+    # ---- Decimate VTK actors before export ----
+    t0 = time.monotonic()
+    _decimate_vtk_actors(ren, target_faces_per_actor=20_000)
+    print(f"  [{_ts()}] Actor decimation done ({_elapsed(t0)})", flush=True)
+
+    # ---- Export ----
+    t0 = time.monotonic()
+    print(f"  [{_ts()}] Exporting {fmt.upper()} → {output_path} ...", flush=True)
+    _write_vtk_export(ren, renWin, output_path, fmt)
+
+    sz = output_path.stat().st_size if output_path.exists() else 0
+    print(
+        f"  [{_ts()}] Export done ({_elapsed(t0)}) — "
+        f"{sz/1e6:.1f} MB  total: {_elapsed(t_total)}",
+        flush=True,
+    )
+    return [output_path]
 
 
 def _offscreen_viewer() -> pg4.visualisation.VtkViewer:
@@ -313,20 +516,28 @@ def convert_gdml(
     input_path: str | Path,
     output_path: str | Path,
     fmt: str = "gltf",
-) -> Path:
+) -> "list[Path]":
     """
     Convert a GDML file to OBJ, GLTF (or GLB), or VTP.
+
+    For geometrically complex inputs the GDML is first pruned to remove
+    repeated identical placements.  If the pruned scene still exceeds
+    _AUTO_SPLIT_PHYSVOL_THRESHOLD physvols it is automatically split into one
+    GDML per top-level sub-detector and each is converted independently,
+    keeping peak VTK memory bounded.
 
     Parameters
     ----------
     input_path  : path to the input GDML file
-    output_path : path for the output file
+    output_path : path for the primary output file; when auto-splitting, sibling
+                  files named <stem>_det<NNN>_<lv_name>.<fmt> are written
     fmt         : one of 'gltf', 'glb', 'obj', 'vtp'
                   (inferred from output_path suffix when not supplied)
 
     Returns
     -------
-    Path of the written output file.
+    List of written output Path objects (one per converted sub-detector, or
+    a single-element list for simple scenes).
     """
     input_path  = Path(input_path)
     output_path = Path(output_path)
@@ -348,85 +559,15 @@ def convert_gdml(
     if gdml_to_load != input_path:
         print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
 
-    # ---- Read GDML ----
-    t0 = time.monotonic()
-    print(f"  [{_ts()}] Reading {Path(gdml_to_load).name} ...", flush=True)
-    reader = pg4.gdml.Reader(str(gdml_to_load))
-    reg    = reader.getRegistry()
-    world  = reg.getWorldVolume()
-    n_volumes = len(reg.logicalVolumeDict)
-    print(f"  [{_ts()}] Read done ({_elapsed(t0)}) — {n_volumes} logical volumes", flush=True)
+    # ---- Complexity check: auto-split if still too many physvols ----
+    remaining_pvs = _count_physvols_in_gdml(gdml_to_load)
+    print(f"  [{_ts()}] {remaining_pvs} physvols after pruning "
+          f"(threshold={_AUTO_SPLIT_PHYSVOL_THRESHOLD})", flush=True)
 
-    # ---- Build scene ----
-    t0 = time.monotonic()
-    print(f"  [{_ts()}] Building geometry scene ...", flush=True)
-    viewer = _offscreen_viewer()
-    viewer.addLogicalVolume(world)
-    print(f"  [{_ts()}] Scene built ({_elapsed(t0)})", flush=True)
+    if remaining_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD:
+        print(f"  [{_ts()}] Scene is complex — splitting into per-sub-detector "
+              f"chunks to keep peak memory bounded ...", flush=True)
+        return _auto_split_and_convert(gdml_to_load, output_path, fmt, t_total)
 
-    # Locate renderer and render window from the (now populated) viewer
-    ren    = viewer.ren
-    renWin = None
-    for attr in ("renWin", "renderWindow", "window", "_renWin"):
-        candidate = getattr(viewer, attr, None)
-        if isinstance(candidate, vtk.vtkRenderWindow):
-            renWin = candidate
-            break
-    if renWin is None:
-        for val in vars(viewer).values():
-            if isinstance(val, vtk.vtkRenderWindow):
-                renWin = val
-                break
-    if renWin is None:
-        raise RuntimeError("VTK render window lost after addLogicalVolume().")
-
-    renWin.SetOffScreenRendering(1)
-
-    t0 = time.monotonic()
-    print(f"  [{_ts()}] Rendering ...", flush=True)
-    renWin.Render()
-    print(f"  [{_ts()}] Render done ({_elapsed(t0)})", flush=True)
-
-    # ---- Decimate VTK actors before export ----
-    # Reduces per-actor face counts to ≤20 K triangles via QEM decimation.
-    # This shrinks GLTF file sizes dramatically for tracker-heavy geometries
-    # (thousands of small modules with dense tessellations) while keeping all
-    # visible shapes intact for photorealistic rendering.
-    t0 = time.monotonic()
-    _decimate_vtk_actors(ren, target_faces_per_actor=20_000)
-    print(f"  [{_ts()}] Actor decimation done ({_elapsed(t0)})", flush=True)
-
-    # ---- Export ----
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    t0 = time.monotonic()
-    print(f"  [{_ts()}] Exporting {fmt.upper()} → {output_path} ...", flush=True)
-
-    if fmt in ("gltf", "glb"):
-        exp = vtk.vtkGLTFExporter()
-        exp.SetFileName(str(output_path))
-        exp.SetActiveRenderer(ren)
-        exp.SetRenderWindow(renWin)
-        exp.InlineDataOn()
-        exp.Write()
-
-    elif fmt == "obj":
-        prefix = str(output_path.with_suffix(""))
-        exp = vtk.vtkOBJExporter()
-        exp.SetFilePrefix(prefix)
-        exp.SetRenderWindow(renWin)
-        exp.Write()
-
-    elif fmt == "vtp":
-        exp = vtk.vtkSingleVTPExporter()
-        exp.SetFileName(str(output_path))
-        exp.SetRenderWindow(renWin)
-        exp.Write()
-
-    sz = output_path.stat().st_size if output_path.exists() else 0
-    print(
-        f"  [{_ts()}] Export done ({_elapsed(t0)}) — "
-        f"{sz/1e6:.1f} MB  total: {_elapsed(t_total)}",
-        flush=True,
-    )
-
-    return output_path
+    # ---- Single-pass conversion ----
+    return _convert_single(gdml_to_load, output_path, fmt, t_total)

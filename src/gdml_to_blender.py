@@ -103,7 +103,10 @@ _DETECTOR_MATERIALS = [
 
 def _make_material(name: str, color_rgb: tuple, metallic: float, roughness: float):
     mat = bpy.data.materials.new(name=name)
-    mat.use_nodes = True
+    # Blender 5+: materials always have node_tree; use_nodes is deprecated.
+    # Blender 4.x: need to enable nodes explicitly.
+    if mat.node_tree is None:
+        mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     bsdf.inputs["Base Color"].default_value = (*color_rgb, 1.0)
     bsdf.inputs["Metallic"].default_value = metallic
@@ -1104,7 +1107,8 @@ def _add_environment_sphere(radius: float):
     bpy.data.scenes[0].collection.objects.link(obj)
 
     mat = bpy.data.materials.new("EnvironmentMatte")
-    mat.use_nodes = True
+    if mat.node_tree is None:
+        mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     if bsdf:
         bsdf.inputs["Base Color"].default_value = (0.88, 0.88, 0.90, 1.0)
@@ -1367,7 +1371,10 @@ def _add_volume_scatter_sphere(radius: float):
     # 5.0 save_as_mainfile.  Instead keep the default Principled BSDF (set
     # Alpha=0 so it's transparent) and wire Volume Scatter into the Volume
     # socket of the same Material Output node.
-    mat  = bpy.data.materials.new("GodRayScatter")
+    mat = bpy.data.materials.new("GodRayScatter")
+    # Blender 5+: node_tree is always present; Blender 4.x needs use_nodes=True.
+    if mat.node_tree is None:
+        mat.use_nodes = True
     tree  = mat.node_tree
     nodes = tree.nodes
     links = tree.links
@@ -1376,7 +1383,15 @@ def _add_volume_scatter_sphere(radius: float):
     bsdf = nodes.get("Principled BSDF")
     if bsdf and "Alpha" in bsdf.inputs:
         bsdf.inputs["Alpha"].default_value = 0.0
-    mat.blend_method = "BLEND"      # enable alpha blending (4.x name)
+    # Enable alpha blending so the transparent surface doesn't occlude the volume.
+    # Property name changed between Blender 4.x and 5.x — try both.
+    try:
+        mat.blend_method = "BLEND"          # Blender 4.x
+    except (AttributeError, TypeError):
+        try:
+            mat.surface_render_method = "BLENDED"   # Blender 5.x
+        except (AttributeError, TypeError):
+            pass
 
     # Find or create the Material Output node
     out = next((n for n in nodes if n.type == "OUTPUT_MATERIAL"), None)
@@ -1468,7 +1483,9 @@ def _setup_world():
     else:
         world = bpy.data.worlds.new("World")
     bpy.data.scenes[0].world = world
-    world.use_nodes = True
+    # Blender 5+: world always uses nodes; use_nodes is deprecated.
+    if world.node_tree is None:
+        world.use_nodes = True
 
     tree  = world.node_tree
     nodes = tree.nodes
