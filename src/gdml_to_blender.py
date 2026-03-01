@@ -1252,6 +1252,114 @@ def _add_point_light(
 
 
 # ---------------------------------------------------------------------------
+# Volumetric god rays  (render-only, Blender 5 safe)
+# ---------------------------------------------------------------------------
+
+def _add_volume_scatter_sphere(radius: float):
+    """
+    Place a large invisible sphere filled with a Volume Scatter medium.
+
+    When a spot light shines through the phi-cut opening the scattered
+    photons produce visible light shafts ("god rays") in Cycles.
+
+    The object is *hidden from the viewport* (so it never blocks editing)
+    but is *visible in renders* — the opposite of the wedge cutter.
+    A ShaderNodeVolumeScatter node is safe in an OBJECT material node tree
+    on both Blender 4.x and 5.0+.  (Only the WORLD node tree crashes on 5.0+
+    with Principled Volume; object materials are unaffected.)
+    """
+    import bmesh as _bm
+
+    mesh = bpy.data.meshes.new("GodRayVolume")
+    bm   = _bm.new()
+    _bm.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=radius)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+
+    obj = bpy.data.objects.new("GodRayVolume", mesh)
+    bpy.data.scenes[0].collection.objects.link(obj)
+
+    # Hidden in viewport (show_in_front kept False); rendered normally
+    obj.hide_viewport = True
+    obj.hide_render   = False
+
+    # Volume Scatter material — extremely low density so it's atmospheric
+    mat           = bpy.data.materials.new("GodRayScatter")
+    mat.use_nodes = True
+    tree  = mat.node_tree
+    nodes = tree.nodes
+    links = tree.links
+    nodes.clear()
+
+    scatter       = nodes.new("ShaderNodeVolumeScatter")
+    scatter.inputs["Density"].default_value    = 3e-4   # subtle atmospheric haze
+    scatter.inputs["Anisotropy"].default_value = 0.6    # forward-scatter → ray glints
+    scatter.location = (-200, 0)
+
+    out = nodes.new("ShaderNodeOutputMaterial")
+    out.location = (100, 0)
+    links.new(scatter.outputs["Volume"], out.inputs["Volume"])
+
+    obj.data.materials.append(mat)
+    print(f"  [GODRAYS] Volume scatter sphere: radius={radius:.1f} BU "
+          f"density=3e-4 anisotropy=0.6  (render-only)", flush=True)
+    return obj
+
+
+def _add_god_ray_spot(
+    name: str,
+    phi_center_deg: float,
+    radius: float,
+    x_max: float,
+    energy_base: float,
+):
+    """
+    Add a spot light aimed through the phi-cut opening to drive god rays.
+
+    The spot is placed outside the detector at the phi bisector direction,
+    aimed toward the IP so the beam passes through the cut opening.
+    It is visible ONLY in renders (hide_viewport=True, hide_render=False).
+    """
+    phi_rad = math.radians(phi_center_deg)
+
+    # Position: outside the detector, elevated above the opening
+    dist = radius * 2.2
+    loc  = (
+        x_max * 0.3,                            # slightly off-centre along beam
+        dist * math.cos(phi_rad) * 1.1,         # transverse Y (phi=0→+Y)
+        dist * math.sin(phi_rad) * 1.1,         # transverse Z (phi=90→+Z)
+    )
+    target = (0.0, 0.0, 0.0)   # point at IP
+
+    light_data        = bpy.data.lights.new(name, type="SPOT")
+    light_data.energy = energy_base * 600.0
+    light_data.color  = (0.95, 0.92, 0.80)     # warm golden-white
+    light_data.spot_size   = math.radians(35)   # 35° cone — wide enough to fill opening
+    light_data.spot_blend  = 0.25               # soft penumbra
+    # Shadow cast ON so the beam terminates at detector surfaces (essential for rays)
+    try:
+        light_data.use_shadow = True
+    except AttributeError:
+        pass
+
+    light_obj = bpy.data.objects.new(name, light_data)
+    bpy.data.scenes[0].collection.objects.link(light_obj)
+    light_obj.location = Vector(loc)
+
+    direction = (Vector(target) - Vector(loc)).normalized()
+    light_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+
+    # Render-only: hidden from viewport so it doesn't clutter editing
+    light_obj.hide_viewport = True
+    light_obj.hide_render   = False
+
+    print(f"  [GODRAYS] Spot light '{name}'  phi={phi_center_deg:.1f}°  "
+          f"energy={energy_base * 600:.0f} W  (render-only)", flush=True)
+    return light_obj
+
+
+# ---------------------------------------------------------------------------
 # World shader — dark space background + volumetric mist
 # ---------------------------------------------------------------------------
 
@@ -1762,6 +1870,25 @@ def create_blender_scene(
           f"key={energy_base*400:.0f} W, fill={energy_base*72:.0f} W, "
           f"rim={energy_base*120:.0f} W, interior={energy_base*300:.0f} W, "
           f"IP={energy_base*80:.0f} W)", flush=True)
+
+    # ---- Volumetric god rays (render-only) ----
+    # A large Volume Scatter sphere (hidden from viewport, visible in render)
+    # provides the participating medium.  A spot light aimed through the
+    # phi-cut opening scatters photons inside this medium, producing visible
+    # light shafts (god rays) when rendered with Cycles.
+    # Both objects are render-only so they never clutter the editing viewport.
+    _phi_center_deg = (phi_min + phi_max) / 2.0 if not no_phi_cut else 45.0
+    vol_sphere = _add_volume_scatter_sphere(r * 1.75)
+    _link_to_collection(vol_sphere, col_lights)
+    if not no_phi_cut:
+        god_ray_spot = _add_god_ray_spot(
+            "Light_GodRay_Spot",
+            phi_center_deg=_phi_center_deg,
+            radius=r,
+            x_max=x_max,
+            energy_base=energy_base,
+        )
+        _link_to_collection(god_ray_spot, col_lights)
 
     # ---- Render settings + compositor bloom ----
     print(f"  [SETUP] Configuring render settings ...", flush=True)
