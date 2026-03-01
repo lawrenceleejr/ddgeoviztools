@@ -371,13 +371,32 @@ def _load_mesh(
     raw = trimesh.load(str(filepath), process=False)
 
     if isinstance(raw, trimesh.Scene):
-        # Flatten a multi-mesh scene into one mesh, but first remove any
-        # world-volume box that VTK's GLTF exporter embeds in every file.
-        # GLTF files can also contain camera/light/curve nodes that trimesh
-        # deserialises as Path3D or other non-Trimesh types — drop those first.
-        all_geoms = list(raw.geometry.values())
-        sub_meshes = [m for m in all_geoms if isinstance(m, trimesh.Trimesh)]
-        n_skipped = len(all_geoms) - len(sub_meshes)
+        # Apply scene-graph node transforms so mesh vertices end up in GDML
+        # world-space coordinates rather than each actor's local frame.
+        # VTK's GLTF exporter stores each actor's polydata in its own local
+        # space and encodes the world position as a separate node transform;
+        # without applying that transform, off-axis placements (staves, crystals
+        # at large radii) would have all centroids near the local origin and
+        # yield a wrong phi for the GN cutaway modifier.
+        sub_meshes = []
+        try:
+            for node_name in raw.graph.nodes_geometry:
+                transform, geom_name = raw.graph[node_name]
+                geom = raw.geometry.get(geom_name)
+                if isinstance(geom, trimesh.Trimesh):
+                    world_mesh = geom.copy()
+                    world_mesh.apply_transform(transform)
+                    sub_meshes.append(world_mesh)
+        except Exception as exc:
+            print(f"    [LOAD] GLTF transform pass failed ({exc}); "
+                  f"falling back to local-frame geometry", flush=True)
+            sub_meshes = []
+        if not sub_meshes:
+            # Fallback: use geometry values without scene-graph transforms
+            all_geoms = list(raw.geometry.values())
+            sub_meshes = [m for m in all_geoms if isinstance(m, trimesh.Trimesh)]
+        n_skipped = sum(1 for g in raw.geometry.values()
+                        if not isinstance(g, trimesh.Trimesh))
         if n_skipped:
             print(f"    [LOAD] Skipped {n_skipped} non-triangle geometry object(s) "
                   f"(Path3D / camera / curve nodes)", flush=True)
@@ -1663,10 +1682,11 @@ def create_blender_scene(
     mesh_dir       : directory containing *.{fmt} files (one per sub-detector)
     output_path    : where to write the .blend file
     fmt            : input mesh format ('gltf', 'glb', 'obj', 'vtp')
-    phi_min        : phi cut-sector start angle (degrees, default 0).
-                     Faces whose centroid phi lies in [phi_min, phi_max] are
-                     removed, exposing the detector interior.
-    phi_max        : phi cut-sector end angle (degrees, default 90)
+    phi_min        : phi sector start angle (degrees, default 0).
+                     Only faces whose centroid phi lies in [phi_min, phi_max]
+                     are kept — the detector is shown in this angular window.
+                     Adjustable live via the 'PhiCutaway' modifier panel.
+    phi_max        : phi sector end angle (degrees, default 90)
     no_phi_cut     : if True, skip phi-cutaway entirely (show full detector)
     weld_threshold : distance for Weld modifier in mm (default 1e-4)
     bevel_width_mm : edge chamfer width in mm for specular highlights (default 0.2)
@@ -1787,25 +1807,35 @@ def create_blender_scene(
     ortho_trans = max(y_max, z_max) * 2.2
     ortho_side  = max(x_max, y_max) * 2.2
 
-    # ---- Phi-wedge Boolean cutter ----
-    # Created after scene bounds so the wedge is sized to fully cover the detector.
-    # Applied as the second modifier (after Weld, before Bevel) so edge-chamfering
-    # works on the cut surface too.
-    wedge_obj = None
+    # ---- Phi-cutaway Geometry Nodes modifier ----
+    # The GN modifier keeps only faces whose pre-baked 'phi_deg' face attribute
+    # falls in [phi_min, phi_max], showing a phi sector of each detector object.
+    # phi_deg is stored as a FACE attribute before any other modifiers so it
+    # survives the Weld pass (face count is unchanged by welding).
+    # The modifier exposes 'Phi Min' and 'Phi Max' sockets directly in Blender's
+    # modifier panel — the user can adjust the phi window live without re-running
+    # any script.  Falls back to one-shot bmesh deletion if GN build fails.
     if not no_phi_cut:
-        # Wedge radius: 2.5× transverse extent; depth: 3× beam extent.
-        w_radius = max(y_max, z_max) * 2.5
-        w_depth  = x_max * 3.0
-        wedge_obj = _create_phi_wedge_cutter(
-            phi_min, phi_max, w_radius, w_depth, col_cutters
-        )
-        # Boolean DIFFERENCE + Bevel: second pass over every loaded detector object
-        for obj in loaded_objects:
-            _apply_boolean_phi_cut(obj, wedge_obj)
-            if not no_bevel:
-                _add_bevel(obj, width_mm=bevel_width_mm)
-        print(f"  [PHI] Boolean phi-cut applied to {len(loaded_objects)} objects",
-              flush=True)
+        print(f"  [PHI] Building phi-cutaway GN modifier "
+              f"[{phi_min:.1f}°, {phi_max:.1f}°] ...", flush=True)
+        ng = _phi_cutaway_node_group(phi_min, phi_max)
+        if ng is not None:
+            for obj in loaded_objects:
+                _precompute_phi_face_attribute(obj)
+                _add_phi_cutaway(obj, ng, phi_min, phi_max, ctrl_obj=None)
+                if not no_bevel:
+                    _add_bevel(obj, width_mm=bevel_width_mm)
+            print(f"  [PHI] GN phi-cutaway applied to {len(loaded_objects)} objects "
+                  f"— adjust 'Phi Min' / 'Phi Max' in modifier panel to update live.",
+                  flush=True)
+        else:
+            # GN build failed — fall back to one-shot bmesh cutaway
+            print(f"  [PHI] GN build failed — falling back to bmesh cutaway",
+                  flush=True)
+            for obj in loaded_objects:
+                _apply_phi_cutaway_bmesh(obj, phi_min, phi_max)
+                if not no_bevel:
+                    _add_bevel(obj, width_mm=bevel_width_mm)
     else:
         # No phi cut — just add Bevel
         for obj in loaded_objects:
