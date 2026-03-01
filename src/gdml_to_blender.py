@@ -1216,7 +1216,19 @@ def _set_light_temperature(light_data, name: str, energy: float,
             print(f"  [LIGHT] {name}  color_mode=TEMPERATURE failed: {exc}",
                   flush=True)
 
-    # --- Attempt 2: ShaderNodeBlackbody in node tree ---
+    # On Blender 5.0+ skip the ShaderNodeBlackbody-in-light-tree approach.
+    # Those node trees crash save_as_mainfile on 5.0 (same root cause as the
+    # world Principled Volume crash).  Fall straight through to RGB approx.
+    if bpy.app.version >= (5, 0, 0):
+        r, g, b = _kelvin_to_rgb(temp_kelvin)
+        light_data.color = (r, g, b)
+        print(f"  [LIGHT] {name}  {energy:.0f} W  "
+              f"{temp_kelvin:.0f} K → rgb({r:.3f},{g:.3f},{b:.3f})  "
+              f"(RGB approx — Blackbody node skipped on Blender 5+)",
+              flush=True)
+        return
+
+    # --- Attempt 2: ShaderNodeBlackbody in node tree (Blender 3.x / 4.x) ---
     try:
         light_data.use_nodes = True
         tree     = light_data.node_tree
@@ -1326,9 +1338,12 @@ def _add_volume_scatter_sphere(radius: float):
 
     The object is *hidden from the viewport* (so it never blocks editing)
     but is *visible in renders* — the opposite of the wedge cutter.
-    A ShaderNodeVolumeScatter node is safe in an OBJECT material node tree
-    on both Blender 4.x and 5.0+.  (Only the WORLD node tree crashes on 5.0+
-    with Principled Volume; object materials are unaffected.)
+    Volume Scatter is added to the material's Volume socket while leaving the
+    existing Principled BSDF → Surface connection in place.  Keeping the
+    surface shader prevents the "Using fallback" crash that occurs in Blender
+    5.0 when save_as_mainfile serialises a material whose Surface socket is
+    empty.  The sphere's surface is set fully transparent so only the volume
+    contribution is visible in renders.
     """
     import bmesh as _bm
 
@@ -1342,25 +1357,38 @@ def _add_volume_scatter_sphere(radius: float):
     obj = bpy.data.objects.new("GodRayVolume", mesh)
     bpy.data.scenes[0].collection.objects.link(obj)
 
-    # Hidden in viewport (show_in_front kept False); rendered normally
+    # Hidden in viewport; rendered (volume only — surface is transparent)
     obj.hide_viewport = True
     obj.hide_render   = False
 
-    # Volume Scatter material — extremely low density so it's atmospheric
-    mat           = bpy.data.materials.new("GodRayScatter")
-    mat.use_nodes = True
+    # Volume Scatter material.
+    # IMPORTANT: do NOT call nodes.clear() — removing the Surface shader
+    # produces a material with an empty Surface socket which crashes Blender
+    # 5.0 save_as_mainfile.  Instead keep the default Principled BSDF (set
+    # Alpha=0 so it's transparent) and wire Volume Scatter into the Volume
+    # socket of the same Material Output node.
+    mat  = bpy.data.materials.new("GodRayScatter")
     tree  = mat.node_tree
     nodes = tree.nodes
     links = tree.links
-    nodes.clear()
 
-    scatter       = nodes.new("ShaderNodeVolumeScatter")
+    # Make the surface fully transparent (alpha=0) so only volume is visible
+    bsdf = nodes.get("Principled BSDF")
+    if bsdf and "Alpha" in bsdf.inputs:
+        bsdf.inputs["Alpha"].default_value = 0.0
+    mat.blend_method = "BLEND"      # enable alpha blending (4.x name)
+
+    # Find or create the Material Output node
+    out = next((n for n in nodes if n.type == "OUTPUT_MATERIAL"), None)
+    if out is None:
+        out = nodes.new("ShaderNodeOutputMaterial")
+    out.location = (300, 0)
+
+    # Add Volume Scatter and wire to Volume socket
+    scatter = nodes.new("ShaderNodeVolumeScatter")
     scatter.inputs["Density"].default_value    = 3e-4   # subtle atmospheric haze
     scatter.inputs["Anisotropy"].default_value = 0.6    # forward-scatter → ray glints
-    scatter.location = (-200, 0)
-
-    out = nodes.new("ShaderNodeOutputMaterial")
-    out.location = (100, 0)
+    scatter.location = (0, -150)
     links.new(scatter.outputs["Volume"], out.inputs["Volume"])
 
     obj.data.materials.append(mat)
