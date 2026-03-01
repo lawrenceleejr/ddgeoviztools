@@ -1056,13 +1056,21 @@ def _create_phi_wedge_cutter(
 def _apply_boolean_phi_cut(det_obj, wedge_obj):
     """
     Add a Boolean DIFFERENCE modifier to *det_obj* that uses *wedge_obj* as
-    the cutter.  The Fast solver is robust with the slightly open sector mesh
-    produced by the GN filter.
+    the cutter.
+
+    Blender 5.0 renamed the fast/float solver: 'FAST' → 'FLOAT'.
+    Try the version-appropriate name and fall back silently.
     """
     mod           = det_obj.modifiers.new("PhiBoolean", "BOOLEAN")
     mod.operation = "DIFFERENCE"
     mod.object    = wedge_obj
-    mod.solver    = "FAST"
+    # Blender 4.x: 'FAST' | Blender 5.0+: 'FLOAT' (same algorithm, renamed)
+    for solver in ("FLOAT", "FAST"):
+        try:
+            mod.solver = solver
+            break
+        except TypeError:
+            pass
     return mod
 
 
