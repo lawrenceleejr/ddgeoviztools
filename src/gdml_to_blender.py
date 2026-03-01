@@ -169,10 +169,35 @@ def _filter_world_volumes(sub_meshes: list, factor: float = 8.0) -> list:
                   f"(bbox diag {d:.0f} mm, {d/median_diag:.0f}× median)",
                   flush=True)
             removed += 1
+        elif _is_box_mesh(m):
+            print(f"    [FILTER] Dropping container-box mesh "
+                  f"({len(m.faces)} faces, axis-aligned, bbox diag {d:.0f} mm)",
+                  flush=True)
+            removed += 1
         else:
             kept.append(m)
 
     return kept if kept else sub_meshes   # safety: never return empty
+
+
+def _is_box_mesh(mesh, max_faces: int = 30) -> bool:
+    """
+    Return True if the mesh looks like a GDML container / envelope box volume.
+
+    GDML box solids export as axis-aligned cuboids with just 12 triangles
+    (6 quad faces × 2 triangles each).  They are used as mother-volume
+    containers in the hierarchy but carry no detector geometry.  Their face
+    normals are always aligned with one of the three coordinate axes.
+
+    Criteria:
+      • fewer than *max_faces* triangles (generous to allow subdivision)
+      • every face normal has one component very close to ±1
+    """
+    if len(mesh.faces) > max_faces:
+        return False
+    norms = np.abs(mesh.face_normals)
+    # Each normal must be ≈ (1,0,0), (0,1,0), or (0,0,1)
+    return bool(np.all(np.max(norms, axis=1) > 0.99))
 
 
 def _thin_repeated_layers(sub_meshes: list, max_meshes: int = 40) -> list:
@@ -220,10 +245,57 @@ def _thin_repeated_layers(sub_meshes: list, max_meshes: int = 40) -> list:
     return kept
 
 
-def _load_mesh(filepath: Path, name: str):
+def _phi_cut_trimesh(
+    mesh: "trimesh.Trimesh",
+    phi_min_deg: float,
+    phi_max_deg: float,
+) -> "trimesh.Trimesh":
+    """
+    Remove all triangles whose centroid phi falls inside [phi_min_deg, phi_max_deg].
+
+    phi is measured in the **Blender YZ plane** after the Ry(+90°) rotation that
+    maps GDML-Z (beam) → Blender-X.  In local (GDML) coordinates:
+
+        phi_YZ = atan2( -X_local,  Y_local )   [degrees, −180 … +180]
+
+    phi_YZ = 0   → +Y_blender  (vertically up)
+    phi_YZ = 90  → +Z_blender  (horizontal transverse, = −X_gdml)
+
+    This is computed and cut entirely in trimesh/numpy — no bpy/bmesh involved —
+    so it is safe on Blender 5.0+ where bmesh.ops.delete on large meshes can
+    trigger a SIGSEGV inside TBB worker threads.
+    """
+    if len(mesh.faces) == 0:
+        return mesh
+    centroids = mesh.triangles_center                          # (N, 3)
+    # After Ry(90°): Y_blender = Y_local, Z_blender = -X_local
+    # phi_YZ = atan2(Z_blender, Y_blender) = atan2(-X_local, Y_local)
+    phi = np.degrees(np.arctan2(-centroids[:, 0], centroids[:, 1]))
+    keep = ~((phi >= phi_min_deg) & (phi <= phi_max_deg))
+    n_del = int(np.sum(~keep))
+    n_tot = len(mesh.faces)
+    print(f"    [PHI-TRI] phi=[{phi_min_deg:.1f}°,{phi_max_deg:.1f}°]: "
+          f"removing {n_del}/{n_tot} triangles", flush=True)
+    keep_idx = np.where(keep)[0]
+    if len(keep_idx) == 0:
+        return mesh   # safety: never produce an empty mesh
+    return mesh.submesh([keep_idx], append=True)
+
+
+def _load_mesh(
+    filepath: Path,
+    name: str,
+    phi_min_deg: float = None,
+    phi_max_deg: float = None,
+):
     """
     Read a mesh file with trimesh, merge duplicate vertices and remove
-    degenerate faces, then create a bpy Mesh object.
+    degenerate faces, optionally apply a phi-sector cutaway in trimesh,
+    then create a bpy Mesh object.
+
+    phi_min_deg / phi_max_deg — when both are supplied the wedge
+    [phi_min_deg, phi_max_deg] is removed before the bpy mesh is created.
+    The cut is done entirely in trimesh/numpy so it is safe on Blender 5.0+.
 
     Returns the new bpy Object.
     """
@@ -253,11 +325,18 @@ def _load_mesh(filepath: Path, name: str):
     # Always re-wrap as a processed Trimesh (merges duplicate verts, etc.)
     raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
 
+    # Apply phi cutaway entirely in trimesh — avoids Blender-level bmesh SIGSEGV
+    if phi_min_deg is not None and phi_max_deg is not None:
+        raw = _phi_cut_trimesh(raw, phi_min_deg, phi_max_deg)
+
     verts = raw.vertices.tolist()   # list of [x, y, z]
     faces = raw.faces.tolist()      # list of [i, j, k]
 
     me = bpy.data.meshes.new(name)
     me.from_pydata(verts, [], faces)
+    me.update()
+    # Shade smooth on every face of the base mesh (propagates through modifiers)
+    me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
     me.update()
 
     obj = bpy.data.objects.new(name, me)
@@ -341,7 +420,9 @@ def _apply_phi_cutaway_bmesh(obj, phi_min_deg: float, phi_max_deg: float):
         n = len(f.verts)
         cx = sum(v.co.x for v in f.verts) / n
         cy = sum(v.co.y for v in f.verts) / n
-        phi = math.atan2(cy, cx)
+        # Use Blender-YZ convention: phi = atan2(-X_local, Y_local)
+        # (phi=0 → +Y_blender, phi=90 → +Z_blender)
+        phi = math.atan2(-cx, cy)
         # Delete faces whose phi falls inside the cut sector
         if phi_min <= phi <= phi_max:
             del_faces.append(f)
@@ -372,7 +453,8 @@ def _precompute_phi_face_attribute(obj):
         verts = poly.vertices
         cx = sum(mesh.vertices[vi].co.x for vi in verts) / len(verts)
         cy = sum(mesh.vertices[vi].co.y for vi in verts) / len(verts)
-        phi_values.append(math.degrees(math.atan2(cy, cx)))
+        # Blender-YZ convention: phi = atan2(-X_local, Y_local)
+        phi_values.append(math.degrees(math.atan2(-cx, cy)))
 
     attr = mesh.attributes.new("phi_deg", "FLOAT", "FACE")
     for i, v in enumerate(phi_values):
@@ -435,13 +517,20 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
     g_in  = N("NodeGroupInput",              -700,    0)
     g_out = N("NodeGroupOutput",              700,    0)
 
-    # Vertex position → atan2(Y, X) → degrees
-    pos   = N("GeometryNodeInputPosition",   -500, -120)
-    sep   = N("ShaderNodeSeparateXYZ",        -300, -120)
+    # Vertex position → atan2(-X, Y) → degrees
+    # Blender-YZ convention: phi=0 → +Y_blender, phi=90 → +Z_blender
+    pos   = N("GeometryNodeInputPosition",   -600, -120)
+    sep   = N("ShaderNodeSeparateXYZ",        -400, -120)
+
+    # Negate X so ARCTAN2 computes atan2(-X, Y)
+    neg_x = N("ShaderNodeMath",               -250, -180)
+    neg_x.operation = "MULTIPLY"
+    neg_x.label = "neg X"
+    neg_x.inputs[1].default_value = -1.0
 
     atan2 = N("ShaderNodeMath",              -100, -120)
     atan2.operation = "ARCTAN2"
-    atan2.label = "atan2(Y,X)"
+    atan2.label = "atan2(-X,Y)"
 
     todeg = N("ShaderNodeMath",               100, -120)
     todeg.operation = "DEGREES"
@@ -466,7 +555,7 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
     sub.inputs[0].default_value = 1.0   # minuend; inside connects to inputs[1]
 
     # Merge seam duplicates before the cut
-    merge = N("GeometryNodeMergeByDistance",  -500,  100)
+    merge = N("GeometryNodeMergeByDistance",  -600,  100)
     merge.inputs["Distance"].default_value = 1e-4
     merge.label = "Weld seam duplicates"
 
@@ -479,10 +568,11 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
     # Geometry pass-through via merge-by-distance first
     links.new(g_in.outputs["Geometry"],   merge.inputs["Geometry"])
 
-    # Position field chain
+    # Position field chain: sep → negate X → atan2(-X, Y) → degrees
     links.new(pos.outputs["Position"],    sep.inputs["Vector"])
-    links.new(sep.outputs["Y"],           atan2.inputs[0])   # Y is first arg
-    links.new(sep.outputs["X"],           atan2.inputs[1])   # X is second
+    links.new(sep.outputs["X"],           neg_x.inputs[0])
+    links.new(neg_x.outputs["Value"],     atan2.inputs[0])   # -X is first arg
+    links.new(sep.outputs["Y"],           atan2.inputs[1])   # Y is second arg
     links.new(atan2.outputs["Value"],     todeg.inputs["Value"])
 
     # Phi-range tests
@@ -723,6 +813,8 @@ def _add_environment_sphere(radius: float):
     bm.to_mesh(mesh)
     bm.free()
     mesh.update()
+    mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
+    mesh.update()
 
     obj = bpy.data.objects.new("EnvironmentSphere", mesh)
     bpy.data.scenes[0].collection.objects.link(obj)
@@ -816,6 +908,59 @@ def _kelvin_to_rgb(temp_kelvin: float) -> tuple:
     return (r, g, b)
 
 
+def _set_light_temperature(light_data, name: str, energy: float,
+                           temp_kelvin: float) -> None:
+    """
+    Configure *light_data* to render with *temp_kelvin* colour temperature
+    using Blender's blackbody mechanism — not an RGB approximation.
+
+    Tries, in order:
+      1. light_data.color_mode = 'TEMPERATURE'  (Blender 4.0+ native property)
+      2. ShaderNodeBlackbody in the light's node tree  (Blender 3.x)
+      3. _kelvin_to_rgb RGB fallback (should never be reached in normal use)
+    """
+    # --- Attempt 1: native color_mode = 'TEMPERATURE' (Blender 4.0+) ---
+    if hasattr(light_data, "color_mode"):
+        try:
+            light_data.color_mode = "TEMPERATURE"
+            light_data.temperature = float(temp_kelvin)
+            print(f"  [LIGHT] {name}  {energy:.0f} W  "
+                  f"{temp_kelvin:.0f} K  (native color_mode=TEMPERATURE)",
+                  flush=True)
+            return
+        except Exception as exc:
+            print(f"  [LIGHT] {name}  color_mode=TEMPERATURE failed: {exc}",
+                  flush=True)
+
+    # --- Attempt 2: ShaderNodeBlackbody in node tree ---
+    try:
+        light_data.use_nodes = True
+        tree     = light_data.node_tree
+        nodes    = tree.nodes
+        links    = tree.links
+        nodes.clear()
+        out      = nodes.new("ShaderNodeOutputLight")
+        emission = nodes.new("ShaderNodeEmission")
+        bb       = nodes.new("ShaderNodeBlackbody")
+        bb.inputs["Temperature"].default_value   = float(temp_kelvin)
+        emission.inputs["Strength"].default_value = 1.0
+        links.new(bb.outputs["Color"],       emission.inputs["Color"])
+        links.new(emission.outputs["Emission"], out.inputs["Surface"])
+        print(f"  [LIGHT] {name}  {energy:.0f} W  "
+              f"{temp_kelvin:.0f} K  (ShaderNodeBlackbody node tree)",
+              flush=True)
+        return
+    except Exception as exc:
+        print(f"  [LIGHT] {name}  ShaderNodeBlackbody failed: {exc}", flush=True)
+
+    # --- Fallback 3: RGB approximation ---
+    r, g, b = _kelvin_to_rgb(temp_kelvin)
+    light_data.color = (r, g, b)
+    print(f"  [LIGHT] {name}  {energy:.0f} W  "
+          f"{temp_kelvin:.0f} K → rgb({r:.3f},{g:.3f},{b:.3f})  (RGB approx)",
+          flush=True)
+
+
 def _area_light_with_temperature(
     name: str,
     location: tuple,
@@ -839,27 +984,14 @@ def _area_light_with_temperature(
     light_data        = bpy.data.lights.new(name, type="AREA")
     light_data.energy = energy
     light_data.size   = size
-    light_data.shape  = "DISK"
+    light_data.shape  = "SQUARE"
 
-    # Blender 5.0 changed light node trees; ShaderNodeBlackbody inside a
-    # light's shader tree can crash save_as_mainfile with SIGSEGV.  On 5.0+
-    # we approximate the colour temperature in Python and set it directly.
-    if bpy.app.version >= (5, 0, 0):
-        r, g, b = _kelvin_to_rgb(temp_kelvin)
-        light_data.color = (r, g, b)
-        print(f"  [LIGHT] {name}  AREA  {energy:.0f} W  "
-              f"{temp_kelvin:.0f} K → rgb({r:.3f},{g:.3f},{b:.3f})", flush=True)
-    else:
-        light_data.use_nodes = True
-        tree     = light_data.node_tree
-        emission = next((n for n in tree.nodes if n.type == "EMISSION"), None)
-        if emission is not None:
-            bb = tree.nodes.new("ShaderNodeBlackbody")
-            bb.inputs["Temperature"].default_value = float(temp_kelvin)
-            tree.links.new(bb.outputs["Color"], emission.inputs["Color"])
-            emission.inputs["Strength"].default_value = 1.0
-        print(f"  [LIGHT] {name}  AREA  {energy:.0f} W  "
-              f"{temp_kelvin:.0f} K (node blackbody)", flush=True)
+    # Use Blender's built-in colour temperature (real blackbody, not RGB approx).
+    # Priority:
+    #   1. Native color_mode = 'TEMPERATURE' property (Blender 4.0+)
+    #   2. ShaderNodeBlackbody in the light node tree (Blender 3.x)
+    #   3. _kelvin_to_rgb approximation (last resort)
+    _set_light_temperature(light_data, name, energy, temp_kelvin)
 
     light_obj = bpy.data.objects.new(name, light_data)
     bpy.data.scenes[0].collection.objects.link(light_obj)
@@ -923,10 +1055,11 @@ def _setup_world():
     links = tree.links
     nodes.clear()
 
-    # Background — near-black deep-space blue
+    # Background — deep space blue, bright enough to provide soft ambient fill
+    # on interior surfaces not directly reached by the key/fill lights.
     bg = nodes.new("ShaderNodeBackground")
-    bg.inputs["Color"].default_value    = (0.005, 0.005, 0.015, 1.0)
-    bg.inputs["Strength"].default_value = 0.05
+    bg.inputs["Color"].default_value    = (0.02, 0.02, 0.05, 1.0)
+    bg.inputs["Strength"].default_value = 1.0
     bg.location = (0, 100)
 
     out = nodes.new("ShaderNodeOutputWorld")
@@ -1167,59 +1300,23 @@ def create_blender_scene(
     print(f"  [SETUP] {len(materials)} materials ready: "
           f"{[m.name for m in materials]}", flush=True)
 
-    # ---- Phi-cutaway control object ----
-    ctrl = None
-    ng   = None
-    if not no_phi_cut:
-        ctrl = bpy.data.objects.new("PhiCutawayControl", None)  # Empty
-        bpy.data.scenes[0].collection.objects.link(ctrl)
-        ctrl["phi_min"] = float(phi_min)
-        ctrl["phi_max"] = float(phi_max)
-        try:
-            ctrl.id_properties_ui("phi_min").update(
-                min=-180.0, max=360.0,
-                description="Phi cutaway minimum (degrees). atan2(Y,X), Z=beam."
-            )
-            ctrl.id_properties_ui("phi_max").update(
-                min=-180.0, max=360.0,
-                description="Phi cutaway maximum (degrees)."
-            )
-        except Exception:
-            pass
-        print(f"  [PHI] Blender version: {bpy.app.version_string}", flush=True)
-        print(f"  [PHI] Creating PhiCutaway node group "
-              f"(phi_min={phi_min:.1f}°, phi_max={phi_max:.1f}°) ...", flush=True)
-        ng = _phi_cutaway_node_group(phi_min, phi_max)
-        if ng is not None:
-            print(f"  [PHI] Node group ready: {ng.name!r}  "
-                  f"({len(ng.nodes)} nodes, {len(ng.links)} links)", flush=True)
-        else:
-            print(f"  [PHI] Node group unavailable — will use bmesh fallback "
-                  f"(phi cut baked into mesh, not interactively adjustable).",
-                  flush=True)
-
-        # Blender 5.0+ geometry-node evaluation runs in a TBB worker thread
-        # during the depsgraph flush that precedes save_as_mainfile.  The GN
-        # node tree created above causes a SIGSEGV inside that thread even
-        # though it is syntactically valid at the Python level (the crash
-        # shows up as a raw C backtrace with no Python frames).  Until the
-        # root cause inside Blender's C++ GN evaluator is understood, force
-        # the bmesh path on 5.0+: the phi cut is baked into the mesh data
-        # and is not interactively adjustable in the .blend file, but the
-        # visual result is identical and the file saves cleanly.
-        if ng is not None and bpy.app.version >= (5, 0, 0):
-            print("  [PHI] Blender 5.0+: discarding GN modifier, using bmesh "
-                  "fallback to avoid TBB evaluation crash.", flush=True)
-            bpy.data.node_groups.remove(ng)
-            ng = None
-
     # ---- Load each mesh ----
+    # Phi cutaway is applied at the trimesh level inside _load_mesh, avoiding
+    # the Blender bmesh SIGSEGV that occurred on large meshes in Blender 5.0+.
+    _phi_min = phi_min if not no_phi_cut else None
+    _phi_max = phi_max if not no_phi_cut else None
+    if not no_phi_cut:
+        print(f"  [PHI] Phi cutaway [{phi_min:.1f}°, {phi_max:.1f}°] will be baked "
+              f"into each mesh at load time (trimesh, Blender-YZ convention).",
+              flush=True)
+
     loaded_objects: list = []
     for mesh_path in mesh_files:
         name = mesh_path.stem
         print(f"  Loading {mesh_path.name} ...")
         try:
-            obj = _load_mesh(mesh_path, name)
+            obj = _load_mesh(mesh_path, name,
+                             phi_min_deg=_phi_min, phi_max_deg=_phi_max)
         except Exception as exc:
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
@@ -1228,23 +1325,11 @@ def create_blender_scene(
         mat = _material_for_detector(name, mat_cycle)
         obj.data.materials.append(mat)
 
-        # Modifier stack: Weld → Bevel → PhiCutaway
+        # Modifier stack: Weld → Bevel
         _add_weld(obj, threshold=weld_threshold)
 
         if not no_bevel:
             _add_bevel(obj, width_mm=bevel_width_mm)
-
-        if not no_phi_cut:
-            if ng is not None and ctrl is not None:
-                # Blender 5.0+: pre-compute phi_deg face attribute before
-                # the GN modifier tries to read it.
-                if bpy.app.version >= (5, 0, 0):
-                    _precompute_phi_face_attribute(obj)
-                _add_phi_cutaway(obj, ng, phi_min, phi_max, ctrl)
-            else:
-                # GN node group unavailable (Blender 5.0+ API changed and
-                # node type names differ); bake phi cut directly into mesh.
-                _apply_phi_cutaway_bmesh(obj, phi_min, phi_max)
 
         # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
         # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
@@ -1323,11 +1408,24 @@ def create_blender_scene(
         ortho_scale=ortho_side,
     )
 
-    # Perspective overview from 3/4 angle
-    _make_camera(
+    # Perspective camera — placed at the interaction point (inside the detector),
+    # looking out through the phi-cut opening so the viewer sees all detector
+    # layers framed by the cut.
+    # phi_center is the bisector of the cut in Blender-YZ convention.
+    if no_phi_cut:
+        _phi_center_rad = math.radians(45.0)
+    else:
+        _phi_center_rad = math.radians((phi_min + phi_max) / 2.0)
+
+    # Target: centre of the cut opening at the outer detector radius
+    _cam_target_Y = r * math.cos(_phi_center_rad)
+    _cam_target_Z = r * math.sin(_phi_center_rad)
+    # Location: slightly off-axis along beam so the direction vector is nonzero
+    _cam_loc_X = x_max * 0.05
+    cam_persp = _make_camera(
         "Cam_Perspective",
-        location=(r_persp * 0.40, -r_persp * 0.65, r_persp * 0.50),
-        target=(0, 0, 0),
+        location=(_cam_loc_X, 0.0, 0.0),
+        target=(0.0, _cam_target_Y, _cam_target_Z),
         ortho=False,
     )
 
@@ -1337,9 +1435,10 @@ def create_blender_scene(
         if cam_obj:
             _link_to_collection(cam_obj, col_cameras)
 
-    # Set default active camera to transverse (end-cap) view
-    bpy.data.scenes[0].camera = cam_trans
-    print(f"  [SETUP] Cameras created (active: Cam_Transverse)", flush=True)
+    # Set active camera to the perspective view (inside the detector)
+    bpy.data.scenes[0].camera = cam_persp
+    print(f"  [SETUP] Cameras created (active: Cam_Perspective, inside detector, "
+          f"looking into phi-cut at {math.degrees(_phi_center_rad):.0f}°)", flush=True)
 
     # ---- Lighting ----
     print(f"  [SETUP] Creating lights ...", flush=True)
@@ -1349,7 +1448,11 @@ def create_blender_scene(
     # tens-to-hundreds of watts — appropriate for Blender Cycles at this scale.
     # Positions are given in Blender world coords (X = beam, Y = physics-up,
     # Z = physics-horizontal-transverse).
-    energy_base = r * r * 1e-3   # normalised energy coefficient (W · BU⁻²)
+    # Energy scales with r² so that light covers the scene regardless of size.
+    # Multipliers are tuned so that the Cycles render at default exposure is
+    # properly lit; interior surfaces (visible through the phi cut) receive
+    # fill from the interior fill light and the raised world-background strength.
+    energy_base = r * r * 0.05   # W · BU⁻²  (50× higher than the old 1e-3)
 
     # Key light — warm golden-hour glow from above and slightly to one side.
     # 3000 K ≈ incandescent / warm candlelight.
@@ -1385,6 +1488,20 @@ def create_blender_scene(
         temp_kelvin=4500.0,
     )
 
+    # Interior fill — point light placed inside the phi-cut opening so it
+    # illuminates the inward-facing detector surfaces that the exterior area
+    # lights cannot directly reach.  Positioned halfway along the cut bisector.
+    _phi_fill_rad = math.radians((phi_min + phi_max) / 2.0) if not no_phi_cut \
+                    else math.radians(45.0)
+    interior_obj = _add_point_light(
+        "Light_Interior_Fill",
+        location=(0.0, r * 0.45 * math.cos(_phi_fill_rad),
+                       r * 0.45 * math.sin(_phi_fill_rad)),
+        energy=energy_base * 300.0,
+        color_rgb=(1.0, 0.97, 0.92),   # near-white / warm white
+        soft_size=r * 0.50,
+    )
+
     # Purple glow at the interaction point (IP / beam origin)
     # Soft point light — evocative of Cherenkov / beam interactions.
     ip_obj = _add_point_light(
@@ -1396,13 +1513,14 @@ def create_blender_scene(
     )
 
     # Move all lights (including environment sphere) into the Lights collection
-    for light_obj in (key_obj, fill_obj, rim_obj, ip_obj):
+    for light_obj in (key_obj, fill_obj, rim_obj, interior_obj, ip_obj):
         if light_obj is not None:
             _link_to_collection(light_obj, col_lights)
 
-    print(f"  [SETUP] Lights created (energy_base={energy_base:.4f} W, "
-          f"key={energy_base*400:.1f} W, fill={energy_base*72:.1f} W, "
-          f"rim={energy_base*120:.1f} W, IP={energy_base*80:.1f} W)", flush=True)
+    print(f"  [SETUP] Lights created (energy_base={energy_base:.3f} W, "
+          f"key={energy_base*400:.0f} W, fill={energy_base*72:.0f} W, "
+          f"rim={energy_base*120:.0f} W, interior={energy_base*300:.0f} W, "
+          f"IP={energy_base*80:.0f} W)", flush=True)
 
     # ---- Render settings + compositor bloom ----
     print(f"  [SETUP] Configuring render settings ...", flush=True)
@@ -1418,15 +1536,16 @@ def create_blender_scene(
     print(f"\n  Saved: {output_path}")
     print(f"  Objects: {len(loaded_objects)}")
     print(f"  Collections: Detector ({len(loaded_objects)} objects), "
-          f"Cameras (3), Lights (4 + env sphere)")
-    print(f"  Active camera: Cam_Transverse (YZ transverse view, X=beam into screen)")
+          f"Cameras (3), Lights (5 + env sphere)")
+    print(f"  Active camera: Cam_Perspective (inside detector, looking into phi-cut)")
+    print(f"  Cam_Transverse: end-cap view (Y=up, Z=horizontal transverse)")
     print(f"  Cam_Side: elevation view (X=beam left-right, Y=up)")
     if not no_phi_cut:
         print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°]  "
-              f"— adjust via PhiCutawayControl → Custom Properties")
+              f"(baked into mesh, Blender-YZ convention: phi=0→+Y, phi=90→+Z)")
     print(f"  Render: Cycles 4 K, 128 samples, OIDN denoiser")
     print(f"  Lighting: golden-hour (3000 K key) + sky fill (7500 K) + rim (4500 K)"
-          f" + purple IP glow")
+          f" + interior fill (warm white) + purple IP glow")
 
     return output_path
 
