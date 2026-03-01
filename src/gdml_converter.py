@@ -403,9 +403,11 @@ def _auto_split_and_convert(
         print(f"  [{_ts()}] [AUTO-SPLIT] [{i+1}/{len(split_files)}] "
               f"Converting {lv_name!r} → {chunk_path.name}", flush=True)
         try:
-            # Recursive call: each sub-GDML will be pruned again; if it's still
-            # above threshold we recurse, but in practice split pieces are small.
-            partial = convert_gdml(sub_gdml, chunk_path, fmt)
+            # Prune the sub-GDML but always call _convert_single directly —
+            # do NOT recurse into convert_gdml to avoid runaway re-splitting
+            # that produces a flood of "Done — 0 file(s)" messages.
+            pruned_sub = _limit_gdml_placements(sub_gdml)
+            partial = _convert_single(pruned_sub, chunk_path, fmt, t_total)
             results.extend(partial)
         except Exception as exc:
             print(f"  [{_ts()}] [AUTO-SPLIT] [{lv_name}] failed: {exc}",
