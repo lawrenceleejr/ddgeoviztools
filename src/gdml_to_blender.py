@@ -955,20 +955,23 @@ def _create_phi_wedge_cutter(
         X = beam,  Y = physics-up (phi = 0°),  Z = horiz-transverse (phi = 90°).
     phi_deg = atan2(Z, Y)  — matches the Blender-YZ phi labelling on the detectors.
 
-    The mesh is a full 360° cylinder with a 'phi_deg' FLOAT FACE attribute
-    pre-baked on every face.  A Geometry Nodes modifier reads that attribute
-    and keeps only faces whose phi_deg falls in [Phi Min, Phi Max], producing
-    a solid sector.  Both inputs appear in the modifier panel so the user can
-    drag the sliders live without re-running the script.
+    The wedge is built directly as a closed, manifold solid so that Blender's
+    Boolean DIFFERENCE modifier correctly removes the phi sector from detector
+    objects.  The previous approach (full 360° cylinder trimmed by a GN modifier)
+    produced an open mesh with disconnected boundary-wall vertices, which caused
+    the Boolean to fail silently.
 
     The cutter is shown as wireframe in the viewport and excluded from renders;
     the Boolean modifier on detector objects still references it as its operand.
     """
     import bmesh as _bm
 
-    N      = 128          # arc segments — 360°/128 ≈ 2.8° step
+    N_ARC  = 64           # arc segments within the sector
     r      = radius
     half_d = depth / 2.0
+
+    phi_min_r = math.radians(phi_min_deg)
+    phi_max_r = math.radians(phi_max_deg)
 
     me = bpy.data.meshes.new("PhiWedge")
     bm = _bm.new()
@@ -977,45 +980,38 @@ def _create_phi_wedge_cutter(
     vc_pos = bm.verts.new((+half_d, 0.0, 0.0))
     vc_neg = bm.verts.new((-half_d, 0.0, 0.0))
 
-    # Ring vertices at ±X: phi=0 → +Y, phi=90° → +Z
+    # Arc vertices at ±X from phi_min to phi_max (N_ARC+1 vertices inclusive)
+    # phi=0 → +Y, phi=90° → +Z
     vp, vn = [], []
-    for i in range(N):
-        ang = 2.0 * math.pi * i / N
+    for i in range(N_ARC + 1):
+        ang = phi_min_r + i * (phi_max_r - phi_min_r) / N_ARC
         y   = r * math.cos(ang)
         z   = r * math.sin(ang)
         vp.append(bm.verts.new((+half_d, y, z)))
         vn.append(bm.verts.new((-half_d, y, z)))
 
     bm.verts.ensure_lookup_table()
-    phi_layer = bm.faces.layers.float.new("phi_deg")
 
-    for i in range(N):
-        j       = (i + 1) % N
-        mid_ang = 2.0 * math.pi * (i + 0.5) / N
-        phi_mid = math.degrees(math.atan2(math.sin(mid_ang), math.cos(mid_ang)))
+    # Outer arc wall — side quads (normals point radially outward)
+    for i in range(N_ARC):
+        bm.faces.new([vp[i], vp[i + 1], vn[i + 1], vn[i]])
 
-        # Outer arc — side quad
-        fs = bm.faces.new([vp[i], vp[j], vn[j], vn[i]])
-        fs[phi_layer] = phi_mid
+    # +X end-cap: fan of triangles from centre (normal → +X)
+    for i in range(N_ARC):
+        bm.faces.new([vc_pos, vp[i + 1], vp[i]])
 
-        # +X end-cap triangle (fan from centre)
-        fc_pos = bm.faces.new([vc_pos, vp[j], vp[i]])
-        fc_pos[phi_layer] = phi_mid
+    # −X end-cap: fan of triangles from centre (normal → −X)
+    for i in range(N_ARC):
+        bm.faces.new([vc_neg, vn[i], vn[i + 1]])
 
-        # -X end-cap triangle (fan from centre)
-        fc_neg = bm.faces.new([vc_neg, vn[i], vn[j]])
-        fc_neg[phi_layer] = phi_mid
+    # Radial wall at phi_min (normal points away from sector interior)
+    bm.faces.new([vc_pos, vc_neg, vn[0], vp[0]])
 
-    # Radial wall at phi_min — closes the sector boundary
-    phi_min_r = math.radians(phi_min_deg)
-    phi_max_r = math.radians(phi_max_deg)
-    for phi_r, phi_d in ((phi_min_r, phi_min_deg), (phi_max_r, phi_max_deg)):
-        yy = r * math.cos(phi_r)
-        zz = r * math.sin(phi_r)
-        vwp = bm.verts.new((+half_d, yy, zz))
-        vwn = bm.verts.new((-half_d, yy, zz))
-        fw  = bm.faces.new([vc_pos, vwp, vwn, vc_neg])
-        fw[phi_layer] = phi_d
+    # Radial wall at phi_max (normal points away from sector interior)
+    bm.faces.new([vc_pos, vp[N_ARC], vn[N_ARC], vc_neg])
+
+    # Ensure consistent outward-pointing normals for the Boolean solver
+    _bm.ops.recalc_face_normals(bm, faces=bm.faces[:])
 
     bm.to_mesh(me)
     bm.free()
@@ -1028,26 +1024,6 @@ def _create_phi_wedge_cutter(
     # the detector.  Excluded from renders entirely.
     obj.display_type = "WIRE"
     obj.hide_render  = True
-
-    # GN modifier: live [Phi Min, Phi Max] control
-    mod            = obj.modifiers.new("PhiWedgeGen", "NODES")
-    ng             = _make_phi_wedge_node_group(phi_min_deg, phi_max_deg)
-    mod.node_group = ng
-
-    # Set default values on the modifier inputs via their socket identifiers
-    for item in ng.interface.items_tree:
-        if getattr(item, "item_type", None) != "SOCKET" or item.in_out != "INPUT":
-            continue
-        if item.name == "Phi Min":
-            try:
-                mod[item.identifier] = phi_min_deg
-            except Exception:
-                pass
-        elif item.name == "Phi Max":
-            try:
-                mod[item.identifier] = phi_max_deg
-            except Exception:
-                pass
 
     _link_to_collection(obj, collection)
     print(f"  [WEDGE] PhiWedge cutter: "
