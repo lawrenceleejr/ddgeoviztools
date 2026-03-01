@@ -4,12 +4,19 @@ GDML splitter: split a monolithic ddsim GDML into per-sub-detector GDML files.
 Uses lxml for pure XML manipulation — no pyg4ometry required for this step.
 Sub-detectors are identified by traversing N levels below the world volume
 (controlled by the --depth flag; default 1 = direct daughters of world).
+
+Memory strategy
+---------------
+For very large GDML files (100+ MB), the naive approach of deepcopy-ing
+elements into a new tree can double peak memory.  Instead, we serialise
+needed elements directly from the parsed source tree using
+``etree.tostring(el)`` and write them incrementally to the output file,
+avoiding a second in-memory tree altogether.
 """
 from __future__ import annotations
 
 import sys
 import time
-from copy import deepcopy
 from pathlib import Path
 
 from lxml import etree
@@ -326,66 +333,115 @@ def split_gdml(
             f"{len(c.needed_materials)} materials, {len(c.needed_defines)} defines"
         )
 
-        # ---- Assemble output GDML tree ----
-        _log(f"    Assembling GDML tree …")
-        nsmap = root.nsmap
-        new_root = etree.Element("gdml", nsmap=nsmap)
-        xsi = "http://www.w3.org/2001/XMLSchema-instance"
-        schema_loc = root.get(f"{{{xsi}}}noNamespaceSchemaLocation")
-        if schema_loc:
-            new_root.set(f"{{{xsi}}}noNamespaceSchemaLocation", schema_loc)
-
-        # <define>
-        new_define = etree.SubElement(new_root, "define")
-        for name, el in defines.items():
-            if name in c.needed_defines:
-                new_define.append(deepcopy(el))
-
-        # <materials>
-        new_mats = etree.SubElement(new_root, "materials")
-        for name, el in materials.items():
-            if name in c.needed_materials:
-                new_mats.append(deepcopy(el))
-
-        # <solids> — topological order (boolean children before parents)
-        new_solids = etree.SubElement(new_root, "solids")
-        for name in c.solid_order:
-            el = solids_map.get(name)
-            if el is not None:
-                new_solids.append(deepcopy(el))
-
-        # <structure> — children before parents
-        new_struct = etree.SubElement(new_root, "structure")
-        for name in c.logvol_order:
-            el = logvols.get(name)
-            if el is not None:
-                new_struct.append(deepcopy(el))
-
-        # Minimal world volume containing only this sub-detector
-        new_world_name = f"World_{lv_name}_lv"
-        new_world = etree.SubElement(new_struct, "volume", name=new_world_name)
-        if world_solid_name:
-            etree.SubElement(new_world, "solidref", ref=world_solid_name)
-        etree.SubElement(new_world, "materialref", ref="G4_AIR")
-        new_world.append(deepcopy(placement_pv))
-
-        # <setup>
-        new_setup = etree.SubElement(new_root, "setup", name="Default", version="1.0")
-        etree.SubElement(new_setup, "world", ref=new_world_name)
-
-        # ---- Write file ----
+        # ---- Write output GDML incrementally ----
+        # Instead of building an entire second tree via deepcopy (which doubles
+        # peak memory for large GDMLs), we serialise needed elements directly
+        # from the source tree into the output file.
         stem     = _clean_name(lv_name)
         out_path = output_dir / f"{stem}.gdml"
-        _log(f"    Writing {out_path.name} …")
-        etree.ElementTree(new_root).write(
-            str(out_path),
-            pretty_print=True,
-            xml_declaration=True,
-            encoding="UTF-8",
+        _log(f"    Writing {out_path.name} (streaming) …")
+
+        new_world_name = f"World_{lv_name}_lv"
+        _write_subdetector_gdml(
+            out_path,
+            root=root,
+            defines=defines,
+            materials=materials,
+            solids_map=solids_map,
+            logvols=logvols,
+            collector=c,
+            world_solid_name=world_solid_name,
+            new_world_name=new_world_name,
+            placement_pv=placement_pv,
         )
+
         out_size_mb = out_path.stat().st_size / 1_048_576
         _log(f"    Done → {out_path.name} ({out_size_mb:.2f} MB)")
         results.append((lv_name, out_path))
 
     _log(f"Split complete — {len(results)} file(s) written to {output_dir}/")
     return results
+
+
+def _write_subdetector_gdml(
+    out_path: Path,
+    *,
+    root: etree._Element,
+    defines: dict[str, etree._Element],
+    materials: dict[str, etree._Element],
+    solids_map: dict[str, etree._Element],
+    logvols: dict[str, etree._Element],
+    collector: _Collector,
+    world_solid_name: str | None,
+    new_world_name: str,
+    placement_pv: etree._Element,
+) -> None:
+    """
+    Write a self-contained sub-detector GDML file.
+
+    Uses incremental serialisation: each element is serialised from the
+    *source* tree via ``etree.tostring()`` and written to disk without
+    building a complete second in-memory tree.  For a 200 MB source GDML
+    this avoids ~200 MB of deepcopy overhead per sub-detector.
+    """
+    xsi = "http://www.w3.org/2001/XMLSchema-instance"
+    schema_loc = root.get(f"{{{xsi}}}noNamespaceSchemaLocation", "")
+    schema_attr = ""
+    if schema_loc:
+        schema_attr = f' xmlns:xsi="{xsi}" xsi:noNamespaceSchemaLocation="{schema_loc}"'
+
+    with open(out_path, "wb") as fh:
+        fh.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
+        fh.write(f'<gdml{schema_attr}>\n'.encode())
+
+        # <define>
+        fh.write(b'  <define>\n')
+        for name in sorted(collector.needed_defines):
+            el = defines.get(name)
+            if el is not None:
+                fh.write(b'    ')
+                fh.write(etree.tostring(el, pretty_print=True))
+        fh.write(b'  </define>\n')
+
+        # <materials>
+        fh.write(b'  <materials>\n')
+        for name in sorted(collector.needed_materials):
+            el = materials.get(name)
+            if el is not None:
+                fh.write(b'    ')
+                fh.write(etree.tostring(el, pretty_print=True))
+        fh.write(b'  </materials>\n')
+
+        # <solids> — topological order (boolean children before parents)
+        fh.write(b'  <solids>\n')
+        for name in collector.solid_order:
+            el = solids_map.get(name)
+            if el is not None:
+                fh.write(b'    ')
+                fh.write(etree.tostring(el, pretty_print=True))
+        fh.write(b'  </solids>\n')
+
+        # <structure> — children before parents
+        fh.write(b'  <structure>\n')
+        for name in collector.logvol_order:
+            el = logvols.get(name)
+            if el is not None:
+                fh.write(b'    ')
+                fh.write(etree.tostring(el, pretty_print=True))
+
+        # Minimal world volume containing only this sub-detector
+        fh.write(f'    <volume name="{new_world_name}">\n'.encode())
+        if world_solid_name:
+            fh.write(f'      <solidref ref="{world_solid_name}"/>\n'.encode())
+        fh.write(b'      <materialref ref="G4_AIR"/>\n')
+        fh.write(b'      ')
+        fh.write(etree.tostring(placement_pv, pretty_print=True))
+        fh.write(b'    </volume>\n')
+        fh.write(b'  </structure>\n')
+
+        # <setup>
+        fh.write(b'  <setup name="Default" version="1.0">\n')
+        fh.write(f'    <world ref="{new_world_name}"/>\n'.encode())
+        fh.write(b'  </setup>\n')
+
+        fh.write(b'</gdml>\n')

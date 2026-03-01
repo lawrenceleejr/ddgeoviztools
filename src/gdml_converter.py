@@ -94,14 +94,19 @@ def _max_placements_for_lv(lv_name: str) -> int:
 # GDML across the entire <structure> section.  Even with per-LV caps,
 # a geometry with many different LV names can still produce thousands of
 # physvols.  This cap guarantees memory safety regardless of nesting depth.
-# Empirically: ~400 physvols → 4–5 GB peak VTK memory; reduce to 100 to keep
-# peak below ~1 GB.  Very complex scenes are handled by the auto-split path.
+# Empirically: ~400 physvols → 4–5 GB peak VTK memory; reduce to 50 to keep
+# peak below ~500 MB.  Very complex scenes are handled by the auto-split path.
 _GLOBAL_PHYSVOL_BUDGET = 50
 
 # If the pruned GDML still has more than this many physvols, automatically
 # split it into per-sub-detector GDMLs and convert each independently.
 # This bounds peak memory per conversion to roughly _GLOBAL_PHYSVOL_BUDGET × 10 MB.
 _AUTO_SPLIT_PHYSVOL_THRESHOLD = 40
+
+# GDML files larger than this (in bytes) are always processed via the
+# auto-split path regardless of physvol count, because the XML tree itself
+# can consume several GB of RAM for very large files.
+_AUTO_SPLIT_FILESIZE_BYTES = 80 * 1024 * 1024   # 80 MB
 
 
 def _limit_gdml_placements(
@@ -412,7 +417,11 @@ def _auto_split_and_convert(
         except Exception as exc:
             print(f"  [{_ts()}] [AUTO-SPLIT] [{lv_name}] failed: {exc}",
                   flush=True)
-        # Encourage Python/VTK to release the previous chunk's memory
+        # Aggressively release VTK/pyg4ometry objects from the previous chunk.
+        # VTK render windows and mappers hold large C++ allocations that Python
+        # gc alone won't reclaim.  Collecting twice ensures weak references and
+        # ref cycles are fully broken.
+        gc.collect()
         gc.collect()
 
     shutil.rmtree(split_dir, ignore_errors=True)
@@ -572,13 +581,25 @@ def convert_gdml(
         print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
 
     # ---- Complexity check: auto-split if still too many physvols ----
+    file_size = Path(gdml_to_load).stat().st_size
     remaining_pvs = _count_physvols_in_gdml(gdml_to_load)
     print(f"  [{_ts()}] {remaining_pvs} physvols after pruning "
-          f"(threshold={_AUTO_SPLIT_PHYSVOL_THRESHOLD})", flush=True)
+          f"(threshold={_AUTO_SPLIT_PHYSVOL_THRESHOLD}), "
+          f"file size {file_size/1e6:.1f} MB "
+          f"(threshold={_AUTO_SPLIT_FILESIZE_BYTES/1e6:.0f} MB)", flush=True)
 
-    if remaining_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD:
-        print(f"  [{_ts()}] Scene is complex — splitting into per-sub-detector "
-              f"chunks to keep peak memory bounded ...", flush=True)
+    needs_split = (remaining_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD
+                   or file_size > _AUTO_SPLIT_FILESIZE_BYTES)
+    if needs_split:
+        reason = []
+        if remaining_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD:
+            reason.append(f"{remaining_pvs} physvols > {_AUTO_SPLIT_PHYSVOL_THRESHOLD}")
+        if file_size > _AUTO_SPLIT_FILESIZE_BYTES:
+            reason.append(f"file size {file_size/1e6:.1f} MB > "
+                         f"{_AUTO_SPLIT_FILESIZE_BYTES/1e6:.0f} MB")
+        print(f"  [{_ts()}] Scene is complex ({'; '.join(reason)}) — splitting "
+              f"into per-sub-detector chunks to keep peak memory bounded ...",
+              flush=True)
         return _auto_split_and_convert(gdml_to_load, output_path, fmt, t_total)
 
     # ---- Single-pass conversion ----

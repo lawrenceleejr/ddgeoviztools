@@ -274,20 +274,44 @@ Switch cameras via **Scene Properties → Camera** dropdown, or press
 
 ## Using the phi cutaway in Blender
 
-After opening the `.blend` file:
+After opening the `.blend` file, each detector object has two phi-cutaway
+mechanisms in its modifier stack:
 
-1. Select the **`PhiCutawayControl`** Empty in the outliner.
-2. Go to **Object Properties** (orange square icon) → **Custom Properties**.
-3. Adjust `phi_min` and `phi_max` (in degrees). All sub-detectors update
-   simultaneously via Blender drivers.
+### 1. Geometry Nodes cutaway (primary — enabled by default)
 
-The phi convention: `phi = atan2(Y, X)` in the transverse plane (Z = beam).
-- `phi = 0°` → +X direction (3 o'clock)
-- `phi = 90°` → +Y direction (12 o'clock, towards sky)
-- `phi = 180°` → −X (9 o'clock)
+This is the **PhiCutaway** modifier.  It reads a pre-baked `phi_deg` face
+attribute and deletes faces outside the visible sector.
 
-To animate the cutaway opening (e.g. for a video), keyframe `phi_max` over
-a frame range in the Custom Properties panel.
+- Select any detector object → **Properties → Modifiers → PhiCutaway**.
+- Adjust **Phi Min** and **Phi Max** (in degrees) in the modifier inputs.
+- All sub-detectors share the same node group; change the defaults in
+  the node group editor to affect all objects at once.
+
+### 2. Boolean INTERSECT cutaway (secondary — disabled by default)
+
+This is the **PhiBoolean** modifier.  A solid wedge-shaped cutter mesh
+(**PhiWedge** in the Cutters collection) covers the visible phi sector.
+The Boolean INTERSECT operation keeps only the part of the detector
+inside the wedge.
+
+- To enable: select a detector object → **Properties → Modifiers →
+  PhiBoolean** → toggle the camera and monitor icons (show in render /
+  show in viewport).
+- **Note:** Boolean operations require manifold (watertight) meshes.
+  VTK-exported meshes are often non-manifold, which can cause the Boolean
+  to fail silently or produce artifacts.  The GN cutaway above is more
+  reliable for non-manifold meshes.
+
+### Phi convention
+
+`phi = atan2(-X_local, Y_local)` in mesh local (GDML) coordinates.
+After the Ry(+90°) rotation into Blender world space:
+- `phi = 0°` → +Y (vertically up)
+- `phi = 90°` → +Z (horizontal transverse)
+- `phi = -90°` → −Z (horizontal transverse, opposite side)
+
+To animate the cutaway opening (e.g. for a video), keyframe `Phi Max`
+in the modifier inputs over a frame range.
 
 You can also change the **Weld modifier threshold** per-object in
 **Properties → Modifiers → Weld** to control how aggressively duplicate
