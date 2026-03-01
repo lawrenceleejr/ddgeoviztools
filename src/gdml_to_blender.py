@@ -958,6 +958,21 @@ def create_blender_scene(
                   f"(phi cut baked into mesh, not interactively adjustable).",
                   flush=True)
 
+        # Blender 5.0+ geometry-node evaluation runs in a TBB worker thread
+        # during the depsgraph flush that precedes save_as_mainfile.  The GN
+        # node tree created above causes a SIGSEGV inside that thread even
+        # though it is syntactically valid at the Python level (the crash
+        # shows up as a raw C backtrace with no Python frames).  Until the
+        # root cause inside Blender's C++ GN evaluator is understood, force
+        # the bmesh path on 5.0+: the phi cut is baked into the mesh data
+        # and is not interactively adjustable in the .blend file, but the
+        # visual result is identical and the file saves cleanly.
+        if ng is not None and bpy.app.version >= (5, 0, 0):
+            print("  [PHI] Blender 5.0+: discarding GN modifier, using bmesh "
+                  "fallback to avoid TBB evaluation crash.", flush=True)
+            bpy.data.node_groups.remove(ng)
+            ng = None
+
     # ---- Load each mesh ----
     loaded_objects: list = []
     for mesh_path in mesh_files:
