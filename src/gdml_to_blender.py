@@ -1452,7 +1452,7 @@ def create_blender_scene(
     # Multipliers are tuned so that the Cycles render at default exposure is
     # properly lit; interior surfaces (visible through the phi cut) receive
     # fill from the interior fill light and the raised world-background strength.
-    energy_base = r * r * 0.05   # W · BU⁻²  (50× higher than the old 1e-3)
+    energy_base = r * r * 0.0005   # W · BU⁻²
 
     # Key light — warm golden-hour glow from above and slightly to one side.
     # 3000 K ≈ incandescent / warm candlelight.
