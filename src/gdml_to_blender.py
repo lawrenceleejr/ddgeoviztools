@@ -8,12 +8,15 @@ Features
 - Assigns physics-inspired materials (steel, brass, copper, matte variants).
 - Adds a phi-cutaway Geometry Nodes modifier (adjustable via PhiCutawayControl
   empty object — change one property, all sub-detectors update).
-- Sets up the scene with collider physics convention: Z = beam, Y = sky
-  (right-handed; geometry is imported as-is from GDML/VTK coordinates).
+- Sets up the scene with GDML geometry imported then rotated +90° around Y
+  so that the GDML beam axis (Z) maps to Blender's X axis.  All detector
+  objects are also scaled down 100× for a comfortable working viewport.
+  Effective Blender convention: X = beam, Y = physics-up (vertical), Z = horizontal transverse.
 - Adds pre-positioned orthographic cameras for the two standard HEP views:
-    Cam_Transverse  — looking along −Z, sees XY cross-section
-    Cam_Side        — looking along −X, sees ZY (beam = horizontal, Y = up)
+    Cam_Transverse  — on +X axis, looks along −X, sees YZ transverse cross-section
+    Cam_Side        — on +Z axis, looks along −Z, sees XY (beam=horizontal, Y=up)
     Cam_Perspective — 3/4 overview
+- Objects are organised into three named collections: Detector, Cameras, Lights.
 - Golden-hour area lights with colour-temperature (Blackbody shader nodes).
 - Soft purple glow point light at the interaction-point origin.
 - Volumetric world mist (Principled Volume shader).
@@ -748,6 +751,24 @@ def _clear_scene():
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
 
+# ---------------------------------------------------------------------------
+# Collection helpers
+# ---------------------------------------------------------------------------
+
+def _make_collection(name: str) -> "bpy.types.Collection":
+    """Create a named collection and link it to the master scene collection."""
+    col = bpy.data.collections.new(name)
+    bpy.data.scenes[0].collection.children.link(col)
+    return col
+
+
+def _link_to_collection(obj, col) -> None:
+    """Move *obj* from whichever collection(s) it currently belongs to into *col*."""
+    for c in list(obj.users_collection):
+        c.objects.unlink(obj)
+    col.objects.link(obj)
+
+
 def _setup_units():
     scene = bpy.data.scenes[0]
     scene.unit_settings.system       = "METRIC"
@@ -974,10 +995,14 @@ def _setup_render_and_compositor(scene):
     except Exception:
         pass  # older / newer bpy builds may not accept the string assignment
 
-    # Colour management — Filmic for cinematic look
+    # Colour management — Filmic for cinematic look.
+    # A positive exposure offset lifts the scene brightness in the viewport
+    # and in renders; without it Filmic tone-mapping can make scenes appear
+    # very dark when the dominant light is a distant area source.
     try:
         scene.view_settings.view_transform = "Filmic"
         scene.view_settings.look           = "Medium Contrast"
+        scene.view_settings.exposure       = 2.0   # +2 EV → brighter viewport
     except Exception:
         pass
 
@@ -1118,6 +1143,12 @@ def create_blender_scene(
     _setup_units()
     print(f"  [SETUP] Scene cleared, units set (1 unit = 1 mm)", flush=True)
 
+    # ---- Create scene collections ----
+    col_detector = _make_collection("Detector")
+    col_cameras  = _make_collection("Cameras")
+    col_lights   = _make_collection("Lights")
+    print(f"  [SETUP] Collections created: Detector, Cameras, Lights", flush=True)
+
     # ---- World shader (background + volumetric mist) ----
     print(f"  [SETUP] Setting up world shader ...", flush=True)
     _setup_world()
@@ -1218,6 +1249,10 @@ def create_blender_scene(
         obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
         obj.scale = (0.01, 0.01, 0.01)
 
+        # Move into the Detector collection (object was linked to root scene
+        # collection inside _load_mesh; re-link it to the named collection).
+        _link_to_collection(obj, col_detector)
+
         loaded_objects.append(obj)
         print(f"    → {len(obj.data.vertices)} verts, {len(obj.data.polygons)} faces"
               f"  material: {mat.name}")
@@ -1233,39 +1268,49 @@ def create_blender_scene(
         pass
 
     # ---- Compute scene bounds for light / camera placement ----
+    # After the Ry(+90°) rotation and 0.01 scale applied to every object:
+    #   x_max = beam half-length   (was z_gdml)
+    #   y_max = vertical transverse  (was y_gdml)
+    #   z_max = horizontal transverse (was x_gdml, sign-flipped but abs same)
     x_max, y_max, z_max = _scene_bounds(loaded_objects)
-    r = max(x_max, y_max, z_max)   # overall scale radius in mm
+    r = max(x_max, y_max, z_max)   # overall scale radius (Blender units)
 
-    r_trans  = max(x_max, y_max) * 1.6
-    r_side   = max(z_max, y_max) * 1.6
-    r_persp  = max(x_max, y_max, z_max) * 2.2
+    # Transverse view (end-cap): camera distance based on transverse extent
+    r_trans  = max(y_max, z_max) * 1.6
+    # Side/elevation view: camera distance based on beam + vertical extent
+    r_side   = max(x_max, y_max) * 1.6
+    r_persp  = r * 2.2
 
-    ortho_trans = max(x_max, y_max) * 2.2
-    ortho_side  = max(z_max, y_max) * 2.2
+    ortho_trans = max(y_max, z_max) * 2.2
+    ortho_side  = max(x_max, y_max) * 2.2
 
     # ---- Environment sphere ----
     if not no_env_sphere:
-        _add_environment_sphere(r * 1.8)
+        env_sphere = _add_environment_sphere(r * 1.8)
+        _link_to_collection(env_sphere, col_lights)
 
     # ---- Cameras ----
     print(f"  [SETUP] Creating cameras "
-          f"(r_trans={r_trans:.0f} r_side={r_side:.0f} r_persp={r_persp:.0f}) ...",
+          f"(r_trans={r_trans:.2f} r_side={r_side:.2f} r_persp={r_persp:.2f}) ...",
           flush=True)
-    # Transverse: camera on +Z axis looking toward origin
-    #   → sees XY plane: X=right, Y=up, Z(beam) into screen
+
+    # Transverse (end-cap): camera on +X axis (beam direction) looking toward origin.
+    #   → sees YZ plane: Y = physics-up (vertical), Z = physics-horizontal-transverse.
+    #   In GDML terms this is the transverse cross-section of the detector.
     cam_trans = _make_camera(
         "Cam_Transverse",
-        location=(0, 0, r_trans),
+        location=(r_trans, 0, 0),
         target=(0, 0, 0),
         ortho=True,
         ortho_scale=ortho_trans,
     )
 
-    # Side: camera on +X axis looking toward origin
-    #   → sees ZY plane: Z(beam)=horizontal-right, Y=up
+    # Side / elevation: camera on +Z axis looking down toward origin.
+    #   → sees XY plane: X = beam (horizontal right), Y = physics-up (vertical).
+    #   This gives the classic "side view" with the beam axis running left–right.
     _make_camera(
         "Cam_Side",
-        location=(r_side, 0, 0),
+        location=(0, 0, r_side),
         target=(0, 0, 0),
         ortho=True,
         ortho_scale=ortho_side,
@@ -1274,66 +1319,83 @@ def create_blender_scene(
     # Perspective overview from 3/4 angle
     _make_camera(
         "Cam_Perspective",
-        location=(r_persp * 0.55, -r_persp * 0.75, r_persp * 0.35),
+        location=(r_persp * 0.40, -r_persp * 0.65, r_persp * 0.50),
         target=(0, 0, 0),
         ortho=False,
     )
 
-    # Set default active camera to transverse view
+    # Move cameras into the Cameras collection
+    for cam_name in ("Cam_Transverse", "Cam_Side", "Cam_Perspective"):
+        cam_obj = bpy.data.objects.get(cam_name)
+        if cam_obj:
+            _link_to_collection(cam_obj, col_cameras)
+
+    # Set default active camera to transverse (end-cap) view
     bpy.data.scenes[0].camera = cam_trans
     print(f"  [SETUP] Cameras created (active: Cam_Transverse)", flush=True)
 
     # ---- Lighting ----
     print(f"  [SETUP] Creating lights ...", flush=True)
     # Three-point golden-hour area lights with colour temperature.
-    # Lamp energy scales with r² so the scene brightness is independent
-    # of detector size.
-    energy_base = r * r * 1e-3   # normalised energy coefficient
+    # After the 100× scale reduction, r is ~23–60 Blender units (representing
+    # a real detector of ~3–12 m scale). The r² formula gives energies in the
+    # tens-to-hundreds of watts — appropriate for Blender Cycles at this scale.
+    # Positions are given in Blender world coords (X = beam, Y = physics-up,
+    # Z = physics-horizontal-transverse).
+    energy_base = r * r * 1e-3   # normalised energy coefficient (W · BU⁻²)
 
-    # Key light — warm golden-hour glow from upper-right-front
-    # 3000 K ≈ incandescent / warm candlelight
-    _area_light_with_temperature(
+    # Key light — warm golden-hour glow from above and slightly to one side.
+    # 3000 K ≈ incandescent / warm candlelight.
+    key_obj = _area_light_with_temperature(
         "Light_Key_Golden",
-        location=( r * 1.4, -r * 0.2,  r * 0.3),
+        location=( r * 0.40,  r * 1.20,  r * 0.90),
         target=(0, 0, 0),
-        size=r * 0.6,
+        size=r * 0.60,
         energy=energy_base * 400.0,
         temp_kelvin=3000.0,
     )
 
-    # Fill light — cooler sky blue from upper-left-back
-    # 7500 K ≈ overcast skylight
-    _area_light_with_temperature(
+    # Fill light — cooler sky blue from the opposite side and slightly behind.
+    # 7500 K ≈ overcast skylight.
+    fill_obj = _area_light_with_temperature(
         "Light_Fill_Sky",
-        location=(-r * 0.9,  r * 0.6,  r * 0.8),
+        location=(-r * 0.50,  r * 0.70, -r * 1.00),
         target=(0, 0, 0),
         size=r * 0.48,
         energy=energy_base * 72.0,
         temp_kelvin=7500.0,
     )
 
-    # Rim light — warm backlight to separate detector from background
-    # 4500 K ≈ neutral warm white
-    _area_light_with_temperature(
+    # Rim light — warm backlight along the −beam direction to separate the
+    # detector silhouette from the dark background.
+    # 4500 K ≈ neutral warm white.
+    rim_obj = _area_light_with_temperature(
         "Light_Rim_Warm",
-        location=( r * 0.2,  r * 0.4, -r * 1.3),
+        location=(-r * 1.30,  r * 0.30,  r * 0.20),
         target=(0, 0, 0),
-        size=r * 0.3,
+        size=r * 0.30,
         energy=energy_base * 120.0,
         temp_kelvin=4500.0,
     )
 
     # Purple glow at the interaction point (IP / beam origin)
-    # Soft point light — evocative of Cherenkov / beams
-    _add_point_light(
+    # Soft point light — evocative of Cherenkov / beam interactions.
+    ip_obj = _add_point_light(
         "Light_IP_Purple_Glow",
         location=(0, 0, 0),
         energy=energy_base * 80.0,
         color_rgb=(0.45, 0.0, 1.0),
-        soft_size=r * 0.3,
+        soft_size=r * 0.30,
     )
 
-    print(f"  [SETUP] Lights created", flush=True)
+    # Move all lights (including environment sphere) into the Lights collection
+    for light_obj in (key_obj, fill_obj, rim_obj, ip_obj):
+        if light_obj is not None:
+            _link_to_collection(light_obj, col_lights)
+
+    print(f"  [SETUP] Lights created (energy_base={energy_base:.4f} W, "
+          f"key={energy_base*400:.1f} W, fill={energy_base*72:.1f} W, "
+          f"rim={energy_base*120:.1f} W, IP={energy_base*80:.1f} W)", flush=True)
 
     # ---- Render settings + compositor bloom ----
     print(f"  [SETUP] Configuring render settings ...", flush=True)
@@ -1348,7 +1410,10 @@ def create_blender_scene(
     print(f"  Save complete.", flush=True)
     print(f"\n  Saved: {output_path}")
     print(f"  Objects: {len(loaded_objects)}")
-    print(f"  Active camera: Cam_Transverse (XY cross-section, Z=beam into screen)")
+    print(f"  Collections: Detector ({len(loaded_objects)} objects), "
+          f"Cameras (3), Lights (4 + env sphere)")
+    print(f"  Active camera: Cam_Transverse (YZ transverse view, X=beam into screen)")
+    print(f"  Cam_Side: elevation view (X=beam left-right, Y=up)")
     if not no_phi_cut:
         print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°]  "
               f"— adjust via PhiCutawayControl → Custom Properties")
