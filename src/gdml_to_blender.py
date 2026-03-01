@@ -299,17 +299,14 @@ def _phi_cut_trimesh(
 def _load_mesh(
     filepath: Path,
     name: str,
-    phi_min_deg: float = None,
-    phi_max_deg: float = None,
 ):
     """
     Read a mesh file with trimesh, merge duplicate vertices and remove
-    degenerate faces, optionally apply a phi-sector cutaway in trimesh,
-    then create a bpy Mesh object.
+    degenerate faces, then create a bpy Mesh object.
 
-    phi_min_deg / phi_max_deg — when both are supplied the wedge
-    [phi_min_deg, phi_max_deg] is removed before the bpy mesh is created.
-    The cut is done entirely in trimesh/numpy so it is safe on Blender 5.0+.
+    The phi-sector cutaway is applied as a Boolean modifier (using a separate
+    PhiWedge cutter object) rather than being baked into the mesh data here.
+    This keeps the cutaway non-destructive and live-adjustable in Blender.
 
     Returns the new bpy Object.
     """
@@ -338,10 +335,6 @@ def _load_mesh(
 
     # Always re-wrap as a processed Trimesh (merges duplicate verts, etc.)
     raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
-
-    # Apply phi cutaway entirely in trimesh — avoids Blender-level bmesh SIGSEGV
-    if phi_min_deg is not None and phi_max_deg is not None:
-        raw = _phi_cut_trimesh(raw, phi_min_deg, phi_max_deg)
 
     verts = raw.vertices.tolist()   # list of [x, y, z]
     faces = raw.faces.tolist()      # list of [i, j, k]
@@ -802,6 +795,221 @@ def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
                     mod.driver_remove(f'["{identifier}"]')
                 except Exception:
                     pass
+
+
+# ---------------------------------------------------------------------------
+# Live phi-wedge Boolean cutter
+# ---------------------------------------------------------------------------
+
+def _make_phi_wedge_node_group(phi_min_deg: float, phi_max_deg: float):
+    """
+    Build a Geometry Nodes group that trims a full cylinder to the angular
+    sector [phi_min_deg, phi_max_deg] by reading the pre-baked 'phi_deg'
+    FACE attribute.
+
+    Blender 5.0+ compatible — uses only:
+      GeometryNodeInputNamedAttribute, FunctionNodeCompare,
+      FunctionNodeBooleanMath, GeometryNodeDeleteGeometry.
+
+    The Phi Min / Phi Max GROUP INPUTS are exposed in the modifier panel so
+    the sector can be edited live without re-running any Python.
+    """
+    NG_NAME = "PhiWedgeGen"
+    if NG_NAME in bpy.data.node_groups:
+        bpy.data.node_groups.remove(bpy.data.node_groups[NG_NAME])
+
+    ng    = bpy.data.node_groups.new(NG_NAME, "GeometryNodeTree")
+    iface = ng.interface
+    nodes = ng.nodes
+    links = ng.links
+
+    # ---- Interface ----
+    iface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    iface.new_socket("Geometry", in_out="INPUT",  socket_type="NodeSocketGeometry")
+    s_min = iface.new_socket("Phi Min", in_out="INPUT", socket_type="NodeSocketFloat")
+    s_max = iface.new_socket("Phi Max", in_out="INPUT", socket_type="NodeSocketFloat")
+    s_min.default_value = phi_min_deg
+    s_max.default_value = phi_max_deg
+
+    gin  = nodes.new("NodeGroupInput");  gin.location  = (-600,   0)
+    gout = nodes.new("NodeGroupOutput"); gout.location  = ( 700,   0)
+
+    # Read 'phi_deg' float face attribute (pre-baked on the cylinder mesh)
+    attr           = nodes.new("GeometryNodeInputNamedAttribute")
+    attr.data_type = "FLOAT"
+    attr.inputs[0].default_value = "phi_deg"
+    attr.location  = (-400, -150)
+
+    # phi_deg >= Phi Min
+    cmp_min           = nodes.new("FunctionNodeCompare")
+    cmp_min.data_type = "FLOAT"
+    cmp_min.operation = "GREATER_EQUAL"
+    cmp_min.location  = (-180,  120)
+
+    # phi_deg <= Phi Max
+    cmp_max           = nodes.new("FunctionNodeCompare")
+    cmp_max.data_type = "FLOAT"
+    cmp_max.operation = "LESS_EQUAL"
+    cmp_max.location  = (-180, -120)
+
+    # AND: face is inside sector
+    and_nd           = nodes.new("FunctionNodeBooleanMath")
+    and_nd.operation = "AND"
+    and_nd.location  = (  60,    0)
+
+    # NOT: select faces to delete (those outside the sector)
+    not_nd           = nodes.new("FunctionNodeBooleanMath")
+    not_nd.operation = "NOT"
+    not_nd.location  = ( 260,  -80)
+
+    del_geo        = nodes.new("GeometryNodeDeleteGeometry")
+    del_geo.domain = "FACE"
+    del_geo.mode   = "ALL"
+    del_geo.location = (480, 0)
+
+    # ---- Wiring ----
+    links.new(gin.outputs["Geometry"],  del_geo.inputs["Geometry"])
+    links.new(attr.outputs[0],          cmp_min.inputs["A"])
+    links.new(gin.outputs["Phi Min"],   cmp_min.inputs["B"])
+    links.new(attr.outputs[0],          cmp_max.inputs["A"])
+    links.new(gin.outputs["Phi Max"],   cmp_max.inputs["B"])
+    links.new(cmp_min.outputs[0],       and_nd.inputs[0])
+    links.new(cmp_max.outputs[0],       and_nd.inputs[1])
+    links.new(and_nd.outputs[0],        not_nd.inputs[0])
+    links.new(not_nd.outputs[0],        del_geo.inputs["Selection"])
+    links.new(del_geo.outputs[0],       gout.inputs["Geometry"])
+
+    print(f"  [WEDGE] PhiWedgeGen GN group built "
+          f"({len(ng.nodes)} nodes, {len(ng.links)} links)", flush=True)
+    return ng
+
+
+def _create_phi_wedge_cutter(
+    phi_min_deg: float,
+    phi_max_deg: float,
+    radius: float,
+    depth: float,
+    collection,
+):
+    """
+    Create a solid pie-slice cylinder for use as a Boolean DIFFERENCE cutter.
+
+    Geometry convention (Blender world coords, after the Ry+90° detector rotation):
+        X = beam,  Y = physics-up (phi = 0°),  Z = horiz-transverse (phi = 90°).
+    phi_deg = atan2(Z, Y)  — matches the Blender-YZ phi labelling on the detectors.
+
+    The mesh is a full 360° cylinder with a 'phi_deg' FLOAT FACE attribute
+    pre-baked on every face.  A Geometry Nodes modifier reads that attribute
+    and keeps only faces whose phi_deg falls in [Phi Min, Phi Max], producing
+    a solid sector.  Both inputs appear in the modifier panel so the user can
+    drag the sliders live without re-running the script.
+
+    The cutter is shown as wireframe in the viewport and excluded from renders;
+    the Boolean modifier on detector objects still references it as its operand.
+    """
+    import bmesh as _bm
+
+    N      = 128          # arc segments — 360°/128 ≈ 2.8° step
+    r      = radius
+    half_d = depth / 2.0
+
+    me = bpy.data.meshes.new("PhiWedge")
+    bm = _bm.new()
+
+    # Centre vertices on the ±X caps (beam axis)
+    vc_pos = bm.verts.new((+half_d, 0.0, 0.0))
+    vc_neg = bm.verts.new((-half_d, 0.0, 0.0))
+
+    # Ring vertices at ±X: phi=0 → +Y, phi=90° → +Z
+    vp, vn = [], []
+    for i in range(N):
+        ang = 2.0 * math.pi * i / N
+        y   = r * math.cos(ang)
+        z   = r * math.sin(ang)
+        vp.append(bm.verts.new((+half_d, y, z)))
+        vn.append(bm.verts.new((-half_d, y, z)))
+
+    bm.verts.ensure_lookup_table()
+    phi_layer = bm.faces.layers.float.new("phi_deg")
+
+    for i in range(N):
+        j       = (i + 1) % N
+        mid_ang = 2.0 * math.pi * (i + 0.5) / N
+        phi_mid = math.degrees(math.atan2(math.sin(mid_ang), math.cos(mid_ang)))
+
+        # Outer arc — side quad
+        fs = bm.faces.new([vp[i], vp[j], vn[j], vn[i]])
+        fs[phi_layer] = phi_mid
+
+        # +X end-cap triangle (fan from centre)
+        fc_pos = bm.faces.new([vc_pos, vp[j], vp[i]])
+        fc_pos[phi_layer] = phi_mid
+
+        # -X end-cap triangle (fan from centre)
+        fc_neg = bm.faces.new([vc_neg, vn[i], vn[j]])
+        fc_neg[phi_layer] = phi_mid
+
+    # Radial wall at phi_min — closes the sector boundary
+    phi_min_r = math.radians(phi_min_deg)
+    phi_max_r = math.radians(phi_max_deg)
+    for phi_r, phi_d in ((phi_min_r, phi_min_deg), (phi_max_r, phi_max_deg)):
+        yy = r * math.cos(phi_r)
+        zz = r * math.sin(phi_r)
+        vwp = bm.verts.new((+half_d, yy, zz))
+        vwn = bm.verts.new((-half_d, yy, zz))
+        fw  = bm.faces.new([vc_pos, vwp, vwn, vc_neg])
+        fw[phi_layer] = phi_d
+
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+
+    obj = bpy.data.objects.new("PhiWedge", me)
+    bpy.data.scenes[0].collection.objects.link(obj)
+
+    # Wireframe-only in viewport — user can see/select it but it won't obscure
+    # the detector.  Excluded from renders entirely.
+    obj.display_type = "WIRE"
+    obj.hide_render  = True
+
+    # GN modifier: live [Phi Min, Phi Max] control
+    mod            = obj.modifiers.new("PhiWedgeGen", "NODES")
+    ng             = _make_phi_wedge_node_group(phi_min_deg, phi_max_deg)
+    mod.node_group = ng
+
+    # Set default values on the modifier inputs via their socket identifiers
+    for item in ng.interface.items_tree:
+        if getattr(item, "item_type", None) != "SOCKET" or item.in_out != "INPUT":
+            continue
+        if item.name == "Phi Min":
+            try:
+                mod[item.identifier] = phi_min_deg
+            except Exception:
+                pass
+        elif item.name == "Phi Max":
+            try:
+                mod[item.identifier] = phi_max_deg
+            except Exception:
+                pass
+
+    _link_to_collection(obj, collection)
+    print(f"  [WEDGE] PhiWedge cutter: "
+          f"phi=[{phi_min_deg:.1f}°,{phi_max_deg:.1f}°] "
+          f"r={r:.1f} depth={depth:.1f} BU", flush=True)
+    return obj
+
+
+def _apply_boolean_phi_cut(det_obj, wedge_obj):
+    """
+    Add a Boolean DIFFERENCE modifier to *det_obj* that uses *wedge_obj* as
+    the cutter.  The Fast solver is robust with the slightly open sector mesh
+    produced by the GN filter.
+    """
+    mod           = det_obj.modifiers.new("PhiBoolean", "BOOLEAN")
+    mod.operation = "DIFFERENCE"
+    mod.object    = wedge_obj
+    mod.solver    = "FAST"
+    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -1301,7 +1509,8 @@ def create_blender_scene(
     col_detector = _make_collection("Detector")
     col_cameras  = _make_collection("Cameras")
     col_lights   = _make_collection("Lights")
-    print(f"  [SETUP] Collections created: Detector, Cameras, Lights", flush=True)
+    col_cutters  = _make_collection("Cutters")   # Boolean cutter objects (hidden from render)
+    print(f"  [SETUP] Collections created: Detector, Cameras, Lights, Cutters", flush=True)
 
     # ---- World shader (background + volumetric mist) ----
     print(f"  [SETUP] Setting up world shader ...", flush=True)
@@ -1315,13 +1524,11 @@ def create_blender_scene(
           f"{[m.name for m in materials]}", flush=True)
 
     # ---- Load each mesh ----
-    # Phi cutaway is applied at the trimesh level inside _load_mesh, avoiding
-    # the Blender bmesh SIGSEGV that occurred on large meshes in Blender 5.0+.
-    _phi_min = phi_min if not no_phi_cut else None
-    _phi_max = phi_max if not no_phi_cut else None
+    # Phi cutaway is now a live Boolean modifier (PhiBoolean) applied after
+    # scene bounds are computed.  Meshes are loaded clean — no baking.
     if not no_phi_cut:
-        print(f"  [PHI] Phi cutaway [{phi_min:.1f}°, {phi_max:.1f}°] will be baked "
-              f"into each mesh at load time (trimesh, Blender-YZ convention).",
+        print(f"  [PHI] Phi cutaway [{phi_min:.1f}°, {phi_max:.1f}°] will be applied "
+              f"as a Boolean modifier (PhiWedge cutter, live-adjustable via GN).",
               flush=True)
 
     loaded_objects: list = []
@@ -1329,8 +1536,7 @@ def create_blender_scene(
         name = mesh_path.stem
         print(f"  Loading {mesh_path.name} ...")
         try:
-            obj = _load_mesh(mesh_path, name,
-                             phi_min_deg=_phi_min, phi_max_deg=_phi_max)
+            obj = _load_mesh(mesh_path, name)
         except Exception as exc:
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
@@ -1339,17 +1545,12 @@ def create_blender_scene(
         mat = _material_for_detector(name, mat_cycle)
         obj.data.materials.append(mat)
 
-        # Modifier stack: Weld → Bevel
+        # Weld only here; Boolean + Bevel are added after scene bounds are known
         _add_weld(obj, threshold=weld_threshold)
-
-        if not no_bevel:
-            _add_bevel(obj, width_mm=bevel_width_mm)
 
         # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
         # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
-        # line horizontal along the Blender X axis.  The phi-cutaway above
-        # operated on local (GDML) coordinates where Z=beam and XY=transverse,
-        # so it remains geometrically correct after this object rotation.
+        # line horizontal along the Blender X axis.
         # Scale down 100× so the detector fits comfortably in Blender's
         # working viewport (e.g. solenoid goes from ±2300 BU to ±23 BU).
         obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
@@ -1389,6 +1590,32 @@ def create_blender_scene(
 
     ortho_trans = max(y_max, z_max) * 2.2
     ortho_side  = max(x_max, y_max) * 2.2
+
+    # ---- Phi-wedge Boolean cutter ----
+    # Created after scene bounds so the wedge is sized to fully cover the detector.
+    # Applied as the second modifier (after Weld, before Bevel) so edge-chamfering
+    # works on the cut surface too.
+    wedge_obj = None
+    if not no_phi_cut:
+        # Wedge radius: 2× transverse extent covers the detector plus margin.
+        # Depth: 3× beam extent so the wedge fully brackets the longest detector.
+        w_radius = max(y_max, z_max) * 2.5
+        w_depth  = x_max * 3.0
+        wedge_obj = _create_phi_wedge_cutter(
+            phi_min, phi_max, w_radius, w_depth, col_cutters
+        )
+        # Boolean + Bevel: second pass over every loaded detector object
+        for obj in loaded_objects:
+            _apply_boolean_phi_cut(obj, wedge_obj)
+            if not no_bevel:
+                _add_bevel(obj, width_mm=bevel_width_mm)
+        print(f"  [PHI] Boolean phi-cut applied to {len(loaded_objects)} objects",
+              flush=True)
+    else:
+        # No phi cut — just add Bevel
+        for obj in loaded_objects:
+            if not no_bevel:
+                _add_bevel(obj, width_mm=bevel_width_mm)
 
     # ---- Environment sphere ----
     if not no_env_sphere:
@@ -1556,7 +1783,7 @@ def create_blender_scene(
     print(f"  Cam_Side: elevation view (X=beam left-right, Y=up)")
     if not no_phi_cut:
         print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°]  "
-              f"(baked into mesh, Blender-YZ convention: phi=0→+Y, phi=90→+Z)")
+              f"(live Boolean via PhiWedge cutter — adjust Phi Min/Max in modifier panel)")
     print(f"  Render: Cycles 4 K, 128 samples, OIDN denoiser")
     print(f"  Lighting: golden-hour (3000 K key) + sky fill (7500 K) + rim (4500 K)"
           f" + interior fill (warm white) + purple IP glow")
