@@ -345,8 +345,10 @@ def cmd_blender_scene(args: argparse.Namespace) -> int:
     print(f"\nDone — open {output_path} in Blender.", flush=True)
     print("  Active camera: Cam_Transverse (XY cross-section, Z=beam into screen).", flush=True)
     if not args.no_phi_cut:
-        print("  Phi cutaway: select 'PhiCutawayControl' → Object Properties", flush=True)
-        print("               → Custom Properties → adjust phi_min / phi_max.", flush=True)
+        print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°] baked via bmesh bisect "
+              f"(clean intersection edges).", flush=True)
+        print("  Boolean modifier (disabled): enable per-object for non-destructive cut.",
+              flush=True)
     return 0
 
 

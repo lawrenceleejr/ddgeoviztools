@@ -6,8 +6,9 @@ Features
 - Reads OBJ / GLTF / VTP mesh files produced by ddgeoviztools' convert step.
 - Cleans up duplicate vertices (trimesh process=True + Weld modifier).
 - Assigns physics-inspired materials (steel, brass, copper, matte variants).
-- Adds a phi-cutaway Geometry Nodes modifier (adjustable via PhiCutawayControl
-  empty object — change one property, all sub-detectors update).
+- Applies a phi-cutaway via bmesh bisect (creates new vertices at the exact
+  intersection of existing edges with the phi boundary planes, producing
+  geometrically clean, razor-sharp cut edges baked into the mesh).
 - Sets up the scene with GDML geometry imported then rotated +90° around Y
   so that the GDML beam axis (Z) maps to Blender's X axis.  Objects are
   kept at native GDML mm scale (1 BU = 1 mm).
@@ -311,9 +312,10 @@ def _load_mesh(
     degenerate faces, then create a bpy Mesh object.
 
     The phi-sector cutaway is handled after loading by either:
-    (a) a Geometry Nodes modifier that reads a pre-baked 'phi_deg' face
-        attribute (primary — works on non-manifold meshes), or
-    (b) a Boolean INTERSECT modifier using a PhiWedge cutter (secondary,
+    (a) bmesh bisect — creates new vertices at the exact phi boundary
+        planes, then deletes faces inside the cut sector (primary —
+        produces clean, razor-sharp cut edges), or
+    (b) a Boolean DIFFERENCE modifier using a PhiWedge cutter (secondary,
         disabled by default — requires manifold mesh).
 
     GLTF scene-graph node transforms are applied during loading so that
@@ -440,51 +442,111 @@ def _add_bevel(obj, width_mm: float = 0.2):
 
 def _apply_phi_cutaway_bmesh(obj, phi_min_deg: float, phi_max_deg: float):
     """
-    Apply phi cutaway by deleting faces whose centroid phi lies *inside*
-    [phi_min_deg, phi_max_deg].  This removes a wedge-shaped sector from the
-    detector so the interior is visible — everything *outside* the range is
-    kept.
+    Apply phi cutaway with geometrically clean cut edges using bmesh bisect.
 
-    This is the bmesh fallback when the Geometry Nodes approach fails.
-    It must produce the same result as the GN modifier: delete [phi_min, phi_max],
-    keep everything else.
+    Instead of deleting whole faces by centroid (which leaves ragged edges),
+    this function:
+      1. Bisects the mesh along the phi_min plane → creates new vertices
+         at the exact intersection of existing edges with the cut boundary.
+      2. Bisects again along the phi_max plane → same for the other boundary.
+      3. Deletes faces whose centroid phi falls inside [phi_min, phi_max].
+
+    After the two bisect operations every face is fully inside or fully
+    outside the cut sector, so the centroid-based deletion produces perfectly
+    clean edges aligned to the phi boundary planes — no ragged stair-stepping.
 
     phi = atan2(-X_local, Y_local) in the mesh local coordinate frame.
     After the Ry(+90°) object rotation:  phi=0 → +Y_blender (up),
     phi=90° → +Z_blender (horizontal transverse).
+
+    The two cut planes each contain the local Z axis (beam) and one of the
+    boundary directions.  Their normals are perpendicular to those planes,
+    pointing into the cut sector:
+      phi_min plane normal: (-cos(phi_min), -sin(phi_min), 0)
+      phi_max plane normal: ( cos(phi_max),  sin(phi_max), 0)
     """
     import bmesh
+
     phi_min = math.radians(phi_min_deg)
     phi_max = math.radians(phi_max_deg)
-    n_faces = len(obj.data.polygons)
-    print(f"  [PHI-BMESH] Cutting sector [{phi_min_deg:.1f}°, {phi_max_deg:.1f}°] "
-          f"from '{obj.name}' ({n_faces} faces) ...",
-          flush=True)
+    n_faces_before = len(obj.data.polygons)
+    print(f"  [PHI-BISECT] Cutting sector [{phi_min_deg:.1f}°, {phi_max_deg:.1f}°] "
+          f"from '{obj.name}' ({n_faces_before} faces) ...", flush=True)
 
     bm = bmesh.new()
     bm.from_mesh(obj.data)
-    bm.faces.ensure_lookup_table()
 
+    # --- Step 1: Bisect at the phi_min boundary ---
+    # This plane contains the Z axis and the direction at phi_min.
+    # Direction at phi_min: (-sin(phi_min), cos(phi_min), 0)
+    # Plane normal (perpendicular, pointing into the cut sector):
+    #   Z × dir = (0,0,1) × (-sin φ, cos φ, 0) = (-cos φ, -sin φ, 0)
+    # bisect_plane with clear_inner=False, clear_outer=False just splits
+    # faces without deleting anything — creates new vertices at intersection.
+    normal_min = (-math.cos(phi_min), -math.sin(phi_min), 0.0)
+    geom_all = bm.verts[:] + bm.edges[:] + bm.faces[:]
+    bmesh.ops.bisect_plane(
+        bm,
+        geom=geom_all,
+        plane_co=(0.0, 0.0, 0.0),
+        plane_no=normal_min,
+        clear_inner=False,
+        clear_outer=False,
+    )
+    n_after_bisect1 = len(bm.faces)
+
+    # --- Step 2: Bisect at the phi_max boundary ---
+    # Direction at phi_max: (-sin(phi_max), cos(phi_max), 0)
+    # Normal pointing into the cut sector (opposite side):
+    #   -Z × dir = -(0,0,1) × (-sin φ, cos φ, 0) = (cos φ, sin φ, 0)
+    normal_max = (math.cos(phi_max), math.sin(phi_max), 0.0)
+    geom_all = bm.verts[:] + bm.edges[:] + bm.faces[:]
+    bmesh.ops.bisect_plane(
+        bm,
+        geom=geom_all,
+        plane_co=(0.0, 0.0, 0.0),
+        plane_no=normal_max,
+        clear_inner=False,
+        clear_outer=False,
+    )
+    n_after_bisect2 = len(bm.faces)
+
+    print(f"  [PHI-BISECT]   Bisect: {n_faces_before} → {n_after_bisect1} → "
+          f"{n_after_bisect2} faces (new vertices created at cut boundaries)",
+          flush=True)
+
+    # --- Step 3: Delete faces inside the cut sector ---
+    # After bisection, every face is fully inside or fully outside the sector
+    # so centroid classification gives exact results with clean edges.
+    bm.faces.ensure_lookup_table()
     del_faces = []
     for f in bm.faces:
         n = len(f.verts)
         cx = sum(v.co.x for v in f.verts) / n
         cy = sum(v.co.y for v in f.verts) / n
-        # Use Blender-YZ convention: phi = atan2(-X_local, Y_local)
-        # (phi=0 → +Y_blender, phi=90 → +Z_blender)
         phi = math.atan2(-cx, cy)
-        # Delete faces whose phi falls INSIDE the cut sector
         if phi_min <= phi <= phi_max:
             del_faces.append(f)
 
-    print(f"  [PHI-BMESH]   → deleting {len(del_faces)} / {len(bm.faces)} faces "
-          f"(keeping {len(bm.faces) - len(del_faces)} outside cut sector)",
+    print(f"  [PHI-BISECT]   Deleting {len(del_faces)} faces inside cut sector",
           flush=True)
     bmesh.ops.delete(bm, geom=del_faces, context="FACES")
+
+    # --- Step 4: Clean up isolated vertices left by face deletion ---
+    # After deleting faces, some vertices along the cut boundary may be
+    # orphaned (not attached to any remaining face).
+    bm.verts.ensure_lookup_table()
+    orphan_verts = [v for v in bm.verts if not v.link_faces]
+    if orphan_verts:
+        bmesh.ops.delete(bm, geom=orphan_verts, context="VERTS")
+
     bm.to_mesh(obj.data)
     bm.free()
     obj.data.update()
-    print(f"  [PHI-BMESH]   → done; {len(obj.data.polygons)} faces remain", flush=True)
+
+    n_faces_after = len(obj.data.polygons)
+    print(f"  [PHI-BISECT]   Done: {n_faces_after} faces remain "
+          f"(clean cut edges with new intersection vertices)", flush=True)
 
 
 def _precompute_phi_face_attribute(obj):
@@ -1823,66 +1885,48 @@ def create_blender_scene(
     # Faces whose phi falls INSIDE [phi_min, phi_max] are DELETED (cut away),
     # revealing the detector interior through the removed sector.
     #
-    # Two phi-cutaway mechanisms are provided:
+    # PRIMARY: bmesh bisect — bisects the mesh along the two phi boundary
+    #   planes, creating new vertices at the exact intersection of existing
+    #   edges with the cut boundaries.  This produces geometrically clean,
+    #   razor-sharp cut edges (no ragged stair-stepping from whole-face
+    #   deletion).  The operation is baked into the mesh (destructive).
     #
-    # 1. PRIMARY: Geometry Nodes modifier — reads the pre-baked 'phi_deg' face
-    #    attribute and deletes faces inside [phi_min, phi_max].  This is the
-    #    most reliable approach because it works on non-manifold VTK meshes
-    #    and exposes Phi Min / Phi Max sockets for live adjustment.
-    #    All objects share a single node group; a PhiCutawayControl empty
-    #    drives all modifiers from one place.
+    # SECONDARY (disabled by default): Boolean DIFFERENCE modifier — a solid
+    #   phi-wedge cutter mesh covering the cut sector is created in the
+    #   Cutters collection.  VTK-exported meshes are often non-manifold so
+    #   Boolean ops may fail; users can enable per-object if their mesh
+    #   is clean.
     #
-    # 2. SECONDARY: Boolean DIFFERENCE modifier — a solid phi-wedge cutter
-    #    mesh covering the cut sector is created in the Cutters collection.
-    #    A Boolean DIFFERENCE modifier subtracts this sector from each detector
-    #    object.  The modifier is placed in the stack but DISABLED
-    #    (show_viewport=False, show_render=False) because VTK-exported meshes
-    #    are often non-manifold and Boolean ops fail silently on them.
-    #    Users can enable it per-object if their mesh is clean.
-    #
-    # Falls back to one-shot bmesh deletion if GN build fails.
+    # The GN (Geometry Nodes) modifier approach is NOT used because:
+    #   1. It can only delete whole faces by centroid → ragged edges.
+    #   2. On Blender 5.0+ it triggers SIGSEGV during save_as_mainfile.
     wedge_obj = None
     ctrl_obj  = None
     if not no_phi_cut:
-        # Pre-compute phi attribute on all objects (needed for GN + bmesh paths)
-        for obj in loaded_objects:
-            _precompute_phi_face_attribute(obj)
-
-        # Create the PhiCutawayControl empty — single control point for all
-        # phi-cutaway modifiers.
+        # Create the PhiCutawayControl empty — records the cut parameters
+        # for reference and for the Boolean wedge cutter.
         ctrl_obj = _create_phi_control_empty(phi_min, phi_max, col_cutters)
 
-        # --- GN phi-cutaway (primary) ---
-        print(f"  [PHI] Building phi-cutaway GN modifier "
-              f"[{phi_min:.1f}°, {phi_max:.1f}°] ...", flush=True)
-        ng = _phi_cutaway_node_group(phi_min, phi_max)
-        if ng is not None:
-            for obj in loaded_objects:
-                _add_phi_cutaway(obj, ng, phi_min, phi_max, ctrl_obj=ctrl_obj)
-            print(f"  [PHI] GN phi-cutaway applied to {len(loaded_objects)} objects.",
-                  flush=True)
-            if bpy.app.version >= (5, 0, 0):
-                print(f"  [PHI] Blender 5.0+: all modifiers share the PhiCutaway node "
-                      f"group defaults.  To change the cut sector, edit the node "
-                      f"group's Phi Min / Phi Max socket defaults (Geometry Nodes "
-                      f"editor → Sidebar → Group panel).",
-                      flush=True)
-            else:
-                print(f"  [PHI] All modifiers driven by PhiCutawayControl empty — "
-                      f"change its phi_min / phi_max custom properties to update "
-                      f"all sub-detectors simultaneously.",
-                      flush=True)
-        else:
-            # GN build failed — fall back to one-shot bmesh cutaway
-            print(f"  [PHI] GN build failed — falling back to bmesh cutaway",
-                  flush=True)
-            for obj in loaded_objects:
+        # --- bmesh bisect (primary) ---
+        # Bisects each mesh at the phi_min and phi_max boundary planes,
+        # creating new vertices at the intersection, then deletes faces
+        # inside the cut sector.  Every face is fully inside or outside
+        # after bisection, so the cut edge is geometrically exact.
+        print(f"  [PHI] Applying bmesh bisect phi-cutaway "
+              f"[{phi_min:.1f}°, {phi_max:.1f}°] to {len(loaded_objects)} "
+              f"objects ...", flush=True)
+        for obj in loaded_objects:
+            try:
                 _apply_phi_cutaway_bmesh(obj, phi_min, phi_max)
+            except Exception as exc:
+                print(f"  [PHI] bmesh bisect failed on '{obj.name}': {exc}",
+                      flush=True)
+        print(f"  [PHI] bmesh bisect complete — clean cut edges with "
+              f"new intersection vertices.", flush=True)
 
         # --- Boolean wedge cutter (secondary, disabled by default) ---
         # The wedge covers the cut sector [phi_min, phi_max].  DIFFERENCE
-        # subtracts this sector from the detector, matching the GN modifier
-        # which deletes faces inside the same range.
+        # subtracts this sector from the detector.
         try:
             wedge_obj = _create_phi_wedge_cutter(
                 phi_min_deg=phi_min,
@@ -1913,8 +1957,8 @@ def create_blender_scene(
                   f"enable per-object in modifier panel if mesh is manifold).",
                   flush=True)
         except Exception as exc:
-            print(f"  [PHI] Boolean wedge creation failed: {exc} "
-                  f"(GN cutaway still active)", flush=True)
+            print(f"  [PHI] Boolean wedge creation failed: {exc}",
+                  flush=True)
 
     # --- Bevel modifier (after phi-cutaway so it bevels the cut edges too) ---
     if not no_bevel:
@@ -2104,9 +2148,9 @@ def create_blender_scene(
     print(f"  Cam_Side: elevation view (X=beam left-right, Y=up)")
     if not no_phi_cut:
         print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°] removed  "
-              f"(GN modifier — adjust via PhiCutawayControl empty or node group defaults)")
+              f"(bmesh bisect — clean intersection edges baked into mesh)")
         print(f"  PhiBoolean (DIFFERENCE): disabled by default — enable per-object "
-              f"if mesh is manifold for a cleaner cut")
+              f"if mesh is manifold")
     print(f"  Render: Cycles 4 K, 128 samples, OIDN denoiser")
     print(f"  Lighting: golden-hour (3000 K key) + sky fill (7500 K) + rim (4500 K)"
           f" + interior fill (warm white) + purple IP glow")
