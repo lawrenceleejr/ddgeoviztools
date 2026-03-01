@@ -200,7 +200,7 @@ def _is_box_mesh(mesh, max_faces: int = 30) -> bool:
     return bool(np.all(np.max(norms, axis=1) > 0.99))
 
 
-def _thin_repeated_layers(sub_meshes: list, max_meshes: int = 40) -> list:
+def _thin_repeated_layers(sub_meshes: list, max_meshes: int = 20) -> list:
     """
     If a GLTF contains many similar-sized sub-meshes (e.g. hundreds of
     repeated calorimeter absorber / scintillator layers), subsample them
@@ -237,12 +237,60 @@ def _thin_repeated_layers(sub_meshes: list, max_meshes: int = 40) -> list:
         return kept
 
     # Subsample layer meshes, keep first+last for full extent
-    step = max(1, len(layers) // (max_meshes - len(others)))
+    n_keep = max(2, max_meshes - len(others))
+    step = max(1, len(layers) // n_keep)
     kept_layers = [layers[0]] + layers[1:-1:step] + [layers[-1]]
     kept = others + kept_layers
     print(f"    [THIN] {len(sub_meshes)} sub-meshes ({len(layers)} repeated layers) "
           f"→ keeping {len(kept)} (step={step})", flush=True)
     return kept
+
+
+def _max_meshes_for_name(name: str) -> int:
+    """
+    Return the layer-thinning budget for a sub-detector by name.
+
+    Calorimeters have hundreds of absorber/scintillator layers and look fine
+    with just a handful of samples (the eye reads the pattern from a few).
+    Trackers are also highly repetitive but need a few more to show extent.
+    Everything else is capped at a generous 20.
+    """
+    n = name.lower()
+    cal_keys = ("ecal", "hcal", "calo", "calorimeter", "absorber",
+                "scint", "crystal", "pbwo", "preshower", "emcal")
+    trk_keys = ("tracker", "trk", "tpc", "silicon", "strip", "stave",
+                "module", "disk", "petal", "ring", "endcap")
+    if any(k in n for k in cal_keys):
+        return 8    # calorimeters: 8 layer samples is plenty for visualisation
+    if any(k in n for k in trk_keys):
+        return 15   # trackers: show more to convey repetitive geometry
+    return 20
+
+
+def _decimate_trimesh(mesh: "trimesh.Trimesh",
+                      max_faces: int = 30_000) -> "trimesh.Trimesh":
+    """
+    Reduce a mesh to at most *max_faces* triangles using quadric (QEM)
+    decimation.  Falls back to the original mesh if trimesh's simplifier is
+    unavailable or fails.
+
+    QEM preserves sharp features well; a target of 30 K faces is enough for
+    photorealistic rendering of most sub-detector components while cutting
+    Blender load time dramatically on meshes with millions of triangles.
+    """
+    if len(mesh.faces) <= max_faces:
+        return mesh
+    ratio  = max_faces / len(mesh.faces)
+    before = len(mesh.faces)
+    try:
+        simplified = mesh.simplify_quadric_decimation(int(before * ratio))
+        if len(simplified.faces) > 0:
+            print(f"    [DECIM] {before:,} → {len(simplified.faces):,} faces "
+                  f"(QEM {ratio:.0%})", flush=True)
+            return simplified
+    except Exception as exc:
+        print(f"    [DECIM] QEM failed ({exc}), keeping original", flush=True)
+    return mesh
 
 
 def _phi_cut_trimesh(
@@ -330,11 +378,17 @@ def _load_mesh(
         if not sub_meshes:
             raise ValueError(f"No triangle meshes found in {filepath}")
         sub_meshes = _filter_world_volumes(sub_meshes)
-        sub_meshes = _thin_repeated_layers(sub_meshes)
+        # Name-aware layer budget: calorimeters → 8, trackers → 15, else 20
+        sub_meshes = _thin_repeated_layers(sub_meshes,
+                                           max_meshes=_max_meshes_for_name(name))
         raw = trimesh.util.concatenate(sub_meshes)
 
     # Always re-wrap as a processed Trimesh (merges duplicate verts, etc.)
     raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
+
+    # Quadric decimation — keeps face count manageable for Blender's modifier
+    # stack (Weld + Boolean + Bevel) without degrading visual quality.
+    raw = _decimate_trimesh(raw, max_faces=30_000)
 
     verts = raw.vertices.tolist()   # list of [x, y, z]
     faces = raw.faces.tolist()      # list of [i, j, k]
