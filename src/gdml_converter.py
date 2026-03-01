@@ -32,14 +32,36 @@ SUPPORTED_FORMATS = ("gltf", "glb", "obj", "vtp")
 # GDML pre-processing — limit repeated physical-volume placements
 # ---------------------------------------------------------------------------
 
-# Name fragments that identify highly-repeated sub-detector types.
-# These come last in a depth-first traversal, so pyg4ometry materialises
-# every placement as a separate VTK actor — the dominant source of slowness.
-_TRACKER_KEYS = (
-    "tracker", "trk", "tpc", "silicon", "strip", "stave",
-    "module", "disk", "petal", "ring", "endcap", "barrel_layer",
-    "sensitive",
+# ---------------------------------------------------------------------------
+# Per-LV name-based placement caps
+# ---------------------------------------------------------------------------
+# Tiers are ordered most-to-least restrictive.  The first matching tier wins.
+# Calorimeter absorber/scint layers are the outermost repeated unit — a few
+# samples convey the structure.  Tracker leaf elements (sensitive volumes,
+# strips, pixels) multiply enormously through the nesting hierarchy: even 10
+# placements at each of 3 nesting levels gives 1000 actors; keeping 2–3 at
+# each level caps total actors at ~27 while still showing the pattern.
+
+# Tier 0 — true leaf/sensitive elements: keep 2 (just enough to show they exist)
+_LEAF_KEYS = (
+    "sensitive", "sensor", "hit", "active", "readout",
+    "strip", "pixel_chip", "implant", "epitax",
 )
+# Tier 1 — sub-module level structures
+_SUBMOD_KEYS = (
+    "stave", "ladder", "plank", "petal", "petal_support",
+    "half_stave", "halfstave",
+)
+# Tier 2 — module / layer repeated at the next level up
+_MOD_KEYS = (
+    "module", "chip", "sensor_module", "pixel_module",
+)
+# Tier 3 — overall tracker/TPC structure
+_TRACKER_KEYS = (
+    "tracker", "trk", "tpc", "silicon", "strip_layer",
+    "disk", "ring", "endcap", "barrel_layer",
+)
+# Tier 4 — calorimeter layers (keep a handful for the visual rhythm)
 _CALO_KEYS = (
     "ecal", "hcal", "calo", "calorimeter", "absorber",
     "scint", "crystal", "pbwo", "preshower", "emcal",
@@ -48,37 +70,49 @@ _CALO_KEYS = (
 
 def _max_placements_for_lv(lv_name: str) -> int:
     """
-    Return the maximum number of physical-volume daughters to materialise
-    for a logical volume whose name contains recognisable keywords.
+    Return the placement cap for a child LV referenced by name.
 
-    Trackers have hundreds-to-thousands of replicated modules; 20 is enough
-    to convey the structure.  Calorimeters often have 50-100+ layers; 8 is
-    sufficient for visualisation.  Everything else is left uncapped (returns
-    a very large number so nothing is removed).
+    The tiers ensure that deeply nested tracker hierarchies (sensitive inside
+    module inside stave inside layer) stay within a manageable total actor
+    count: even worst-case 2×3×5×8 = 240 leaf actors fit easily in memory.
     """
     n = lv_name.lower()
-    if any(k in n for k in _CALO_KEYS):
-        return 8
+    if any(k in n for k in _LEAF_KEYS):
+        return 2
+    if any(k in n for k in _SUBMOD_KEYS):
+        return 3
+    if any(k in n for k in _MOD_KEYS):
+        return 5
     if any(k in n for k in _TRACKER_KEYS):
-        return 20
+        return 8
+    if any(k in n for k in _CALO_KEYS):
+        return 5
     return 10_000   # effectively unlimited
+
+
+# Hard ceiling on the total number of physvol elements left in the pruned
+# GDML across the entire <structure> section.  Even with per-LV caps,
+# a geometry with many different LV names can still produce thousands of
+# physvols.  This cap guarantees memory safety regardless of nesting depth.
+_GLOBAL_PHYSVOL_BUDGET = 400
 
 
 def _limit_gdml_placements(
     gdml_path: "Path",
-    default_max: int = 50,
+    default_max: int = 20,
 ) -> "Path":
     """
     Parse *gdml_path* with lxml and remove excess repeated physical-volume
     placements from each logical volume in the <structure> section.
 
-    For each logical volume the daughters are grouped by the logical-volume
-    they reference (via <volumeref ref="…">).  If a single referenced LV
-    appears more than *max* times, the excess placements are deleted.  The
-    name-specific cap from _max_placements_for_lv() is applied per child LV.
+    Two-pass strategy:
+      Pass 1 — per-LV-type cap (from _max_placements_for_lv).
+      Pass 2 — global budget cap: if total physvols still exceed
+               _GLOBAL_PHYSVOL_BUDGET, uniformly thin every LV that has
+               more than one placement until the budget is met.
 
     Returns the path to a temporary GDML file if any placements were removed,
-    otherwise returns the original path unchanged (no temp file written).
+    otherwise returns the original path unchanged.
     """
     try:
         from lxml import etree
@@ -126,13 +160,42 @@ def _limit_gdml_placements(
                 lv_el.remove(pv)
                 total_removed += 1
 
-        # Also apply the default global cap across ALL daughters of this LV
+        # Per-LV total cap: even if no single child LV hits the per-type cap,
+        # a parent LV with many different child LV types can still end up with
+        # hundreds of physvols.  Cap any parent LV to default_max total.
         remaining = lv_el.findall(tag("physvol"))
-        if len(remaining) > default_max * len(groups):
-            cap_all = default_max * max(1, len(groups))
-            for pv in remaining[cap_all:]:
+        if len(remaining) > default_max:
+            for pv in remaining[default_max:]:
                 lv_el.remove(pv)
                 total_removed += 1
+
+    # --- Pass 2: global physvol budget ---
+    # Count every physvol still in the structure after pass 1.  If we're over
+    # budget, uniformly thin each LV's physvol list until we're within budget.
+    all_pvs_by_lv = []
+    for lv_el in structure.findall(tag("volume")):
+        pvs = lv_el.findall(tag("physvol"))
+        if pvs:
+            all_pvs_by_lv.append((lv_el, pvs))
+
+    total_pvs = sum(len(p) for _, p in all_pvs_by_lv)
+    if total_pvs > _GLOBAL_PHYSVOL_BUDGET:
+        ratio = _GLOBAL_PHYSVOL_BUDGET / total_pvs
+        print(f"  [GDML-LIMIT] Global budget: {total_pvs} pvs → "
+              f"thinning to {_GLOBAL_PHYSVOL_BUDGET} (ratio={ratio:.2f})",
+              flush=True)
+        for lv_el, pvs in all_pvs_by_lv:
+            keep_n = max(1, int(len(pvs) * ratio))
+            # Keep first + evenly spaced sample + last
+            if len(pvs) > keep_n:
+                step      = len(pvs) // keep_n
+                keep_set  = set(range(0, len(pvs), step))
+                keep_set.add(0)
+                keep_set.add(len(pvs) - 1)
+                for idx, pv in enumerate(pvs):
+                    if idx not in keep_set:
+                        lv_el.remove(pv)
+                        total_removed += 1
 
     if total_removed == 0:
         return gdml_path   # nothing changed — reuse original
