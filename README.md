@@ -274,33 +274,40 @@ Switch cameras via **Scene Properties → Camera** dropdown, or press
 
 ## Using the phi cutaway in Blender
 
-After opening the `.blend` file, each detector object has two phi-cutaway
-mechanisms in its modifier stack:
+After opening the `.blend` file, the phi cutaway **removes** (cuts away)
+the sector defined by `[Phi Min, Phi Max]`, revealing the detector interior.
+Default `[0°, 90°]` removes the upper-right quadrant.
+
+### Global control: PhiCutawayControl empty
+
+A single **PhiCutawayControl** empty object in the Cutters collection
+controls all sub-detector cutaways simultaneously:
+
+- Select **PhiCutawayControl** → **Properties → Object → Custom Properties**.
+- Adjust `phi_min` and `phi_max` (degrees).  All sub-detectors update
+  together (via drivers on Blender 4.x; via shared node group defaults
+  on Blender 5.0+).
 
 ### 1. Geometry Nodes cutaway (primary — enabled by default)
 
-This is the **PhiCutaway** modifier.  It reads a pre-baked `phi_deg` face
-attribute and deletes faces outside the visible sector.
+The **PhiCutaway** GN modifier reads a pre-baked `phi_deg` face attribute
+and **deletes** faces whose phi falls inside `[Phi Min, Phi Max]`.
 
-- Select any detector object → **Properties → Modifiers → PhiCutaway**.
-- Adjust **Phi Min** and **Phi Max** (in degrees) in the modifier inputs.
-- All sub-detectors share the same node group; change the defaults in
-  the node group editor to affect all objects at once.
+- You can also adjust **Phi Min** / **Phi Max** per-object in the modifier
+  inputs, or edit the shared node group defaults to change all objects.
 
-### 2. Boolean INTERSECT cutaway (secondary — disabled by default)
+### 2. Boolean DIFFERENCE cutaway (secondary — disabled by default)
 
-This is the **PhiBoolean** modifier.  A solid wedge-shaped cutter mesh
-(**PhiWedge** in the Cutters collection) covers the visible phi sector.
-The Boolean INTERSECT operation keeps only the part of the detector
-inside the wedge.
+The **PhiBoolean** modifier uses a solid wedge mesh (**PhiWedge** in the
+Cutters collection) covering the cut sector.  Boolean DIFFERENCE subtracts
+this sector from the detector.
 
 - To enable: select a detector object → **Properties → Modifiers →
   PhiBoolean** → toggle the camera and monitor icons (show in render /
   show in viewport).
 - **Note:** Boolean operations require manifold (watertight) meshes.
   VTK-exported meshes are often non-manifold, which can cause the Boolean
-  to fail silently or produce artifacts.  The GN cutaway above is more
-  reliable for non-manifold meshes.
+  to fail silently.  The GN cutaway above is more reliable.
 
 ### Phi convention
 
@@ -310,8 +317,8 @@ After the Ry(+90°) rotation into Blender world space:
 - `phi = 90°` → +Z (horizontal transverse)
 - `phi = -90°` → −Z (horizontal transverse, opposite side)
 
-To animate the cutaway opening (e.g. for a video), keyframe `Phi Max`
-in the modifier inputs over a frame range.
+To animate the cutaway opening (e.g. for a video), keyframe `phi_max`
+on the PhiCutawayControl empty over a frame range.
 
 You can also change the **Weld modifier threshold** per-object in
 **Properties → Modifiers → Weld** to control how aggressively duplicate

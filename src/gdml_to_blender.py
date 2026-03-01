@@ -9,8 +9,8 @@ Features
 - Adds a phi-cutaway Geometry Nodes modifier (adjustable via PhiCutawayControl
   empty object — change one property, all sub-detectors update).
 - Sets up the scene with GDML geometry imported then rotated +90° around Y
-  so that the GDML beam axis (Z) maps to Blender's X axis.  All detector
-  objects are also scaled down 100× for a comfortable working viewport.
+  so that the GDML beam axis (Z) maps to Blender's X axis.  Objects are
+  kept at native GDML mm scale (1 BU = 1 mm).
   Effective Blender convention: X = beam, Y = physics-up (vertical), Z = horizontal transverse.
 - Adds pre-positioned orthographic cameras for the two standard HEP views:
     Cam_Transverse  — on +X axis, looks along −X, sees YZ transverse cross-section
@@ -440,13 +440,14 @@ def _add_bevel(obj, width_mm: float = 0.2):
 
 def _apply_phi_cutaway_bmesh(obj, phi_min_deg: float, phi_max_deg: float):
     """
-    Apply phi cutaway by keeping only faces whose centroid phi lies *inside*
-    [phi_min_deg, phi_max_deg].  Faces *outside* the range are deleted,
-    leaving a visible sector that reveals the detector interior.
+    Apply phi cutaway by deleting faces whose centroid phi lies *inside*
+    [phi_min_deg, phi_max_deg].  This removes a wedge-shaped sector from the
+    detector so the interior is visible — everything *outside* the range is
+    kept.
 
     This is the bmesh fallback when the Geometry Nodes approach fails.
-    It must produce the same result as the GN modifier: keep [phi_min, phi_max],
-    delete everything else.
+    It must produce the same result as the GN modifier: delete [phi_min, phi_max],
+    keep everything else.
 
     phi = atan2(-X_local, Y_local) in the mesh local coordinate frame.
     After the Ry(+90°) object rotation:  phi=0 → +Y_blender (up),
@@ -456,7 +457,7 @@ def _apply_phi_cutaway_bmesh(obj, phi_min_deg: float, phi_max_deg: float):
     phi_min = math.radians(phi_min_deg)
     phi_max = math.radians(phi_max_deg)
     n_faces = len(obj.data.polygons)
-    print(f"  [PHI-BMESH] Keeping sector [{phi_min_deg:.1f}°, {phi_max_deg:.1f}°] "
+    print(f"  [PHI-BMESH] Cutting sector [{phi_min_deg:.1f}°, {phi_max_deg:.1f}°] "
           f"from '{obj.name}' ({n_faces} faces) ...",
           flush=True)
 
@@ -472,12 +473,12 @@ def _apply_phi_cutaway_bmesh(obj, phi_min_deg: float, phi_max_deg: float):
         # Use Blender-YZ convention: phi = atan2(-X_local, Y_local)
         # (phi=0 → +Y_blender, phi=90 → +Z_blender)
         phi = math.atan2(-cx, cy)
-        # Delete faces whose phi falls OUTSIDE the visible sector
-        if not (phi_min <= phi <= phi_max):
+        # Delete faces whose phi falls INSIDE the cut sector
+        if phi_min <= phi <= phi_max:
             del_faces.append(f)
 
     print(f"  [PHI-BMESH]   → deleting {len(del_faces)} / {len(bm.faces)} faces "
-          f"(keeping {len(bm.faces) - len(del_faces)} inside sector)",
+          f"(keeping {len(bm.faces) - len(del_faces)} outside cut sector)",
           flush=True)
     bmesh.ops.delete(bm, geom=del_faces, context="FACES")
     bm.to_mesh(obj.data)
@@ -542,10 +543,9 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
                  -X, Y  → Math(ARCTAN2) → Math(DEGREES) → phi_deg
     phi_deg + Phi Min → Math(GREATER_THAN) → gt
     phi_deg + Phi Max → Math(LESS_THAN)    → lt
-    Math(MULTIPLY, gt, lt)        → inside   (1.0 if in range)
-    Math(SUBTRACT, 1.0, inside)   → outside  (1.0 = delete this face)
+    Math(MULTIPLY, gt, lt)        → inside   (1.0 if in cut sector)
     Merge by Distance             → (weld any remaining seam duplicates)
-    Delete Geometry (FACE domain, selection=outside)
+    Delete Geometry (FACE domain, selection=inside)
 
     Convention (mesh local / GDML coordinates)
     ----------
@@ -553,8 +553,9 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
     phi=0°   → +Y_local (after Ry+90° → +Y_blender = physics-up)
     phi=90°  → −X_local (after Ry+90° → +Z_blender = horiz-transverse)
 
-    Faces inside [phi_min, phi_max] are KEPT; everything outside is deleted.
-    Default phi_min=0, phi_max=90 shows the first quadrant (upper right).
+    Faces inside [phi_min, phi_max] are DELETED (cut away); everything else
+    is kept.  This reveals the interior of the detector through the removed
+    sector.  Default phi_min=0, phi_max=90 cuts away the first quadrant.
     """
     # Blender 5.0+ removed ShaderNode* from GeometryNodeTree.  Delegate to the
     # 5.0-compatible implementation that reads a pre-computed face attribute
@@ -607,7 +608,7 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
     todeg.operation = "DEGREES"
     todeg.label = "to degrees"
 
-    # Range test: gt * lt = 1.0 iff inside
+    # Range test: gt * lt = 1.0 iff inside the cut sector
     gt = N("ShaderNodeMath",                  300,   80)
     gt.operation = "GREATER_THAN"
     gt.label = "phi > phi_min"
@@ -618,19 +619,14 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
 
     mul = N("ShaderNodeMath",                 460,    0)
     mul.operation = "MULTIPLY"
-    mul.label = "inside"
-
-    sub = N("ShaderNodeMath",                 560,    0)
-    sub.operation = "SUBTRACT"
-    sub.label = "outside = 1 - inside"
-    sub.inputs[0].default_value = 1.0   # minuend; inside connects to inputs[1]
+    mul.label = "inside (cut away)"
 
     # Merge seam duplicates before the cut
     merge = N("GeometryNodeMergeByDistance",  -600,  100)
     merge.inputs["Distance"].default_value = 1e-4
     merge.label = "Weld seam duplicates"
 
-    # Delete faces outside phi range
+    # Delete faces INSIDE the phi range (cut sector)
     delete = N("GeometryNodeDeleteGeometry",   620,    0)
     delete.domain = "FACE"
     delete.mode   = "ALL"
@@ -652,14 +648,13 @@ def _phi_cutaway_node_group(phi_min_default: float, phi_max_default: float):
     links.new(todeg.outputs["Value"],     lt.inputs[0])
     links.new(g_in.outputs["Phi Max"],    lt.inputs[1])
 
-    # Combine and invert
+    # Combine: inside = gt AND lt
     links.new(gt.outputs["Value"],        mul.inputs[0])
     links.new(lt.outputs["Value"],        mul.inputs[1])
-    links.new(mul.outputs["Value"],       sub.inputs[1])
 
-    # Delete geometry
+    # Delete faces inside the cut sector
     links.new(merge.outputs["Geometry"],  delete.inputs["Geometry"])
-    links.new(sub.outputs["Value"],       delete.inputs["Selection"])
+    links.new(mul.outputs["Value"],       delete.inputs["Selection"])
     links.new(delete.outputs["Geometry"], g_out.inputs["Geometry"])
 
     return ng
@@ -676,8 +671,11 @@ def _phi_cutaway_node_group_v5(phi_min_default: float, phi_max_default: float):
 
       GeometryNodeInputNamedAttribute  — reads "phi_deg" float field
       FunctionNodeCompare              — phi_deg > Phi Min / phi_deg < Phi Max
-      FunctionNodeBooleanMath          — AND the two → inside; NOT → outside
-      GeometryNodeDeleteGeometry       — delete faces where outside is True
+      FunctionNodeBooleanMath          — AND the two → inside
+      GeometryNodeDeleteGeometry       — delete faces where inside is True
+
+    Faces inside [Phi Min, Phi Max] are DELETED (cut away); everything else
+    is kept, revealing the detector interior.
 
     Returns None if any required node type does not exist or if wiring fails,
     so the caller can fall back to _apply_phi_cutaway_bmesh.
@@ -722,7 +720,6 @@ def _phi_cutaway_node_group_v5(phi_min_default: float, phi_max_default: float):
         gt        = N("FunctionNodeCompare",                -260,   80)
         lt        = N("FunctionNodeCompare",                -260,  -80)
         and_node  = N("FunctionNodeBooleanMath",             -60,    0)
-        not_node  = N("FunctionNodeBooleanMath",             100,    0)
         delete    = N("GeometryNodeDeleteGeometry",          320,    0)
 
         missing = [name for name, n in (
@@ -732,7 +729,6 @@ def _phi_cutaway_node_group_v5(phi_min_default: float, phi_max_default: float):
             ("FunctionNodeCompare (GT)",        gt),
             ("FunctionNodeCompare (LT)",        lt),
             ("FunctionNodeBooleanMath (AND)",   and_node),
-            ("FunctionNodeBooleanMath (NOT)",   not_node),
             ("GeometryNodeDeleteGeometry",      delete),
         ) if n is None]
         if missing:
@@ -746,8 +742,7 @@ def _phi_cutaway_node_group_v5(phi_min_default: float, phi_max_default: float):
 
         gt.data_type = "FLOAT";  gt.operation = "GREATER_THAN";  gt.label = "phi > phi_min"
         lt.data_type = "FLOAT";  lt.operation = "LESS_THAN";     lt.label = "phi < phi_max"
-        and_node.operation = "AND";  and_node.label = "inside"
-        not_node.operation = "NOT";  not_node.label = "outside"
+        and_node.operation = "AND";  and_node.label = "inside (cut away)"
         delete.domain = "FACE";  delete.mode = "ALL"
 
         print(f"  [PHI-V5] GT  inputs={[s.name for s in gt.inputs]}  "
@@ -775,9 +770,9 @@ def _phi_cutaway_node_group_v5(phi_min_default: float, phi_max_default: float):
         L(g_in.outputs["Phi Max"], lt.inputs[1],              "phi_max→LT.B")
         L(gt.outputs[0],            and_node.inputs[0],       "GT→AND[0]")
         L(lt.outputs[0],            and_node.inputs[1],       "LT→AND[1]")
-        L(and_node.outputs[0],      not_node.inputs[0],       "AND→NOT")
+        # Delete faces INSIDE [phi_min, phi_max] — the cut sector
         L(g_in.outputs["Geometry"], delete.inputs["Geometry"],"Geo→DEL")
-        L(not_node.outputs[0],      delete.inputs["Selection"],"NOT→DEL.sel")
+        L(and_node.outputs[0],      delete.inputs["Selection"],"AND→DEL.sel")
         L(delete.outputs["Geometry"], g_out.inputs["Geometry"],"DEL→out")
 
         print(f"  [PHI-V5] Node group complete. "
@@ -801,12 +796,31 @@ def _phi_cutaway_node_group_v5(phi_min_default: float, phi_max_default: float):
 
 def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
     """
-    Add the PhiCutaway GN modifier to obj and wire drivers from ctrl_obj.
+    Add the PhiCutaway GN modifier to *obj*.
+
+    The modifier references the shared *ng* node group whose socket defaults
+    are set to (phi_min, phi_max).  We do NOT set per-modifier overrides so
+    that all objects read from the same group defaults — changing the defaults
+    (via the PhiCutawayControl empty or in the node-group editor) updates
+    every detector simultaneously.
+
+    On Blender 4.x, if *ctrl_obj* is provided, scripted drivers are wired
+    from the empty's custom properties to the modifier sockets so the cut
+    sector updates live when the empty's properties are changed.
+
+    On Blender 5.0+ drivers on GN modifier sockets crash save_as_mainfile,
+    so drivers are skipped; the user adjusts the cut by editing the
+    PhiCutawayControl empty's custom properties and re-running the script,
+    or by editing the node group's socket defaults directly in Blender.
     """
     mod = obj.modifiers.new("PhiCutaway", "NODES")
     mod.node_group = ng
 
-    # Identify socket identifiers by name
+    if ctrl_obj is None:
+        # No control object — modifiers read from node group defaults.
+        return
+
+    # Identify socket identifiers by name for driver wiring
     id_min = id_max = None
     for item in ng.interface.items_tree:
         if getattr(item, "item_type", None) == "SOCKET" and item.in_out == "INPUT":
@@ -815,17 +829,11 @@ def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
             elif item.name == "Phi Max":
                 id_max = item.identifier
 
-    print(f"  [PHI] Socket identifiers: Phi Min={id_min!r}  Phi Max={id_max!r}", flush=True)
-
     # In Blender 5.0+ the GN modifier input storage changed; driver paths of the
     # form mod["Socket_X"] may no longer map to valid FCurve targets and a
     # half-configured FCurve will crash save_as_mainfile with SIGSEGV.
-    # Skip driver wiring on 5.0+ — the modifier still applies the cutaway at
-    # the baked default values; drivers can be re-added manually if needed.
-    _skip_drivers = bpy.app.version >= (5, 0, 0)
-    if _skip_drivers:
-        print("  [PHI] Blender 5.0+: skipping driver wiring to avoid serialiser crash.",
-              flush=True)
+    if bpy.app.version >= (5, 0, 0):
+        return
 
     for identifier, prop_name, default in (
         (id_min, "phi_min", phi_min),
@@ -834,9 +842,6 @@ def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
         if identifier is None:
             continue
         mod[identifier] = default
-
-        if _skip_drivers:
-            continue
 
         fc = None
         try:
@@ -852,13 +857,55 @@ def _add_phi_cutaway(obj, ng, phi_min: float, phi_max: float, ctrl_obj):
             print(f"  [PHI] Driver OK: mod[{identifier!r}] ← ctrl[{prop_name!r}]",
                   flush=True)
         except Exception as exc:
-            # Log and clean up — a partial FCurve is worse than none.
             print(f"  [PHI] Driver warning ({identifier!r}): {exc}", flush=True)
             if fc is not None:
                 try:
                     mod.driver_remove(f'["{identifier}"]')
                 except Exception:
                     pass
+
+
+def _create_phi_control_empty(phi_min: float, phi_max: float, collection):
+    """
+    Create a PhiCutawayControl empty object with custom properties that
+    serve as the single control point for all phi-cutaway modifiers.
+
+    The empty is placed at the scene origin and displayed as a plain axis.
+    Its custom properties phi_min and phi_max are the master values:
+    - On Blender 4.x, scripted drivers on each modifier socket read from
+      these properties, so changing them updates all sub-detectors live.
+    - On Blender 5.0+, the node group's socket defaults are set to match
+      these values.  Adjusting the empty's properties requires re-running
+      the script or manually editing the node group defaults.
+    """
+    empty = bpy.data.objects.new("PhiCutawayControl", None)
+    bpy.data.scenes[0].collection.objects.link(empty)
+
+    empty.empty_display_type = "PLAIN_AXES"
+    empty.empty_display_size = 100.0
+
+    # Custom properties (editable in Properties → Object → Custom Properties)
+    empty["phi_min"] = phi_min
+    empty["phi_max"] = phi_max
+
+    # Set UI metadata so the custom properties appear with tooltips and limits
+    # in the Blender properties panel.
+    try:
+        ui = empty.id_properties_ui("phi_min")
+        ui.update(description="Start of the phi sector to cut away (degrees)",
+                  default=phi_min, min=-180.0, max=180.0, soft_min=-180.0, soft_max=180.0)
+        ui = empty.id_properties_ui("phi_max")
+        ui.update(description="End of the phi sector to cut away (degrees)",
+                  default=phi_max, min=-180.0, max=180.0, soft_min=-180.0, soft_max=180.0)
+    except Exception:
+        pass  # id_properties_ui may not be available on all builds
+
+    if collection is not None:
+        _link_to_collection(empty, collection)
+
+    print(f"  [PHI] PhiCutawayControl empty created: "
+          f"phi_min={phi_min:.1f}°  phi_max={phi_max:.1f}°", flush=True)
+    return empty
 
 
 # ---------------------------------------------------------------------------
@@ -876,14 +923,10 @@ def _create_phi_wedge_cutter(
     """
     Create a solid pie-slice cylinder covering the phi sector [phi_min, phi_max].
 
-    This manifold solid is used as the operand for a Boolean INTERSECT modifier
-    on detector objects.  INTERSECT keeps only the geometry inside the wedge,
-    which is the visible phi sector — matching the behavior of the GN phi-cutaway
-    modifier.
-
-    Using INTERSECT (not DIFFERENCE) is the correct operation:
-    - INTERSECT with a wedge covering [phi_min, phi_max] → keeps the sector
-    - DIFFERENCE with the same wedge → removes the sector (wrong)
+    This manifold solid is used as the operand for a Boolean DIFFERENCE modifier
+    on detector objects.  DIFFERENCE subtracts the wedge from the detector,
+    removing the sector and revealing the interior — matching the behavior of
+    the GN phi-cutaway modifier which deletes faces inside the same range.
 
     Geometry convention (mesh local / GDML coordinates, before Ry+90° rotation):
         phi = atan2(-X_local, Y_local) in degrees
@@ -895,8 +938,7 @@ def _create_phi_wedge_cutter(
     and excluded from renders.
 
     Note: the wedge is created in GDML local coordinates and should be given
-    the same rotation/scale as the detector objects (Ry+90°, scale 0.01) by
-    the caller.
+    the same rotation as the detector objects (Ry+90°) by the caller.
     """
     import bmesh as _bm
 
@@ -968,17 +1010,15 @@ def _create_phi_wedge_cutter(
     return obj
 
 
-def _apply_boolean_phi_cut(det_obj, wedge_obj, operation: str = "INTERSECT"):
+def _apply_boolean_phi_cut(det_obj, wedge_obj, operation: str = "DIFFERENCE"):
     """
     Add a Boolean modifier to *det_obj* that uses *wedge_obj* as the operand.
 
     Parameters
     ----------
-    operation : 'INTERSECT' to keep only geometry inside the wedge (recommended
-                for phi-cutaway), or 'DIFFERENCE' to remove the wedge shape.
-                INTERSECT is preferred because the wedge covers the *visible*
-                sector — keeping the intersection gives the same result as the
-                GN phi-cutaway modifier.
+    operation : 'DIFFERENCE' to remove the wedge shape (the cut sector) from
+                the detector.  The wedge covers [phi_min, phi_max]; subtracting
+                it removes that sector, matching the GN phi-cutaway modifier.
 
     Blender 5.0 renamed the fast/float solver: 'FAST' → 'FLOAT'.
     Try the version-appropriate name and fall back silently.
@@ -1261,12 +1301,14 @@ def _add_volume_scatter_sphere(radius: float):
 
     The object is *hidden from the viewport* (so it never blocks editing)
     but is *visible in renders* — the opposite of the wedge cutter.
-    Volume Scatter is added to the material's Volume socket while leaving the
-    existing Principled BSDF → Surface connection in place.  Keeping the
-    surface shader prevents the "Using fallback" crash that occurs in Blender
-    5.0 when save_as_mainfile serialises a material whose Surface socket is
-    empty.  The sphere's surface is set fully transparent so only the volume
-    contribution is visible in renders.
+
+    The material uses a Volume Scatter shader connected directly to the
+    Material Output's Volume socket.  The Surface socket is wired to a
+    Transparent BSDF (not Principled BSDF with Alpha=0, which doesn't
+    reliably pass light through in Blender 5.0+).  Keeping the Surface
+    socket occupied prevents the save_as_mainfile crash on Blender 5.0.
+
+    Density is tuned for mm-scale scenes (detector ~5-12 m = 5000-12000 BU).
     """
     import bmesh as _bm
 
@@ -1284,50 +1326,40 @@ def _add_volume_scatter_sphere(radius: float):
     obj.hide_viewport = True
     obj.hide_render   = False
 
-    # Volume Scatter material.
-    # IMPORTANT: do NOT call nodes.clear() — removing the Surface shader
-    # produces a material with an empty Surface socket which crashes Blender
-    # 5.0 save_as_mainfile.  Instead keep the default Principled BSDF (set
-    # Alpha=0 so it's transparent) and wire Volume Scatter into the Volume
-    # socket of the same Material Output node.
+    # Volume Scatter material — built from scratch for maximum compatibility.
     mat = bpy.data.materials.new("GodRayScatter")
-    # Blender 5+: node_tree is always present; Blender 4.x needs use_nodes=True.
     if mat.node_tree is None:
         mat.use_nodes = True
     tree  = mat.node_tree
     nodes = tree.nodes
     links = tree.links
+    nodes.clear()
 
-    # Make the surface fully transparent (alpha=0) so only volume is visible
-    bsdf = nodes.get("Principled BSDF")
-    if bsdf and "Alpha" in bsdf.inputs:
-        bsdf.inputs["Alpha"].default_value = 0.0
-    # Enable alpha blending so the transparent surface doesn't occlude the volume.
-    # Property name changed between Blender 4.x and 5.x — try both.
-    try:
-        mat.blend_method = "BLEND"          # Blender 4.x
-    except (AttributeError, TypeError):
-        try:
-            mat.surface_render_method = "BLENDED"   # Blender 5.x
-        except (AttributeError, TypeError):
-            pass
+    # Material Output
+    out = nodes.new("ShaderNodeOutputMaterial")
+    out.location = (400, 0)
 
-    # Find or create the Material Output node
-    out = next((n for n in nodes if n.type == "OUTPUT_MATERIAL"), None)
-    if out is None:
-        out = nodes.new("ShaderNodeOutputMaterial")
-    out.location = (300, 0)
+    # Surface: Transparent BSDF — lets all light pass through the sphere
+    # surface so it reaches the volume interior.  This is more reliable than
+    # Principled BSDF with Alpha=0 on Blender 5.0+.
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    transparent.location = (0, 100)
+    links.new(transparent.outputs["BSDF"], out.inputs["Surface"])
 
-    # Add Volume Scatter and wire to Volume socket
+    # Volume: Volume Scatter — density scaled for mm-scale scenes.
+    # At native mm scale the sphere diameter is ~10000–20000 mm.  A density
+    # of 5e-6 per mm gives optical depth ~0.05–0.1 through the diameter,
+    # which produces subtle but visible light shafts without fogging
+    # out the entire scene.
     scatter = nodes.new("ShaderNodeVolumeScatter")
-    scatter.inputs["Density"].default_value    = 3e-4   # subtle atmospheric haze
-    scatter.inputs["Anisotropy"].default_value = 0.6    # forward-scatter → ray glints
-    scatter.location = (0, -150)
+    scatter.inputs["Density"].default_value    = 5e-6   # per mm (= 5e-3 per m)
+    scatter.inputs["Anisotropy"].default_value = 0.7    # strong forward-scatter → visible shafts
+    scatter.location = (0, -100)
     links.new(scatter.outputs["Volume"], out.inputs["Volume"])
 
     obj.data.materials.append(mat)
-    print(f"  [GODRAYS] Volume scatter sphere: radius={radius:.1f} BU "
-          f"density=3e-4 anisotropy=0.6  (render-only)", flush=True)
+    print(f"  [GODRAYS] Volume scatter sphere: radius={radius:.1f} mm  "
+          f"density=5e-6/mm  anisotropy=0.7  (render-only)", flush=True)
     return obj
 
 
@@ -1344,6 +1376,10 @@ def _add_god_ray_spot(
     The spot is placed outside the detector at the phi bisector direction,
     aimed toward the IP so the beam passes through the cut opening.
     It is visible ONLY in renders (hide_viewport=True, hide_render=False).
+
+    The spot energy is computed relative to energy_base (which scales with r²)
+    and further boosted to ensure visible scattering in the low-density
+    volume medium at native mm scale.
     """
     phi_rad = math.radians(phi_center_deg)
 
@@ -1356,8 +1392,9 @@ def _add_god_ray_spot(
     )
     target = (0.0, 0.0, 0.0)   # point at IP
 
+    spot_energy = energy_base * 2000.0   # strong spot to produce visible scattering
     light_data        = bpy.data.lights.new(name, type="SPOT")
-    light_data.energy = energy_base * 600.0
+    light_data.energy = spot_energy
     light_data.color  = (0.95, 0.92, 0.80)     # warm golden-white
     light_data.spot_size   = math.radians(35)   # 35° cone — wide enough to fill opening
     light_data.spot_blend  = 0.25               # soft penumbra
@@ -1365,6 +1402,12 @@ def _add_god_ray_spot(
     try:
         light_data.use_shadow = True
     except AttributeError:
+        pass
+    # Enable volume caustics for Cycles so the spot actually scatters in the
+    # Volume Scatter medium (if supported by the Blender build)
+    try:
+        light_data.cycles.cast_shadow = True
+    except (AttributeError, TypeError):
         pass
 
     light_obj = bpy.data.objects.new(name, light_data)
@@ -1379,7 +1422,7 @@ def _add_god_ray_spot(
     light_obj.hide_render   = False
 
     print(f"  [GODRAYS] Spot light '{name}'  phi={phi_center_deg:.1f}°  "
-          f"energy={energy_base * 600:.0f} W  (render-only)", flush=True)
+          f"energy={spot_energy:.0f} W  (render-only)", flush=True)
     return light_obj
 
 
@@ -1491,16 +1534,53 @@ def _setup_render_and_compositor(scene):
     except Exception:
         pass  # older / newer bpy builds may not accept the string assignment
 
-    # Colour management — Filmic for cinematic look.
-    # A positive exposure offset lifts the scene brightness in the viewport
-    # and in renders; without it Filmic tone-mapping can make scenes appear
-    # very dark when the dominant light is a distant area source.
+    # Volumetric light transport — needed for the god-ray Volume Scatter sphere.
+    # Without explicit volume bounces Cycles may skip volume scattering entirely.
     try:
-        scene.view_settings.view_transform = "Filmic"
-        scene.view_settings.look           = "Medium Contrast"
-        scene.view_settings.exposure       = 2.0   # +2 EV → brighter viewport
+        scene.cycles.volume_bounces    = 4   # allow multiple volume scattering events
+        scene.cycles.volume_step_rate  = 1.0 # default stepping rate
+        scene.cycles.volume_max_steps  = 256 # enough to resolve fine shafts
+        print(f"  [RENDER] Volume bounces: {scene.cycles.volume_bounces}  "
+              f"step_rate: {scene.cycles.volume_step_rate}  "
+              f"max_steps: {scene.cycles.volume_max_steps}", flush=True)
+    except (AttributeError, TypeError) as exc:
+        print(f"  [RENDER] Volume settings not available: {exc}", flush=True)
+
+    # Colour management — cinematic tone mapping.
+    # Blender 4.x uses "Filmic"; Blender 5.0+ replaced it with "AgX".
+    # Both compress HDR into displayable range; exposure offset lifts the
+    # scene brightness (each +1 EV = 2× brighter).
+    _view_transform_set = False
+    for vt in ("AgX", "Filmic"):
+        try:
+            scene.view_settings.view_transform = vt
+            _view_transform_set = True
+            print(f"  [RENDER] View transform: {vt}", flush=True)
+            break
+        except (TypeError, Exception):
+            continue
+    if not _view_transform_set:
+        print("  [RENDER] WARNING: Could not set view transform (Filmic/AgX)",
+              flush=True)
+
+    # Exposure: +4 EV lifts the render by 16× which is needed because at
+    # native mm scale the lights are physically far from the detector
+    # surfaces and Cycles inverse-square falloff makes the base illumination
+    # very dim.
+    try:
+        scene.view_settings.exposure = 4.0
     except Exception:
         pass
+
+    # Contrast look — try AgX-style names first, then Filmic
+    for look in ("Medium Contrast", "AgX - Medium Contrast",
+                 "Medium High Contrast", "Base Contrast"):
+        try:
+            scene.view_settings.look = look
+            print(f"  [RENDER] Look: {look}", flush=True)
+            break
+        except (TypeError, Exception):
+            continue
 
     # Compositor — Glare node for IP glow bloom.
     # The compositor API changed substantially in Blender 5.0 (node properties
@@ -1686,10 +1766,8 @@ def create_blender_scene(
         # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
         # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
         # line horizontal along the Blender X axis.
-        # Scale down 100× so the detector fits comfortably in Blender's
-        # working viewport (e.g. solenoid goes from ±2300 BU to ±23 BU).
+        # Objects are kept at native GDML mm scale (1 BU = 1 mm).
         obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
-        obj.scale = (0.01, 0.01, 0.01)
 
         # Move into the Detector collection (object was linked to root scene
         # collection inside _load_mesh; re-link it to the named collection).
@@ -1710,7 +1788,7 @@ def create_blender_scene(
         pass
 
     # ---- Compute scene bounds for light / camera placement ----
-    # After the Ry(+90°) rotation and 0.01 scale applied to every object:
+    # After the Ry(+90°) rotation (no scale — native mm):
     #   x_max = beam half-length   (was z_gdml)
     #   y_max = vertical transverse  (was y_gdml)
     #   z_max = horizontal transverse (was x_gdml, sign-flipped but abs same)
@@ -1727,28 +1805,37 @@ def create_blender_scene(
     ortho_side  = max(x_max, y_max) * 2.2
 
     # ---- Phi-cutaway ----
+    # Faces whose phi falls INSIDE [phi_min, phi_max] are DELETED (cut away),
+    # revealing the detector interior through the removed sector.
+    #
     # Two phi-cutaway mechanisms are provided:
     #
     # 1. PRIMARY: Geometry Nodes modifier — reads the pre-baked 'phi_deg' face
-    #    attribute and deletes faces outside [phi_min, phi_max].  This is the
+    #    attribute and deletes faces inside [phi_min, phi_max].  This is the
     #    most reliable approach because it works on non-manifold VTK meshes
     #    and exposes Phi Min / Phi Max sockets for live adjustment.
+    #    All objects share a single node group; a PhiCutawayControl empty
+    #    drives all modifiers from one place.
     #
-    # 2. SECONDARY: Boolean INTERSECT modifier — a solid phi-wedge cutter
-    #    mesh covering the visible sector is created in the Cutters collection.
-    #    A Boolean INTERSECT modifier is added to each detector object (keeps
-    #    only geometry inside the wedge).  The modifier is placed in the stack
-    #    but DISABLED (show_viewport=False, show_render=False) because
-    #    VTK-exported meshes are often non-manifold and Boolean ops fail
-    #    silently on them.  Users can enable it per-object if their mesh
-    #    is clean, or use the wedge for manual Boolean operations.
+    # 2. SECONDARY: Boolean DIFFERENCE modifier — a solid phi-wedge cutter
+    #    mesh covering the cut sector is created in the Cutters collection.
+    #    A Boolean DIFFERENCE modifier subtracts this sector from each detector
+    #    object.  The modifier is placed in the stack but DISABLED
+    #    (show_viewport=False, show_render=False) because VTK-exported meshes
+    #    are often non-manifold and Boolean ops fail silently on them.
+    #    Users can enable it per-object if their mesh is clean.
     #
     # Falls back to one-shot bmesh deletion if GN build fails.
     wedge_obj = None
+    ctrl_obj  = None
     if not no_phi_cut:
         # Pre-compute phi attribute on all objects (needed for GN + bmesh paths)
         for obj in loaded_objects:
             _precompute_phi_face_attribute(obj)
+
+        # Create the PhiCutawayControl empty — single control point for all
+        # phi-cutaway modifiers.
+        ctrl_obj = _create_phi_control_empty(phi_min, phi_max, col_cutters)
 
         # --- GN phi-cutaway (primary) ---
         print(f"  [PHI] Building phi-cutaway GN modifier "
@@ -1756,10 +1843,20 @@ def create_blender_scene(
         ng = _phi_cutaway_node_group(phi_min, phi_max)
         if ng is not None:
             for obj in loaded_objects:
-                _add_phi_cutaway(obj, ng, phi_min, phi_max, ctrl_obj=None)
-            print(f"  [PHI] GN phi-cutaway applied to {len(loaded_objects)} objects "
-                  f"— adjust 'Phi Min' / 'Phi Max' in modifier panel to update live.",
+                _add_phi_cutaway(obj, ng, phi_min, phi_max, ctrl_obj=ctrl_obj)
+            print(f"  [PHI] GN phi-cutaway applied to {len(loaded_objects)} objects.",
                   flush=True)
+            if bpy.app.version >= (5, 0, 0):
+                print(f"  [PHI] Blender 5.0+: all modifiers share the PhiCutaway node "
+                      f"group defaults.  To change the cut sector, edit the node "
+                      f"group's Phi Min / Phi Max socket defaults (Geometry Nodes "
+                      f"editor → Sidebar → Group panel).",
+                      flush=True)
+            else:
+                print(f"  [PHI] All modifiers driven by PhiCutawayControl empty — "
+                      f"change its phi_min / phi_max custom properties to update "
+                      f"all sub-detectors simultaneously.",
+                      flush=True)
         else:
             # GN build failed — fall back to one-shot bmesh cutaway
             print(f"  [PHI] GN build failed — falling back to bmesh cutaway",
@@ -1768,32 +1865,23 @@ def create_blender_scene(
                 _apply_phi_cutaway_bmesh(obj, phi_min, phi_max)
 
         # --- Boolean wedge cutter (secondary, disabled by default) ---
-        # The wedge is always created so it's available in the scene for
-        # manual use.  The Boolean modifier is added but disabled.
+        # The wedge covers the cut sector [phi_min, phi_max].  DIFFERENCE
+        # subtracts this sector from the detector, matching the GN modifier
+        # which deletes faces inside the same range.
         try:
-            # Wedge covers the COMPLEMENT of the visible sector:
-            # to show [phi_min, phi_max], the DIFFERENCE cutter must cover
-            # everything OUTSIDE that range.  We build the cutter for the
-            # sector to remove, which is [-180, phi_min] ∪ [phi_max, 180].
-            # Since a single wedge can't represent a disjoint range, we
-            # build the cutter for the visible sector and use INTERSECT
-            # instead of DIFFERENCE — this keeps only the part inside the
-            # wedge, matching the GN behavior.
             wedge_obj = _create_phi_wedge_cutter(
                 phi_min_deg=phi_min,
                 phi_max_deg=phi_max,
-                radius=r * 150.0,    # in mesh-local units (pre-0.01 scale)
-                depth=x_max * 250.0, # cover full beam length
+                radius=r * 1.5,      # 1.5× scene radius to fully enclose
+                depth=x_max * 2.5,   # cover full beam length
                 collection=col_cutters,
             )
-            # Scale wedge to match detector objects (0.01× scale)
-            wedge_obj.scale = (0.01, 0.01, 0.01)
             # Rotate to match detector objects (Ry+90°)
             wedge_obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
 
             for obj in loaded_objects:
                 mod = obj.modifiers.new("PhiBoolean", "BOOLEAN")
-                mod.operation = "INTERSECT"
+                mod.operation = "DIFFERENCE"
                 mod.object = wedge_obj
                 # Use FAST/FLOAT solver for better non-manifold tolerance
                 for solver in ("FLOAT", "FAST"):
@@ -1805,7 +1893,7 @@ def create_blender_scene(
                 # Disabled by default — enable per-object if mesh is clean
                 mod.show_viewport = False
                 mod.show_render = False
-            print(f"  [PHI] Boolean INTERSECT modifier added to "
+            print(f"  [PHI] Boolean DIFFERENCE modifier added to "
                   f"{len(loaded_objects)} objects (disabled by default — "
                   f"enable per-object in modifier panel if mesh is manifold).",
                   flush=True)
@@ -1885,15 +1973,13 @@ def create_blender_scene(
     # ---- Lighting ----
     print(f"  [SETUP] Creating lights ...", flush=True)
     # Three-point golden-hour area lights with colour temperature.
-    # After the 100× scale reduction, r is ~23–60 Blender units (representing
-    # a real detector of ~3–12 m scale). The r² formula gives energies in the
-    # tens-to-hundreds of watts — appropriate for Blender Cycles at this scale.
-    # Positions are given in Blender world coords (X = beam, Y = physics-up,
-    # Z = physics-horizontal-transverse).
-    # Energy scales with r² so that light covers the scene regardless of size.
-    # Multipliers are tuned so that the Cycles render at default exposure is
-    # properly lit; interior surfaces (visible through the phi cut) receive
-    # fill from the interior fill light and the raised world-background strength.
+    # Objects are at native GDML mm scale: r is ~2000–6000 BU (= mm).
+    # Cycles uses physical inverse-square falloff: irradiance = Power / (4π d²)
+    # where d is in Blender units (= mm here).  With scale_length = 0.001,
+    # Blender converts BU → metres for the falloff calculation, so a light
+    # at 5000 mm = 5 m needs proportionally high wattage.
+    # energy_base scales with r² so that relative brightness is constant
+    # regardless of detector size.
     energy_base = r * r * 0.0005   # W · BU⁻²
 
     # Key light — warm golden-hour glow from above and slightly to one side.
@@ -2002,9 +2088,9 @@ def create_blender_scene(
     print(f"  Cam_Transverse: end-cap view (Y=up, Z=horizontal transverse)")
     print(f"  Cam_Side: elevation view (X=beam left-right, Y=up)")
     if not no_phi_cut:
-        print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°]  "
-              f"(GN modifier — adjust Phi Min/Max in modifier panel)")
-        print(f"  PhiBoolean (INTERSECT): disabled by default — enable per-object "
+        print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°] removed  "
+              f"(GN modifier — adjust via PhiCutawayControl empty or node group defaults)")
+        print(f"  PhiBoolean (DIFFERENCE): disabled by default — enable per-object "
               f"if mesh is manifold for a cleaner cut")
     print(f"  Render: Cycles 4 K, 128 samples, OIDN denoiser")
     print(f"  Lighting: golden-hour (3000 K key) + sky fill (7500 K) + rim (4500 K)"
