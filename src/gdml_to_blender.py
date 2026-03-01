@@ -172,6 +172,51 @@ def _filter_world_volumes(sub_meshes: list, factor: float = 8.0) -> list:
     return kept if kept else sub_meshes   # safety: never return empty
 
 
+def _thin_repeated_layers(sub_meshes: list, max_meshes: int = 40) -> list:
+    """
+    If a GLTF contains many similar-sized sub-meshes (e.g. hundreds of
+    repeated calorimeter absorber / scintillator layers), subsample them
+    down to at most *max_meshes* representatives.
+
+    A "similar-sized" mesh is one whose bounding-box diagonal is within
+    50 % – 200 % of the median diagonal across all sub-meshes.  When the
+    majority of meshes fall in that band we subsample uniformly, always
+    keeping the first and last so both ends of the detector are visible.
+
+    Meshes that are clearly NOT repeated layers (world-volume remnants
+    already removed, structural frames, etc.) are kept unconditionally.
+    """
+    if len(sub_meshes) <= max_meshes:
+        return sub_meshes
+
+    diags = [float(np.linalg.norm(m.extents)) for m in sub_meshes]
+    median_diag = float(np.median(diags))
+
+    # Partition: "layer" meshes are near-median; others are kept as-is
+    layers, others = [], []
+    for m, d in zip(sub_meshes, diags):
+        if median_diag > 0 and 0.5 * median_diag <= d <= 2.0 * median_diag:
+            layers.append(m)
+        else:
+            others.append(m)
+
+    if len(layers) <= max_meshes:
+        # Not dominated by repeated layers – just uniformly subsample the lot
+        step = max(1, len(sub_meshes) // max_meshes)
+        kept = sub_meshes[::step]
+        print(f"    [THIN] {len(sub_meshes)} sub-meshes → keeping {len(kept)} "
+              f"(uniform step={step})", flush=True)
+        return kept
+
+    # Subsample layer meshes, keep first+last for full extent
+    step = max(1, len(layers) // (max_meshes - len(others)))
+    kept_layers = [layers[0]] + layers[1:-1:step] + [layers[-1]]
+    kept = others + kept_layers
+    print(f"    [THIN] {len(sub_meshes)} sub-meshes ({len(layers)} repeated layers) "
+          f"→ keeping {len(kept)} (step={step})", flush=True)
+    return kept
+
+
 def _load_mesh(filepath: Path, name: str):
     """
     Read a mesh file with trimesh, merge duplicate vertices and remove
@@ -179,8 +224,11 @@ def _load_mesh(filepath: Path, name: str):
 
     Returns the new bpy Object.
     """
-    # trimesh process=True: merges identical vertices, removes degenerate faces
-    raw = trimesh.load(str(filepath), force="mesh", process=True)
+    # Load without force="mesh": GLTF files return a trimesh.Scene so that
+    # _filter_world_volumes can inspect each sub-mesh individually before
+    # concatenating.  Using force="mesh" caused trimesh to concatenate all
+    # sub-meshes (including the GDML world-volume box) before we could filter.
+    raw = trimesh.load(str(filepath), process=False)
 
     if isinstance(raw, trimesh.Scene):
         # Flatten a multi-mesh scene into one mesh, but first remove any
@@ -189,8 +237,11 @@ def _load_mesh(filepath: Path, name: str):
         if not sub_meshes:
             raise ValueError(f"No geometry found in {filepath}")
         sub_meshes = _filter_world_volumes(sub_meshes)
+        sub_meshes = _thin_repeated_layers(sub_meshes)
         raw = trimesh.util.concatenate(sub_meshes)
-        raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
+
+    # Always re-wrap as a processed Trimesh (merges duplicate verts, etc.)
+    raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
 
     verts = raw.vertices.tolist()   # list of [x, y, z]
     faces = raw.faces.tolist()      # list of [i, j, k]
