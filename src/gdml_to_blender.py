@@ -297,26 +297,286 @@ def _decimate_trimesh(mesh: "trimesh.Trimesh",
     return mesh
 
 
-# _phi_cut_trimesh was removed — phi cutaway is now handled entirely by the
-# GN modifier (primary) or bmesh fallback, both operating in Blender on the
-# final scene objects rather than during the trimesh loading stage.  This
-# avoids coordinate-space issues with un-transformed GLTF actor meshes.
+# ---------------------------------------------------------------------------
+# Fast numpy-based phi-sector mesh slicing
+# ---------------------------------------------------------------------------
+# These functions operate on raw (V,3) / (F,3) numpy arrays — no bmesh, no
+# scipy, no Blender dependency.  They are called during the trimesh loading
+# stage (before the bpy Mesh is created) so that the Blender mesh is already
+# cut and smaller, making all downstream operations faster.
+#
+# The phi cutaway removes a wedge-shaped sector [phi_min, phi_max] by:
+#   1. Slicing the mesh at the phi_min plane  → keeps phi < phi_min side
+#   2. Slicing the mesh at the phi_max plane  → keeps phi > phi_max side
+#   3. Concatenating both halves
+# Each slice creates new vertices at the exact intersection of edges with
+# the cut plane, producing geometrically clean, razor-sharp cut edges.
+# ---------------------------------------------------------------------------
+
+
+def _slice_mesh_plane_np(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    plane_co: np.ndarray,
+    plane_no: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Slice a triangle mesh at a plane, returning only the positive side.
+
+    Triangles that straddle the plane are split: new vertices are created at
+    the exact edge–plane intersection, and the positive-side sub-triangles
+    are emitted.  This produces geometrically clean cut edges.
+
+    Parameters
+    ----------
+    vertices : (V, 3) float64
+    faces    : (F, 3) int64   — triangle vertex indices
+    plane_co : (3,) float64   — a point on the plane
+    plane_no : (3,) float64   — outward normal (positive side = kept side)
+
+    Returns
+    -------
+    (new_vertices, new_faces) with only the positive-side geometry.
+    """
+    plane_co = np.asarray(plane_co, dtype=np.float64)
+    plane_no = np.asarray(plane_no, dtype=np.float64)
+    norm = np.linalg.norm(plane_no)
+    if norm < 1e-15:
+        return vertices, faces
+    plane_no = plane_no / norm
+
+    # Signed distance of every vertex from the plane
+    d = (vertices - plane_co) @ plane_no          # (V,)
+
+    # Classify vertices: +1 positive, -1 negative, 0 on-plane
+    eps = 1e-8
+    sign = np.zeros(len(d), dtype=np.int8)
+    sign[d > eps] = 1
+    sign[d < -eps] = -1
+
+    # Per-face vertex signs
+    fs = sign[faces]                               # (F, 3)
+    n_pos = (fs > 0).sum(axis=1)                   # per face
+    n_neg = (fs < 0).sum(axis=1)
+
+    # Faces entirely on the positive side (keep as-is)
+    keep_mask = (n_neg == 0)
+    # Faces that straddle the plane (need splitting)
+    straddle_mask = (n_pos > 0) & (n_neg > 0)
+
+    kept_faces = faces[keep_mask]
+
+    # --- Process straddling faces ---
+    straddle_idx = np.where(straddle_mask)[0]
+    if len(straddle_idx) == 0:
+        return vertices, kept_faces
+
+    # --- Batch-vectorised straddle face processing ---
+    # For each straddle face we need to:
+    #   1. find the 2 crossing edges
+    #   2. compute intersection points on those edges
+    #   3. emit 1 triangle (if 1 pos vertex) or 2 triangles (if 2 pos vertices)
+    #
+    # We separate straddle faces by topology and process each group with
+    # numpy, avoiding a Python-level per-face loop.
+
+    sf = faces[straddle_idx]         # (S, 3) straddle face vertex indices
+    ss = sign[sf]                    # (S, 3) vertex signs
+    sd = d[sf]                       # (S, 3) vertex signed distances
+
+    # For each edge (0→1, 1→2, 2→0), does it cross the plane?
+    # crossing = one endpoint strictly +, other strictly −
+    cross_01 = (ss[:, 0] * ss[:, 1]) < 0  # True if signs differ & nonzero
+    cross_12 = (ss[:, 1] * ss[:, 2]) < 0
+    cross_20 = (ss[:, 2] * ss[:, 0]) < 0
+
+    # Compute ALL intersection points for crossing edges at once (vectorised)
+    # t = d_a / (d_a − d_b);  pt = V[a] + t · (V[b] − V[a])
+    n_straddle = len(sf)
+    base_idx = len(vertices)
+
+    def _edge_intersections(mask, col_a, col_b):
+        """Return (new_vert_coords, index_into_new_verts) for crossing edges."""
+        if not mask.any():
+            return np.empty((0, 3), dtype=np.float64), np.full(n_straddle, -1, dtype=np.int64)
+        a_idx = sf[mask, col_a]
+        b_idx = sf[mask, col_b]
+        da = d[a_idx]
+        db = d[b_idx]
+        t = (da / (da - db))[:, None]
+        pts = vertices[a_idx] + t * (vertices[b_idx] - vertices[a_idx])
+        # De-duplicate by canonical edge key
+        edge_keys = np.stack([np.minimum(a_idx, b_idx), np.maximum(a_idx, b_idx)], axis=1)
+        _, unique_idx, inverse = np.unique(edge_keys, axis=0, return_index=True, return_inverse=True)
+        unique_pts = pts[unique_idx]
+        # Map each crossing edge to its unique new-vertex index
+        local_idx = np.full(n_straddle, -1, dtype=np.int64)
+        local_idx[mask] = inverse
+        return unique_pts, local_idx
+
+    pts_01, idx_01 = _edge_intersections(cross_01, 0, 1)
+    off_01 = base_idx
+    pts_12, idx_12 = _edge_intersections(cross_12, 1, 2)
+    off_12 = off_01 + len(pts_01)
+    pts_20, idx_20 = _edge_intersections(cross_20, 2, 0)
+    off_20 = off_12 + len(pts_12)
+
+    # Map local indices to global new-vertex indices
+    def _global(local, offset):
+        g = local.copy()
+        m = g >= 0
+        g[m] += offset
+        return g
+
+    gi_01 = _global(idx_01, off_01)
+    gi_12 = _global(idx_12, off_12)
+    gi_20 = _global(idx_20, off_20)
+
+    # Now build output faces per straddle face.
+    # Classify: how many vertices are on the positive side (sign > 0)?
+    n_pos_s = (ss > 0).sum(axis=1)   # 1 or 2 (guaranteed by straddle definition)
+
+    # For each face, the positive-side polygon is constructed by walking the
+    # triangle edges in order and including positive/on-plane vertices plus
+    # intersection vertices at crossings.  Rather than looping, we handle
+    # the two cases (1-pos and 2-pos) separately with vectorised indexing.
+
+    split_faces_list = []
+
+    # ---- Case A: exactly 1 positive vertex ----
+    # Result: 1 triangle.  The positive vertex plus 2 intersection points.
+    # We need to find WHICH vertex is positive and the 2 crossing edges.
+    for rot in range(3):
+        # Rotate columns so that column 0 is the positive vertex
+        r0, r1, r2 = rot, (rot + 1) % 3, (rot + 2) % 3
+        mask = (n_pos_s == 1) & (ss[:, r0] > 0)
+        if not mask.any():
+            continue
+        # Crossing edges: r0→r1 and r2→r0 (since r0 is + and r1, r2 are ≤ 0)
+        gi_map = {(0, 1): gi_01, (1, 2): gi_12, (2, 0): gi_20,
+                  (1, 0): gi_01, (2, 1): gi_12, (0, 2): gi_20}
+        e1_key = (r0, r1)
+        e2_key = (r2, r0)
+        i1 = gi_map[e1_key][mask]
+        i2 = gi_map[e2_key][mask]
+        tri = np.stack([sf[mask, r0], i1, i2], axis=1)
+        split_faces_list.append(tri)
+
+    # ---- Case B: exactly 2 positive vertices ----
+    # Result: 2 triangles (quad → fan).
+    for rot in range(3):
+        # Rotate so column 2 is the negative vertex
+        r0, r1, r2 = rot, (rot + 1) % 3, (rot + 2) % 3
+        mask = (n_pos_s == 2) & (ss[:, r2] < 0)
+        if not mask.any():
+            continue
+        # Crossing edges: r1→r2 and r2→r0
+        gi_map = {(0, 1): gi_01, (1, 2): gi_12, (2, 0): gi_20,
+                  (1, 0): gi_01, (2, 1): gi_12, (0, 2): gi_20}
+        i1 = gi_map[(r1, r2)][mask]
+        i2 = gi_map[(r2, r0)][mask]
+        # Quad: r0, r1, i1, i2 → tris: (r0, r1, i1) and (r0, i1, i2)
+        tri_a = np.stack([sf[mask, r0], sf[mask, r1], i1], axis=1)
+        tri_b = np.stack([sf[mask, r0], i1, i2], axis=1)
+        split_faces_list.append(tri_a)
+        split_faces_list.append(tri_b)
+
+    # Assemble extra vertices
+    all_extra = [p for p in (pts_01, pts_12, pts_20) if len(p) > 0]
+    if all_extra:
+        extra_arr = np.vstack(all_extra)
+        all_verts = np.vstack([vertices, extra_arr])
+    else:
+        all_verts = vertices
+
+    # Assemble faces
+    parts = [kept_faces] + split_faces_list
+    parts = [p for p in parts if len(p) > 0]
+    all_faces = np.vstack(parts) if parts else kept_faces
+
+    return all_verts, all_faces
+
+
+def _phi_cut_np(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    phi_min_deg: float,
+    phi_max_deg: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Remove the phi sector [phi_min, phi_max] from a triangle mesh.
+
+    The sector is defined in mesh-local coordinates:
+        phi = atan2(-X_local, Y_local)
+        phi=0  → +Y_local   (after Ry+90°  →  +Y_blender = physics-up)
+        phi=90 → −X_local   (after Ry+90°  →  +Z_blender = horiz transverse)
+
+    Strategy (sequential slicing to avoid face duplication):
+      1. Slice at the phi_min plane → LEFT = keep phi < phi_min
+      2. Slice the ORIGINAL at the phi_min plane with flipped normal → INNER =
+         keep phi >= phi_min (the sector + everything beyond phi_max)
+      3. Slice INNER at the phi_max plane → RIGHT = keep phi > phi_max
+      4. Concatenate LEFT + RIGHT
+
+    The sequential approach (steps 2–3) ensures no face appears in both
+    halves, even when vertices lie exactly on the cut planes.
+
+    New vertices are created at the exact edge–plane intersections, giving
+    clean, razor-sharp cut edges.  Pure numpy — no bmesh, no scipy.
+
+    Returns (new_vertices, new_faces).
+    """
+    phi_min = math.radians(phi_min_deg)
+    phi_max = math.radians(phi_max_deg)
+    origin = np.array([0.0, 0.0, 0.0])
+
+    # Normal at phi_min pointing AWAY from sector (toward phi < phi_min)
+    normal_out_min = np.array([math.cos(phi_min), math.sin(phi_min), 0.0])
+    # Normal at phi_max pointing AWAY from sector (toward phi > phi_max)
+    normal_out_max = np.array([-math.cos(phi_max), -math.sin(phi_max), 0.0])
+
+    # Step 1: LEFT = slice keeping phi < phi_min
+    left_v, left_f = _slice_mesh_plane_np(vertices, faces, origin, normal_out_min)
+
+    # Step 2: INNER = slice keeping phi >= phi_min (flipped normal)
+    inner_v, inner_f = _slice_mesh_plane_np(vertices, faces, origin, -normal_out_min)
+
+    # Step 3: RIGHT = from INNER, keep only phi > phi_max
+    right_v, right_f = _slice_mesh_plane_np(inner_v, inner_f, origin, normal_out_max)
+
+    # Step 4: Concatenate LEFT + RIGHT (disjoint, no overlap)
+    n_left_v = len(left_v)
+    if len(left_f) > 0 and len(right_f) > 0:
+        combined_v = np.vstack([left_v, right_v])
+        combined_f = np.vstack([left_f, right_f + n_left_v])
+    elif len(left_f) > 0:
+        combined_v, combined_f = left_v, left_f
+    elif len(right_f) > 0:
+        combined_v, combined_f = right_v, right_f
+    else:
+        return vertices[:0], faces[:0]   # empty mesh
+
+    return combined_v, combined_f
 
 
 def _load_mesh(
     filepath: Path,
     name: str,
+    phi_min_deg: float | None = None,
+    phi_max_deg: float | None = None,
 ):
     """
     Read a mesh file with trimesh, merge duplicate vertices and remove
-    degenerate faces, then create a bpy Mesh object.
+    degenerate faces, optionally apply a phi-sector cutaway, then create
+    a bpy Mesh object.
 
-    The phi-sector cutaway is handled after loading by either:
-    (a) bmesh bisect — creates new vertices at the exact phi boundary
-        planes, then deletes faces inside the cut sector (primary —
-        produces clean, razor-sharp cut edges), or
-    (b) a Boolean DIFFERENCE modifier using a PhiWedge cutter (secondary,
-        disabled by default — requires manifold mesh).
+    If *phi_min_deg* and *phi_max_deg* are both provided, the sector
+    [phi_min, phi_max] is sliced away using pure-numpy plane slicing
+    (``_phi_cut_np``) *before* the Blender mesh is created.  This is
+    vastly faster than the old bmesh bisect approach because:
+      - numpy vectorises vertex classification and bulk face filtering
+      - only straddling faces need a Python-level split loop
+      - the resulting bpy mesh is already cut and smaller
 
     GLTF scene-graph node transforms are applied during loading so that
     mesh vertices end up in GDML world-space coordinates.  This is essential
@@ -374,6 +634,17 @@ def _load_mesh(
     # Quadric decimation — keeps face count manageable for Blender's modifier
     # stack (Weld + Boolean + Bevel) without degrading visual quality.
     raw = _decimate_trimesh(raw, max_faces=30_000)
+
+    # Phi-sector cutaway (numpy level — fast, creates clean intersection edges)
+    if phi_min_deg is not None and phi_max_deg is not None:
+        n_before = len(raw.faces)
+        verts_np = np.asarray(raw.vertices, dtype=np.float64)
+        faces_np = np.asarray(raw.faces, dtype=np.int64)
+        verts_np, faces_np = _phi_cut_np(verts_np, faces_np, phi_min_deg, phi_max_deg)
+        print(f"    [PHI-NP] {n_before:,} → {len(faces_np):,} faces "
+              f"(cut [{phi_min_deg:.0f}°, {phi_max_deg:.0f}°])", flush=True)
+        # Re-wrap as processed trimesh to merge duplicate vertices from slicing
+        raw = trimesh.Trimesh(verts_np, faces_np, process=True)
 
     verts = raw.vertices.tolist()   # list of [x, y, z]
     faces = raw.faces.tolist()      # list of [i, j, k]
@@ -1816,11 +2087,14 @@ def create_blender_scene(
           f"{[m.name for m in materials]}", flush=True)
 
     # ---- Load each mesh ----
-    # Phi cutaway is now a live Boolean modifier (PhiBoolean) applied after
-    # scene bounds are computed.  Meshes are loaded clean — no baking.
+    # Phi cutaway is applied at the numpy/trimesh level DURING loading
+    # (before the Blender mesh is created).  This is vastly faster than
+    # the old bmesh bisect approach and produces clean cut edges.
+    _phi_min_load = phi_min if not no_phi_cut else None
+    _phi_max_load = phi_max if not no_phi_cut else None
     if not no_phi_cut:
-        print(f"  [PHI] Phi cutaway [{phi_min:.1f}°, {phi_max:.1f}°] will be applied "
-              f"as a Boolean modifier (PhiWedge cutter, live-adjustable via GN).",
+        print(f"  [PHI] Phi cutaway [{phi_min:.1f}°, {phi_max:.1f}°] applied at numpy "
+              f"level during mesh loading (fast, clean intersection edges).",
               flush=True)
 
     loaded_objects: list = []
@@ -1828,7 +2102,9 @@ def create_blender_scene(
         name = mesh_path.stem
         print(f"  Loading {mesh_path.name} ...")
         try:
-            obj = _load_mesh(mesh_path, name)
+            obj = _load_mesh(mesh_path, name,
+                             phi_min_deg=_phi_min_load,
+                             phi_max_deg=_phi_max_load)
         except Exception as exc:
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
@@ -1881,80 +2157,40 @@ def create_blender_scene(
     ortho_trans = max(y_max, z_max) * 2.2
     ortho_side  = max(x_max, y_max) * 2.2
 
-    # ---- Phi-cutaway ----
-    # Faces whose phi falls INSIDE [phi_min, phi_max] are DELETED (cut away),
-    # revealing the detector interior through the removed sector.
-    #
-    # PRIMARY: bmesh bisect — bisects the mesh along the two phi boundary
-    #   planes, creating new vertices at the exact intersection of existing
-    #   edges with the cut boundaries.  This produces geometrically clean,
-    #   razor-sharp cut edges (no ragged stair-stepping from whole-face
-    #   deletion).  The operation is baked into the mesh (destructive).
-    #
-    # SECONDARY (disabled by default): Boolean DIFFERENCE modifier — a solid
-    #   phi-wedge cutter mesh covering the cut sector is created in the
-    #   Cutters collection.  VTK-exported meshes are often non-manifold so
-    #   Boolean ops may fail; users can enable per-object if their mesh
-    #   is clean.
-    #
-    # The GN (Geometry Nodes) modifier approach is NOT used because:
-    #   1. It can only delete whole faces by centroid → ragged edges.
-    #   2. On Blender 5.0+ it triggers SIGSEGV during save_as_mainfile.
+    # ---- Phi-cutaway (secondary Boolean modifier) ----
+    # The primary phi cutaway was already applied at the numpy/trimesh level
+    # during _load_mesh (fast, clean intersection edges baked into the mesh).
+    # Here we add an OPTIONAL Boolean DIFFERENCE modifier (disabled by default)
+    # for users who want a non-destructive alternative on manifold meshes.
     wedge_obj = None
     ctrl_obj  = None
     if not no_phi_cut:
-        # Create the PhiCutawayControl empty — records the cut parameters
-        # for reference and for the Boolean wedge cutter.
         ctrl_obj = _create_phi_control_empty(phi_min, phi_max, col_cutters)
 
-        # --- bmesh bisect (primary) ---
-        # Bisects each mesh at the phi_min and phi_max boundary planes,
-        # creating new vertices at the intersection, then deletes faces
-        # inside the cut sector.  Every face is fully inside or outside
-        # after bisection, so the cut edge is geometrically exact.
-        print(f"  [PHI] Applying bmesh bisect phi-cutaway "
-              f"[{phi_min:.1f}°, {phi_max:.1f}°] to {len(loaded_objects)} "
-              f"objects ...", flush=True)
-        for obj in loaded_objects:
-            try:
-                _apply_phi_cutaway_bmesh(obj, phi_min, phi_max)
-            except Exception as exc:
-                print(f"  [PHI] bmesh bisect failed on '{obj.name}': {exc}",
-                      flush=True)
-        print(f"  [PHI] bmesh bisect complete — clean cut edges with "
-              f"new intersection vertices.", flush=True)
-
-        # --- Boolean wedge cutter (secondary, disabled by default) ---
-        # The wedge covers the cut sector [phi_min, phi_max].  DIFFERENCE
-        # subtracts this sector from the detector.
         try:
             wedge_obj = _create_phi_wedge_cutter(
                 phi_min_deg=phi_min,
                 phi_max_deg=phi_max,
-                radius=r * 1.5,      # 1.5× scene radius to fully enclose
-                depth=x_max * 2.5,   # cover full beam length
+                radius=r * 1.5,
+                depth=x_max * 2.5,
                 collection=col_cutters,
             )
-            # Rotate to match detector objects (Ry+90°)
             wedge_obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
 
             for obj in loaded_objects:
                 mod = obj.modifiers.new("PhiBoolean", "BOOLEAN")
                 mod.operation = "DIFFERENCE"
                 mod.object = wedge_obj
-                # Use FAST/FLOAT solver for better non-manifold tolerance
                 for solver in ("FLOAT", "FAST"):
                     try:
                         mod.solver = solver
                         break
                     except TypeError:
                         pass
-                # Disabled by default — enable per-object if mesh is clean
                 mod.show_viewport = False
                 mod.show_render = False
             print(f"  [PHI] Boolean DIFFERENCE modifier added to "
-                  f"{len(loaded_objects)} objects (disabled by default — "
-                  f"enable per-object in modifier panel if mesh is manifold).",
+                  f"{len(loaded_objects)} objects (disabled by default).",
                   flush=True)
         except Exception as exc:
             print(f"  [PHI] Boolean wedge creation failed: {exc}",

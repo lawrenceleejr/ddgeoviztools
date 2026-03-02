@@ -113,6 +113,16 @@ _AUTO_SPLIT_FILESIZE_BYTES = 50 * 1024 * 1024   # 50 MB
 # level deeper in the GDML structure hierarchy.
 _MAX_RESPLIT_DEPTH = 3
 
+# Tracker sub-detectors have deeply nested repetitive structure (staves,
+# modules, layers) that require more aggressive splitting.  Allow up to
+# this many recursion levels for names containing tracker-related keywords.
+_MAX_RESPLIT_DEPTH_TRACKER = 6
+
+_TRACKER_KEYS = (
+    "tracker", "trk", "tpc", "silicon", "vertex", "inner_tracker",
+    "outer_tracker", "barrel_tracker", "endcap_tracker",
+)
+
 
 def _limit_gdml_placements(
     gdml_path: "Path",
@@ -430,9 +440,16 @@ def _auto_split_and_convert(
                 or sub_size > _AUTO_SPLIT_FILESIZE_BYTES
             )
 
-            if still_too_large and split_depth < _MAX_RESPLIT_DEPTH:
+            # Tracker sub-detectors get a higher recursion depth limit
+            _lv_lower = lv_name.lower()
+            max_depth = _MAX_RESPLIT_DEPTH_TRACKER \
+                if any(k in _lv_lower for k in _TRACKER_KEYS) \
+                else _MAX_RESPLIT_DEPTH
+
+            if still_too_large and split_depth < max_depth:
                 print(f"  [{_ts()}] [SPLIT d={split_depth}] Chunk {lv_name!r} still large "
-                      f"({sub_pvs} pvs, {sub_size/1e6:.1f} MB) — re-splitting at d={split_depth+1}",
+                      f"({sub_pvs} pvs, {sub_size/1e6:.1f} MB) — re-splitting at "
+                      f"d={split_depth+1} (max={max_depth})",
                       flush=True)
                 _split_and_convert_recursive(pruned_sub, split_depth + 1, sub_label)
             else:
