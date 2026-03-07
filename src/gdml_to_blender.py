@@ -44,16 +44,16 @@ from mathutils import Vector
 
 _PALETTE = [
     # (name,               base_RGB,              metallic, roughness)
-    ("Steel",            (0.65, 0.67, 0.70),       0.95,     0.20),
-    ("Brushed_Steel",    (0.58, 0.60, 0.63),       0.90,     0.45),
-    ("Dark_Steel",       (0.30, 0.32, 0.35),       0.85,     0.35),
-    ("Brass",            (0.72, 0.55, 0.20),       0.95,     0.20),
-    ("Copper",           (0.72, 0.40, 0.25),       0.95,     0.25),
+    ("Steel",            (0.65, 0.67, 0.70),       0.80,     0.45),
+    ("Brushed_Steel",    (0.58, 0.60, 0.63),       0.75,     0.55),
+    ("Dark_Steel",       (0.30, 0.32, 0.35),       0.70,     0.50),
+    ("Brass",            (0.72, 0.55, 0.20),       0.80,     0.45),
+    ("Copper",           (0.72, 0.40, 0.25),       0.80,     0.50),
     ("Matte_Gray",       (0.45, 0.45, 0.48),       0.00,     0.85),
     ("Matte_Dark",       (0.20, 0.20, 0.22),       0.00,     0.90),
-    ("Brushed_Aluminum", (0.78, 0.79, 0.80),       0.95,     0.35),
-    ("Dark_Brass",       (0.55, 0.42, 0.15),       0.90,     0.30),
-    ("Oxidized_Copper",  (0.25, 0.50, 0.40),       0.60,     0.65),
+    ("Brushed_Aluminum", (0.78, 0.79, 0.80),       0.80,     0.50),
+    ("Dark_Brass",       (0.55, 0.42, 0.15),       0.75,     0.50),
+    ("Oxidized_Copper",  (0.25, 0.50, 0.40),       0.50,     0.70),
 ]
 
 # Keyword → (base_RGB, metallic, roughness)
@@ -62,43 +62,43 @@ _PALETTE = [
 _DETECTOR_MATERIALS = [
     # ECal / EM calorimeter — crystal or lead glass (pale aqua, semi-reflective)
     (("ecal", "emcal", "em_cal", "crystal", "preshower", "pbwo4"),
-     (0.35, 0.62, 0.52), 0.10, 0.25),
+     (0.35, 0.62, 0.52), 0.10, 0.35),
     # HCal / hadronic calorimeter — iron/brass absorber
     (("hcal", "hcalo", "hadcal", "hcalorimeter"),
-     (0.52, 0.38, 0.22), 0.85, 0.40),
-    # Solenoid / superconducting coil — bright copper
+     (0.52, 0.38, 0.22), 0.70, 0.55),
+    # Solenoid / superconducting coil — brushed copper
     (("solenoid", "coil", "solen", "magnet_coil"),
-     (0.72, 0.42, 0.22), 0.95, 0.20),
+     (0.72, 0.42, 0.22), 0.80, 0.45),
     # Yoke / iron flux return — dark iron
     (("yoke", "iron_yoke", "muon_iron", "flux_return"),
-     (0.30, 0.28, 0.26), 0.92, 0.55),
+     (0.30, 0.28, 0.26), 0.75, 0.60),
     # Tracker / silicon strips
     (("tracker", "trk", "sit", "svt", "ftd", "set", "etd", "tracking"),
-     (0.22, 0.38, 0.60), 0.70, 0.35),
+     (0.22, 0.38, 0.60), 0.55, 0.50),
     # TPC — brushed aluminium cylinder
     (("tpc",),
-     (0.78, 0.79, 0.80), 0.90, 0.35),
-    # Silicon pixel / vertex detector — bright steel blue
+     (0.78, 0.79, 0.80), 0.75, 0.50),
+    # Silicon pixel / vertex detector — steel blue
     (("pixel", "vxd", "vtx", "velo", "pxd"),
-     (0.28, 0.45, 0.72), 0.85, 0.25),
+     (0.28, 0.45, 0.72), 0.70, 0.45),
     # Muon detectors (drift tubes, RPCs, …) — matte blue-grey
     (("muon", "mdt", "rpc", "tgc", "csc", "gem", "me0"),
      (0.55, 0.50, 0.68), 0.20, 0.70),
     # TOF / RICH / PID / Cherenkov — gold/brass
     (("tof", "btof", "rich", "dirc", "aerogel", "cherenkov", "pid"),
-     (0.68, 0.58, 0.28), 0.80, 0.22),
-    # Beam pipe / vacuum chamber — bright stainless steel
+     (0.68, 0.58, 0.28), 0.65, 0.45),
+    # Beam pipe / vacuum chamber — brushed stainless steel
     (("beampipe", "beam_pipe", "vacuumchamber", "bpipe"),
-     (0.78, 0.79, 0.82), 0.95, 0.12),
+     (0.78, 0.79, 0.82), 0.80, 0.40),
     # Nozzle / heavy-metal shielding — dark tungsten-grey
     (("nozzle", "tungsten", "shielding", "shield"),
-     (0.28, 0.27, 0.25), 0.85, 0.60),
+     (0.28, 0.27, 0.25), 0.70, 0.65),
     # Generic calorimeter label
     (("calorimeter", "calo"),
      (0.42, 0.55, 0.38), 0.10, 0.75),
     # Support / dead material
     (("support", "dead", "frame", "structure"),
-     (0.40, 0.40, 0.42), 0.60, 0.65),
+     (0.40, 0.40, 0.42), 0.50, 0.70),
 ]
 
 
@@ -115,8 +115,19 @@ def _make_material(name: str, color_rgb: tuple, metallic: float, roughness: floa
     # "Specular IOR Level" in Blender 4.x; "Specular" in 3.x
     for key in ("Specular IOR Level", "Specular"):
         if key in bsdf.inputs:
-            bsdf.inputs[key].default_value = 0.5
+            bsdf.inputs[key].default_value = 0.4
             break
+    # Anisotropic brushed-metal look: elongated highlights mimic machined surfaces.
+    # Only apply to metallic materials (metallic > 0.3).
+    if metallic > 0.3:
+        for key in ("Anisotropic", "Anisotropy"):
+            if key in bsdf.inputs:
+                bsdf.inputs[key].default_value = 0.35
+                break
+        for key in ("Anisotropic Rotation", "Anisotropy Rotation"):
+            if key in bsdf.inputs:
+                bsdf.inputs[key].default_value = 0.0
+                break
     return mat
 
 
@@ -673,6 +684,32 @@ def _add_weld(obj, threshold: float = 1e-4):
     """
     mod = obj.modifiers.new("Weld", "WELD")
     mod.merge_threshold = threshold
+    return mod
+
+
+def _add_solidify(obj, thickness_mm: float = 2.0):
+    """
+    Add a Solidify modifier so hollow shell meshes appear solid when cut.
+
+    GDML meshes are typically thin shells (single-layer faces).  When a
+    phi-cutaway slices through them the interior is hollow.  The Solidify
+    modifier extrudes faces inward by *thickness_mm*, giving the mesh a
+    visible wall thickness so cutaway views look like slicing into a
+    solid block of material.
+
+    Parameters
+    ----------
+    thickness_mm : wall thickness in mm (negative = extrude inward).
+                   2.0 mm is a good default for detector-scale geometry.
+    """
+    mod = obj.modifiers.new("Solidify", "SOLIDIFY")
+    mod.thickness = -abs(thickness_mm)    # negative → extrude inward
+    mod.offset    = -1.0                  # keep outer surface in place
+    mod.use_even_offset   = True          # uniform thickness on sloped faces
+    mod.use_quality_normals = True        # better shading on the new faces
+    # Assign material index for the inner faces (rim + inside) so they
+    # receive the same material as the outer surface.
+    mod.material_offset = 0
     return mod
 
 
@@ -1953,28 +1990,31 @@ def _setup_render_and_compositor(scene):
         except (TypeError, Exception):
             continue
 
-    # Freestyle — draw thin lines on every visible mesh edge so that
-    # adjacent coplanar faces remain distinguishable.
+    # Freestyle — draw edge lines on every visible mesh edge so that
+    # adjacent coplanar faces remain distinguishable and the cutaway
+    # reveals clean structural outlines.
     try:
         vl = scene.view_layers[0]
         vl.use_freestyle = True
         scene.render.use_freestyle = True
-        # Configure the default Freestyle lineset
-        if vl.freestyle_settings.linesets:
-            ls = vl.freestyle_settings.linesets[0]
-            # Edge types: silhouette + border + crease + material boundary + edge mark
-            ls.select_silhouette       = True
-            ls.select_border           = True
-            ls.select_crease           = True
-            ls.select_edge_mark        = True
-            ls.select_material_boundary = True
-            # Thin dark lines
-            ls.linestyle.color     = (0.0, 0.0, 0.0)  # black
-            ls.linestyle.thickness = 0.3               # very thin (pixels)
-            ls.linestyle.alpha     = 0.6               # slightly transparent
+        # Ensure at least one lineset exists (some Blender builds start empty)
+        if not vl.freestyle_settings.linesets:
+            vl.freestyle_settings.linesets.new("EdgeLines")
+        ls = vl.freestyle_settings.linesets[0]
+        # Edge types: silhouette + border + crease + material boundary + edge mark
+        ls.select_silhouette       = True
+        ls.select_border           = True
+        ls.select_crease           = True
+        ls.select_edge_mark        = True
+        ls.select_material_boundary = True
+        # Visible dark lines — 1.0 px works well at 4K (3840×2160).
+        # Previous 0.3 px was sub-pixel and invisible after denoising.
+        ls.linestyle.color     = (0.05, 0.05, 0.05)  # near-black
+        ls.linestyle.thickness = 1.0                  # 1 px — visible at 4K
+        ls.linestyle.alpha     = 0.85                 # mostly opaque
         # Crease angle: edges sharper than this are drawn
-        vl.freestyle_settings.crease_angle = math.radians(15)
-        print("  [RENDER] Freestyle edge lines enabled (0.3 px, 15° crease)",
+        vl.freestyle_settings.crease_angle = math.radians(20)
+        print("  [RENDER] Freestyle edge lines enabled (1.0 px, 20° crease)",
               flush=True)
     except Exception as exc:
         print(f"  [RENDER] Freestyle setup failed: {exc}", flush=True)
@@ -2167,8 +2207,9 @@ def create_blender_scene(
         mat = _material_for_detector(name, mat_cycle)
         obj.data.materials.append(mat)
 
-        # Weld only here; Boolean + Bevel are added after scene bounds are known
+        # Weld + Solidify here; Boolean + Bevel are added after scene bounds are known
         _add_weld(obj, threshold=weld_threshold)
+        _add_solidify(obj)
 
         # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
         # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
