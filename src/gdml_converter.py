@@ -319,7 +319,20 @@ def _simplify_gdml_envelopes(
         mat = _material(vol_el)
 
         if mat in _AIR_MATERIALS:
-            # Air container — recurse into children but don't keep shape
+            # Air/Vacuum container — convert to <assembly> so pyg4ometry
+            # won't tessellate the envelope solid (no big cylinder mesh).
+            # Children (modules) are preserved and placed correctly.
+            solidref = vol_el.find(tag("solidref"))
+            if solidref is None:
+                solidref = vol_el.find("solidref")
+            if solidref is not None:
+                vol_el.remove(solidref)
+            matref = vol_el.find(tag("materialref"))
+            if matref is None:
+                matref = vol_el.find("materialref")
+            if matref is not None:
+                vol_el.remove(matref)
+            vol_el.tag = "assembly"
             for pv in pvs:
                 cn = _volref(pv)
                 if cn:
@@ -941,13 +954,15 @@ def convert_gdml(
             print(f"  [{_ts()}] Simplified GDML ready ({_elapsed(t0)})", flush=True)
 
     # ---- Pre-process GDML: limit repeated physical-volume placements ----
-    # This prunes hundreds of identical tracker modules / calorimeter layers
-    # before pyg4ometry ever touches them, which is far cheaper than letting
-    # VTK materialise all of them and then discarding them.
-    t0 = time.monotonic()
-    gdml_to_load = _limit_gdml_placements(gdml_to_process)
-    if gdml_to_load != gdml_to_process:
-        print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
+    # Skip when simplify is on — the simplification already handled pruning
+    # and the aggressive budget (30 physvols) would destroy calorimeter layers.
+    if simplify:
+        gdml_to_load = gdml_to_process
+    else:
+        t0 = time.monotonic()
+        gdml_to_load = _limit_gdml_placements(gdml_to_process)
+        if gdml_to_load != gdml_to_process:
+            print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
 
     # ---- Complexity check: auto-split if still too many physvols ----
     file_size = Path(gdml_to_load).stat().st_size
