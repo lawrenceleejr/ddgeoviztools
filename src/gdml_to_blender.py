@@ -575,6 +575,7 @@ def _load_mesh(
     name: str,
     phi_min_deg: float | None = None,
     phi_max_deg: float | None = None,
+    solid: bool = False,
 ):
     """
     Read a mesh file with trimesh, merge duplicate vertices and remove
@@ -645,6 +646,18 @@ def _load_mesh(
     # Quadric decimation — keeps face count manageable for Blender's modifier
     # stack (Weld + Boolean + Bevel) without degrading visual quality.
     raw = _decimate_trimesh(raw, max_faces=30_000)
+
+    # Solid fill — replace the shell mesh with its convex hull so that
+    # the interior is completely filled.  When the phi-cutaway slices
+    # through a solid mesh the cross-section is a filled polygon instead
+    # of two thin walls with empty space between them.
+    if solid:
+        try:
+            raw = raw.convex_hull
+            print(f"    [SOLID] Convex hull: {len(raw.faces):,} faces", flush=True)
+        except Exception as exc:
+            print(f"    [SOLID] Convex hull failed ({exc}); keeping shell",
+                  flush=True)
 
     # Phi-sector cutaway (numpy level — fast, creates clean intersection edges)
     if phi_min_deg is not None and phi_max_deg is not None:
@@ -2218,10 +2231,14 @@ def create_blender_scene(
     for mesh_path in mesh_files:
         name = mesh_path.stem
         print(f"  Loading {mesh_path.name} ...")
+        # Nozzles are filled to a solid convex hull before the phi cut
+        # so the cutaway cross-section appears as solid material.
+        _is_nozzle = "Nozzle" in name
         try:
             obj = _load_mesh(mesh_path, name,
                              phi_min_deg=_phi_min_load,
-                             phi_max_deg=_phi_max_load)
+                             phi_max_deg=_phi_max_load,
+                             solid=_is_nozzle)
         except Exception as exc:
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
@@ -2232,8 +2249,9 @@ def create_blender_scene(
 
         # Weld + Solidify here; Boolean + Bevel are added after scene bounds are known
         _add_weld(obj, threshold=weld_threshold)
-        # Skip Solidify for tracking detectors — they are thin by design.
-        _skip_solidify = any(kw in name for kw in ("Vertex", "Tracker"))
+        # Skip Solidify for tracking detectors (thin by design) and nozzles
+        # (already filled to solid convex hull during loading).
+        _skip_solidify = any(kw in name for kw in ("Vertex", "Tracker")) or _is_nozzle
         if not _skip_solidify:
             _add_solidify(obj)
 
