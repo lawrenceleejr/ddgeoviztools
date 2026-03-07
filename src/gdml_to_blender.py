@@ -508,6 +508,94 @@ def _slice_mesh_plane_np(
     return all_verts, all_faces
 
 
+def _cap_boundary_loops(mesh: "trimesh.Trimesh") -> "trimesh.Trimesh":
+    """
+    Find open boundary loops on *mesh* and fill each with a triangle fan.
+
+    After a phi-sector cut, a convex-hull mesh has open edges where the cut
+    planes intersected it.  This function traces those boundary loops and
+    creates cap faces so the cross-section appears solid.
+
+    Returns a new Trimesh with the cap faces appended.
+    """
+    from collections import defaultdict
+
+    edges = mesh.edges_unique
+    faces_per_edge = mesh.edges_unique_inverse
+    # Count how many faces reference each unique edge
+    edge_face_count = np.bincount(faces_per_edge, minlength=len(edges))
+    # Boundary edges are referenced by exactly one face
+    boundary_mask = edge_face_count == 1
+    boundary_edges = edges[boundary_mask]
+
+    if len(boundary_edges) == 0:
+        return mesh
+
+    # Build adjacency for boundary vertices
+    adj = defaultdict(list)
+    for e in boundary_edges:
+        adj[e[0]].append(e[1])
+        adj[e[1]].append(e[0])
+
+    # Trace closed loops
+    visited = set()
+    loops = []
+    for start in adj:
+        if start in visited:
+            continue
+        loop = [start]
+        visited.add(start)
+        current = start
+        while True:
+            neighbors = [n for n in adj[current] if n not in visited]
+            if not neighbors:
+                # Check if loop closes back to start
+                if start in adj[current]:
+                    loops.append(loop)
+                break
+            current = neighbors[0]
+            visited.add(current)
+            loop.append(current)
+
+    if not loops:
+        return mesh
+
+    verts = np.array(mesh.vertices)
+    new_faces = list(mesh.faces)
+    new_verts = list(verts)
+
+    for loop in loops:
+        if len(loop) < 3:
+            continue
+        loop_verts = verts[loop]
+        centroid = loop_verts.mean(axis=0)
+        # Add centroid as a new vertex
+        center_idx = len(new_verts)
+        new_verts.append(centroid)
+        # Compute a rough normal from the first few edges to orient winding
+        v0 = loop_verts[1] - loop_verts[0]
+        v1 = loop_verts[2] - loop_verts[0]
+        normal = np.cross(v0, v1)
+        # Fan direction: check winding against existing face normals.
+        # Use the average of nearby face normals as reference.
+        ref_normal = mesh.face_normals.mean(axis=0)
+        flip = np.dot(normal, ref_normal) < 0
+        for i in range(len(loop)):
+            a = loop[i]
+            b = loop[(i + 1) % len(loop)]
+            if flip:
+                new_faces.append([center_idx, b, a])
+            else:
+                new_faces.append([center_idx, a, b])
+
+    result = trimesh.Trimesh(
+        vertices=np.array(new_verts),
+        faces=np.array(new_faces),
+        process=True,
+    )
+    return result
+
+
 def _phi_cut_np(
     vertices: np.ndarray,
     faces: np.ndarray,
@@ -669,6 +757,18 @@ def _load_mesh(
               f"(cut [{phi_min_deg:.0f}°, {phi_max_deg:.0f}°])", flush=True)
         # Re-wrap as processed trimesh to merge duplicate vertices from slicing
         raw = trimesh.Trimesh(verts_np, faces_np, process=True)
+
+        # For solid meshes, cap the open boundaries left by the phi cut.
+        # The cut creates clean boundary edges along each cut plane; filling
+        # those holes produces flat cap faces that make the cross-section
+        # look like slicing through solid material.
+        if solid:
+            try:
+                raw = _cap_boundary_loops(raw)
+                print(f"    [SOLID] Boundaries capped → {len(raw.faces):,} faces",
+                      flush=True)
+            except Exception as exc:
+                print(f"    [SOLID] Boundary cap failed ({exc})", flush=True)
 
     verts = raw.vertices.tolist()   # list of [x, y, z]
     faces = raw.faces.tolist()      # list of [i, j, k]
