@@ -136,13 +136,14 @@ def _simplify_gdml_envelopes(
     Rules by sub-detector type:
 
     **Calorimeters** (ECal, HCal, Yoke):
-      Keep every layer shape, but strip the slices within each layer.
-      Stave/inner containers (Air) are traversed but not rendered.
+      Keep the first and last slice of each layer to show sampling
+      structure.  Layer envelopes (Air) become assemblies so they
+      don't render.  Stave/inner containers are traversed, not rendered.
 
     **Trackers** (Vertex, InnerTrackers, OuterTrackers):
-      Keep 1 instance of each unique module type (envelope shape only).
-      Internal components (silicon, kapton, etc.) are stripped.
-      Air/Vacuum containers are traversed but not rendered.
+      Keep ALL module placements (full cylindrical pattern visible).
+      Internal components (silicon, kapton, etc.) are stripped from
+      each module.  Air/Vacuum containers become assemblies.
 
     **Other** (Beampipe, Nozzle, Solenoid):
       Keep the outermost solid, strip internals.
@@ -242,7 +243,7 @@ def _simplify_gdml_envelopes(
 
     # ------------------------------------------------------------------
     # Calorimeter: envelope → stave(s) → stave_inner → layers → slices
-    # Keep every layer, strip slices from each layer.
+    # Keep first + last slice per layer; layer envelope → assembly.
     # ------------------------------------------------------------------
     def _simplify_calo(vol_name):
         if vol_name in _visited:
@@ -282,18 +283,43 @@ def _simplify_gdml_envelopes(
                 break
 
         if children_are_slices:
-            # Layer — strip slices, keep layer envelope shape
-            _remove_pvs(vol_el)
+            # Layer — keep only first and last slice so the sampling
+            # structure is visible, and convert the layer itself to an
+            # <assembly> so its Air bounding-box won't render.
+            pvs_list = list(pvs)
+            if len(pvs_list) > 2:
+                for pv in pvs_list[1:-1]:
+                    vol_el.remove(pv)
+                    total_removed += 1
+            # Strip the layer's own solid/material so only slices render
+            for child_tag in ("solidref", "materialref"):
+                el = vol_el.find(tag(child_tag))
+                if el is None:
+                    el = vol_el.find(child_tag)
+                if el is not None:
+                    vol_el.remove(el)
+            vol_el.tag = "assembly"
         else:
-            # Container (stave_outer, stave_inner, endcap) — recurse
-            for pv in pvs:
+            # Container (stave_outer, stave_inner, endcap) — recurse.
+            # If it's an Air volume, convert to assembly so its bounding
+            # box doesn't render.
+            mat = _material(vol_el)
+            if mat in _AIR_MATERIALS:
+                for child_tag in ("solidref", "materialref"):
+                    el = vol_el.find(tag(child_tag))
+                    if el is None:
+                        el = vol_el.find(child_tag)
+                    if el is not None:
+                        vol_el.remove(el)
+                vol_el.tag = "assembly"
+            for pv in list(_get_pvs(vol_el)):
                 cn = _volref(pv)
                 if cn:
                     _simplify_calo(cn)
 
     # ------------------------------------------------------------------
     # Tracker: assembly → layers → modules → components
-    # Keep 1 per unique module type, strip components.
+    # Keep ALL modules, strip internal components from each.
     # ------------------------------------------------------------------
     def _simplify_tracker(vol_name):
         if vol_name in _visited:
@@ -305,7 +331,7 @@ def _simplify_gdml_envelopes(
             return
 
         if _is_assembly(vol_el):
-            _thin_assembly(vol_el)
+            # Keep ALL placements (don't thin) so every module is visible
             for pv in list(_get_pvs(vol_el)):
                 cn = _volref(pv)
                 if cn:
@@ -389,11 +415,11 @@ def _simplify_gdml_envelopes(
 
         if any(k in name_lower for k in _CALO_NAMES):
             print(f"  [SIMPLIFY] {child_name}: calorimeter "
-                  f"(keep layers, strip slices)", flush=True)
+                  f"(first+last slice per layer)", flush=True)
             _simplify_calo(child_name)
         elif any(k in name_lower for k in _TRACKER_NAMES):
             print(f"  [SIMPLIFY] {child_name}: tracker "
-                  f"(1 module/type, strip components)", flush=True)
+                  f"(all modules, strip components)", flush=True)
             _simplify_tracker(child_name)
         else:
             print(f"  [SIMPLIFY] {child_name}: generic "
