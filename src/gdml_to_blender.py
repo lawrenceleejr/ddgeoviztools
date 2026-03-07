@@ -1270,6 +1270,11 @@ def _create_phi_control_empty(phi_min: float, phi_max: float, collection):
     except Exception:
         pass  # id_properties_ui may not be available on all builds
 
+    # Hide the control empty from both viewport and render — it is a
+    # control-only object, not something that should ever appear visually.
+    empty.hide_viewport = True
+    empty.hide_render   = True
+
     if collection is not None:
         _link_to_collection(empty, collection)
 
@@ -1370,8 +1375,10 @@ def _create_phi_wedge_cutter(
 
     # Wireframe-only in viewport — user can see/select it but it won't obscure
     # the detector.  Excluded from renders entirely.
+    # Hidden from both viewport and render so it never appears in output.
     obj.display_type = "WIRE"
-    obj.hide_render  = True
+    obj.hide_viewport = True
+    obj.hide_render   = True
 
     _link_to_collection(obj, collection)
     print(f"  [WEDGE] PhiWedge cutter: "
@@ -2167,6 +2174,21 @@ def create_blender_scene(
     col_cameras  = _make_collection("Cameras")
     col_lights   = _make_collection("Lights")
     col_cutters  = _make_collection("Cutters")   # Boolean cutter objects (hidden from render)
+    # Hide the entire Cutters collection from viewport and render.
+    # NOTE: we do NOT exclude from the view layer — excluded objects are
+    # removed from evaluation entirely, which would break Boolean modifiers
+    # that reference them.  hide_viewport + hide_render hides them visually
+    # while keeping them available as Boolean operands.
+    col_cutters.hide_viewport = True
+    col_cutters.hide_render   = True
+    # Also hide via the view-layer "eye" toggle (indirect-only) so the
+    # collection is collapsed and invisible in the outliner by default.
+    try:
+        vl_cutters = bpy.context.view_layer.layer_collection.children.get("Cutters")
+        if vl_cutters is not None:
+            vl_cutters.hide_viewport = True
+    except Exception:
+        pass
     print(f"  [SETUP] Collections created: Detector, Cameras, Lights, Cutters", flush=True)
 
     # ---- World shader (background + volumetric mist) ----
