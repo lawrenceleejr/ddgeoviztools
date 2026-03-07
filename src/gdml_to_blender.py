@@ -1864,6 +1864,34 @@ def _setup_render_and_compositor(scene):
     # Engine
     scene.render.engine = "CYCLES"
 
+    # GPU rendering — prefer CUDA, then OptiX, then HIP, then METAL.
+    # Falls back to CPU if no GPU compute device is available.
+    try:
+        prefs = bpy.context.preferences.addons["cycles"].preferences
+        _gpu_set = False
+        for compute_type in ("CUDA", "OPTIX", "HIP", "METAL"):
+            try:
+                prefs.compute_device_type = compute_type
+                prefs.get_devices()
+                # Enable all available GPU devices
+                gpu_devices = [d for d in prefs.devices if d.type != "CPU"]
+                if gpu_devices:
+                    for dev in prefs.devices:
+                        dev.use = (dev.type != "CPU")
+                    scene.cycles.device = "GPU"
+                    dev_names = ", ".join(d.name for d in gpu_devices)
+                    print(f"  [RENDER] GPU rendering: {compute_type} ({dev_names})",
+                          flush=True)
+                    _gpu_set = True
+                    break
+            except Exception:
+                continue
+        if not _gpu_set:
+            scene.cycles.device = "CPU"
+            print("  [RENDER] No GPU found — falling back to CPU", flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] GPU setup failed ({exc}) — using CPU", flush=True)
+
     # Resolution — 4 K UHD
     scene.render.resolution_x          = 3840
     scene.render.resolution_y          = 2160
