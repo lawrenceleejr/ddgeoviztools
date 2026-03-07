@@ -426,11 +426,35 @@ def _simplify_gdml_envelopes(
                   f"(keep envelope)", flush=True)
             _simplify_generic(child_name)
 
-    if total_removed == 0:
+    # ------------------------------------------------------------------
+    # Final pass: convert ALL remaining Air/Vacuum volumes to assemblies
+    # so no invisible bounding-box envelopes produce meshes.
+    # ------------------------------------------------------------------
+    air_converted = 0
+    for vol_el in list(structure):
+        if _is_assembly(vol_el):
+            continue
+        if not _has_solid(vol_el):
+            continue
+        mat = _material(vol_el)
+        if mat in _AIR_MATERIALS:
+            for child_tag in ("solidref", "materialref"):
+                el = vol_el.find(tag(child_tag))
+                if el is None:
+                    el = vol_el.find(child_tag)
+                if el is not None:
+                    vol_el.remove(el)
+            vol_el.tag = "assembly"
+            air_converted += 1
+    if air_converted:
+        print(f"  [SIMPLIFY] Converted {air_converted} Air/Vacuum "
+              f"volumes to assemblies", flush=True)
+
+    if total_removed == 0 and air_converted == 0:
         return gdml_path
 
-    print(f"  [SIMPLIFY] Done: removed {total_removed} physvols total",
-          flush=True)
+    print(f"  [SIMPLIFY] Done: removed {total_removed} physvols, "
+          f"converted {air_converted} Air envelopes", flush=True)
 
     tmp = tempfile.NamedTemporaryFile(
         suffix=".gdml", delete=False, prefix="ddgeo_simplified_"
