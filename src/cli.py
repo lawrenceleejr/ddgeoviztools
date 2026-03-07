@@ -30,11 +30,17 @@ def _convert_worker(args_tuple):
     """
     Called in a child process.  Returns (lv_name, output_path, error_str|None).
     """
-    lv_name, gdml_path, out_path, fmt = args_tuple
+    # Support both 4-tuple (legacy) and 5-tuple (with simplify)
+    if len(args_tuple) == 5:
+        lv_name, gdml_path, out_path, fmt, simplify = args_tuple
+    else:
+        lv_name, gdml_path, out_path, fmt = args_tuple
+        simplify = False
     # Re-import inside child so env vars are set before vtk loads
     from gdml_converter import convert_gdml
     try:
-        convert_gdml(input_path=gdml_path, output_path=out_path, fmt=fmt)
+        convert_gdml(input_path=gdml_path, output_path=out_path, fmt=fmt,
+                      simplify=simplify)
         return (lv_name, out_path, None)
     except Exception as exc:
         return (lv_name, out_path, str(exc))
@@ -118,12 +124,16 @@ def cmd_convert(args: argparse.Namespace) -> int:
         )
         return 1
 
+    simplify = getattr(args, "simplify", False)
     print(f"Converting {args.gdml_file}  →  {output_path}  [{fmt.upper()}]", flush=True)
+    if simplify:
+        print("  Simplify mode: keeping envelope shapes only (no internal structure)", flush=True)
     try:
         written = convert_gdml(
             input_path=args.gdml_file,
             output_path=output_path,
             fmt=fmt,
+            simplify=simplify,
         )
     except Exception as exc:
         print(f"\nError: {exc}", file=sys.stderr, flush=True)
@@ -146,6 +156,7 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
     gdml_dir   = output_dir / "gdml"
     timeout    = args.timeout      # seconds per detector, or None
     parallel   = args.parallel     # number of workers, or 1 for serial
+    simplify   = getattr(args, "simplify", False)
     skip_set   = set()
     if args.skip_detectors:
         skip_set = {d.strip() for d in args.skip_detectors.split(",") if d.strip()}
@@ -181,13 +192,15 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
 
     # --- Step 2: convert each ---
     print(f"[2/2] Converting to {fmt.upper()} → {output_dir}/", flush=True)
+    if simplify:
+        print(f"      simplify: envelope shapes only (no internal structure)", flush=True)
     if timeout:
         print(f"      timeout: {timeout}s per detector", flush=True)
     if parallel > 1:
         print(f"      parallel workers: {parallel}", flush=True)
 
     work_items = [
-        (lv_name, gdml_path, output_dir / f"{gdml_path.stem}.{fmt}", fmt)
+        (lv_name, gdml_path, output_dir / f"{gdml_path.stem}.{fmt}", fmt, simplify)
         for lv_name, gdml_path in gdml_files
     ]
 
@@ -231,7 +244,7 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
 
     else:
         # --- Serial mode (original behaviour, with optional timeout) ---
-        for lv_name, gdml_path, out_path, _ in work_items:
+        for lv_name, gdml_path, out_path, _, _simplify in work_items:
             print(f"\n  [{lv_name}]", flush=True)
             t0 = time.monotonic()
 
@@ -249,7 +262,8 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
             else:
                 from gdml_converter import convert_gdml
                 try:
-                    convert_gdml(input_path=gdml_path, output_path=out_path, fmt=fmt)
+                    convert_gdml(input_path=gdml_path, output_path=out_path,
+                                 fmt=fmt, simplify=simplify)
                 except Exception as exc:
                     print(f"  [WARN] conversion failed: {exc}", file=sys.stderr, flush=True)
                     errors.append((lv_name, str(exc)))
@@ -408,6 +422,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=["obj", "gltf", "glb", "vtp"], default=None,
         help="Output format. Inferred from --output extension when omitted.",
     )
+    p_conv.add_argument(
+        "--simplify", action="store_true",
+        help=(
+            "Physics-aware simplification: calorimeters keep per-layer shapes "
+            "(strip slices), trackers keep 1 module per type (strip components), "
+            "Air/Vacuum volumes produce no mesh. Much faster conversion."
+        ),
+    )
     p_conv.set_defaults(func=cmd_convert)
 
     # ---- split-convert ----
@@ -462,6 +484,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_sc.add_argument(
         "--fail-fast", action="store_true",
         help="Abort on the first conversion failure (default: warn and continue).",
+    )
+    p_sc.add_argument(
+        "--simplify", action="store_true",
+        help=(
+            "Physics-aware simplification: calorimeters keep per-layer shapes "
+            "(strip slices), trackers keep 1 module per type (strip components), "
+            "Air/Vacuum volumes produce no mesh. Much faster conversion."
+        ),
     )
     p_sc.set_defaults(func=cmd_split_convert)
 

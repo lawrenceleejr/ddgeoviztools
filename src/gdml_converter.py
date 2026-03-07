@@ -124,6 +124,284 @@ _TRACKER_KEYS = (
 )
 
 
+def _simplify_gdml_envelopes(
+    gdml_path: "Path",
+) -> "Path":
+    """
+    Physics-aware GDML simplification for detector visualization.
+
+    Produces the "essence" of the detector: the overall shapes of each
+    sub-system without repetitive internal structure.
+
+    Rules by sub-detector type:
+
+    **Calorimeters** (ECal, HCal, Yoke):
+      Keep every layer shape, but strip the slices within each layer.
+      Stave/inner containers (Air) are traversed but not rendered.
+
+    **Trackers** (Vertex, InnerTrackers, OuterTrackers):
+      Keep 1 instance of each unique module type (envelope shape only).
+      Internal components (silicon, kapton, etc.) are stripped.
+      Air/Vacuum containers are traversed but not rendered.
+
+    **Other** (Beampipe, Nozzle, Solenoid):
+      Keep the outermost solid, strip internals.
+
+    Returns path to a new temporary GDML with internal structure removed.
+    """
+    try:
+        from lxml import etree
+    except ImportError:
+        print("  [SIMPLIFY] lxml not available — skipping", flush=True)
+        return gdml_path
+
+    tree = etree.parse(str(gdml_path))
+    root = tree.getroot()
+
+    ns_map = root.nsmap
+    ns_uri = ns_map.get(None, "")
+    ns_pfx = f"{{{ns_uri}}}" if ns_uri else ""
+
+    def tag(local):
+        return f"{ns_pfx}{local}"
+
+    structure = root.find(tag("structure"))
+    if structure is None:
+        return gdml_path
+
+    vol_index: dict[str, "etree._Element"] = {}
+    for el in structure:
+        name = el.get("name")
+        if name is not None:
+            vol_index[name] = el
+
+    setup = root.find(tag("setup"))
+    if setup is None:
+        setup = root.find("setup")
+    if setup is None:
+        return gdml_path
+    world_el = setup.find(tag("world"))
+    if world_el is None:
+        world_el = setup.find("world")
+    if world_el is None:
+        return gdml_path
+    world_name = world_el.get("ref")
+
+    def _get_pvs(vol_el):
+        pvs = vol_el.findall(tag("physvol"))
+        if not pvs:
+            pvs = vol_el.findall("physvol")
+        return pvs
+
+    def _is_assembly(vol_el):
+        return vol_el.tag in ("assembly", tag("assembly"))
+
+    def _has_solid(vol_el):
+        return (vol_el.find(tag("solidref")) is not None
+                or vol_el.find("solidref") is not None)
+
+    def _volref(pv_el):
+        ref_el = pv_el.find(tag("volumeref"))
+        if ref_el is None:
+            ref_el = pv_el.find("volumeref")
+        return ref_el.get("ref") if ref_el is not None else None
+
+    def _material(vol_el):
+        matref = vol_el.find(tag("materialref"))
+        if matref is None:
+            matref = vol_el.find("materialref")
+        return matref.get("ref") if matref is not None else None
+
+    _AIR_MATERIALS = {"Air", "Vacuum", "G4_AIR", "G4_Galactic"}
+
+    total_removed = 0
+    # Track which volume NAMES have already been processed to avoid
+    # double-modifying shared volume definitions (e.g. 12 staves all
+    # referencing the same stave_outer volume).
+    _visited: set[str] = set()
+
+    def _remove_pvs(vol_el):
+        nonlocal total_removed
+        for pv in list(_get_pvs(vol_el)):
+            vol_el.remove(pv)
+            total_removed += 1
+
+    def _thin_assembly(vol_el):
+        nonlocal total_removed
+        pvs = _get_pvs(vol_el)
+        seen: set[str] = set()
+        for pv in pvs:
+            cn = _volref(pv)
+            if cn is None:
+                continue
+            if cn in seen:
+                vol_el.remove(pv)
+                total_removed += 1
+            else:
+                seen.add(cn)
+
+    # ------------------------------------------------------------------
+    # Calorimeter: envelope → stave(s) → stave_inner → layers → slices
+    # Keep every layer, strip slices from each layer.
+    # ------------------------------------------------------------------
+    def _simplify_calo(vol_name):
+        if vol_name in _visited:
+            return
+        _visited.add(vol_name)
+
+        vol_el = vol_index.get(vol_name)
+        if vol_el is None:
+            return
+
+        if _is_assembly(vol_el):
+            _thin_assembly(vol_el)
+            for pv in _get_pvs(vol_el):
+                cn = _volref(pv)
+                if cn:
+                    _simplify_calo(cn)
+            return
+
+        if not _has_solid(vol_el):
+            return
+
+        pvs = _get_pvs(vol_el)
+        if not pvs:
+            return  # leaf — keep
+
+        # Is this a "layer"? — children are all simple leaves (slices)
+        children_are_slices = True
+        for pv in pvs:
+            cn = _volref(pv)
+            if cn is None:
+                continue
+            cv = vol_index.get(cn)
+            if cv is None:
+                continue
+            if _is_assembly(cv) or _get_pvs(cv):
+                children_are_slices = False
+                break
+
+        if children_are_slices:
+            # Layer — strip slices, keep layer envelope shape
+            _remove_pvs(vol_el)
+        else:
+            # Container (stave_outer, stave_inner, endcap) — recurse
+            for pv in pvs:
+                cn = _volref(pv)
+                if cn:
+                    _simplify_calo(cn)
+
+    # ------------------------------------------------------------------
+    # Tracker: assembly → layers → modules → components
+    # Keep 1 per unique module type, strip components.
+    # ------------------------------------------------------------------
+    def _simplify_tracker(vol_name):
+        if vol_name in _visited:
+            return
+        _visited.add(vol_name)
+
+        vol_el = vol_index.get(vol_name)
+        if vol_el is None:
+            return
+
+        if _is_assembly(vol_el):
+            _thin_assembly(vol_el)
+            for pv in list(_get_pvs(vol_el)):
+                cn = _volref(pv)
+                if cn:
+                    _simplify_tracker(cn)
+            return
+
+        if not _has_solid(vol_el):
+            return
+
+        pvs = _get_pvs(vol_el)
+        mat = _material(vol_el)
+
+        if mat in _AIR_MATERIALS:
+            # Air container — recurse into children but don't keep shape
+            for pv in pvs:
+                cn = _volref(pv)
+                if cn:
+                    _simplify_tracker(cn)
+            return
+
+        # Non-Air volume with children → module. Strip children.
+        if pvs:
+            _remove_pvs(vol_el)
+
+    # ------------------------------------------------------------------
+    # Generic: keep outermost solid, strip internals
+    # ------------------------------------------------------------------
+    def _simplify_generic(vol_name):
+        if vol_name in _visited:
+            return
+        _visited.add(vol_name)
+
+        vol_el = vol_index.get(vol_name)
+        if vol_el is None:
+            return
+
+        if _is_assembly(vol_el):
+            _thin_assembly(vol_el)
+            for pv in _get_pvs(vol_el):
+                cn = _volref(pv)
+                if cn:
+                    _simplify_generic(cn)
+            return
+
+        if _has_solid(vol_el):
+            _remove_pvs(vol_el)
+
+    # ------------------------------------------------------------------
+    # Classify each world daughter and apply the right strategy
+    # ------------------------------------------------------------------
+    _CALO_NAMES = (
+        "ecal", "hcal", "yoke", "calo", "calorimeter", "muon",
+    )
+    _TRACKER_NAMES = (
+        "tracker", "vertex", "innertrackers", "outertrackers",
+    )
+
+    world_vol = vol_index.get(world_name)
+    if world_vol is None:
+        return gdml_path
+
+    for pv in _get_pvs(world_vol):
+        child_name = _volref(pv)
+        if child_name is None:
+            continue
+
+        name_lower = child_name.lower()
+
+        if any(k in name_lower for k in _CALO_NAMES):
+            print(f"  [SIMPLIFY] {child_name}: calorimeter "
+                  f"(keep layers, strip slices)", flush=True)
+            _simplify_calo(child_name)
+        elif any(k in name_lower for k in _TRACKER_NAMES):
+            print(f"  [SIMPLIFY] {child_name}: tracker "
+                  f"(1 module/type, strip components)", flush=True)
+            _simplify_tracker(child_name)
+        else:
+            print(f"  [SIMPLIFY] {child_name}: generic "
+                  f"(keep envelope)", flush=True)
+            _simplify_generic(child_name)
+
+    if total_removed == 0:
+        return gdml_path
+
+    print(f"  [SIMPLIFY] Done: removed {total_removed} physvols total",
+          flush=True)
+
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".gdml", delete=False, prefix="ddgeo_simplified_"
+    )
+    tree.write(tmp.name, pretty_print=True,
+               xml_declaration=True, encoding="UTF-8")
+    tmp.close()
+    return type(gdml_path)(tmp.name)
+
+
 def _limit_gdml_placements(
     gdml_path: "Path",
     default_max: int = 20,
@@ -615,6 +893,7 @@ def convert_gdml(
     input_path: str | Path,
     output_path: str | Path,
     fmt: str = "gltf",
+    simplify: bool = False,
 ) -> "list[Path]":
     """
     Convert a GDML file to OBJ, GLTF (or GLB), or VTP.
@@ -632,6 +911,8 @@ def convert_gdml(
                   files named <stem>_det<NNN>_<lv_name>.<fmt> are written
     fmt         : one of 'gltf', 'glb', 'obj', 'vtp'
                   (inferred from output_path suffix when not supplied)
+    simplify    : if True, strip internal structure and keep only envelope
+                  shapes for each sub-detector (fast "essence" mode)
 
     Returns
     -------
@@ -649,13 +930,23 @@ def convert_gdml(
 
     t_total = time.monotonic()
 
+    # ---- Simplify mode: strip internal structure, keep envelopes only ----
+    gdml_to_process = input_path
+    if simplify:
+        t0 = time.monotonic()
+        print(f"  [{_ts()}] Simplify mode: stripping internal structure ...",
+              flush=True)
+        gdml_to_process = _simplify_gdml_envelopes(input_path)
+        if gdml_to_process != input_path:
+            print(f"  [{_ts()}] Simplified GDML ready ({_elapsed(t0)})", flush=True)
+
     # ---- Pre-process GDML: limit repeated physical-volume placements ----
     # This prunes hundreds of identical tracker modules / calorimeter layers
     # before pyg4ometry ever touches them, which is far cheaper than letting
     # VTK materialise all of them and then discarding them.
     t0 = time.monotonic()
-    gdml_to_load = _limit_gdml_placements(input_path)
-    if gdml_to_load != input_path:
+    gdml_to_load = _limit_gdml_placements(gdml_to_process)
+    if gdml_to_load != gdml_to_process:
         print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
 
     # ---- Complexity check: auto-split if still too many physvols ----
