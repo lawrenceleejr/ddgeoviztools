@@ -1925,6 +1925,32 @@ def _setup_render_and_compositor(scene):
         except (TypeError, Exception):
             continue
 
+    # Freestyle — draw thin lines on every visible mesh edge so that
+    # adjacent coplanar faces remain distinguishable.
+    try:
+        vl = scene.view_layers[0]
+        vl.use_freestyle = True
+        scene.render.use_freestyle = True
+        # Configure the default Freestyle lineset
+        if vl.freestyle_settings.linesets:
+            ls = vl.freestyle_settings.linesets[0]
+            # Edge types: silhouette + border + crease + material boundary + edge mark
+            ls.select_silhouette       = True
+            ls.select_border           = True
+            ls.select_crease           = True
+            ls.select_edge_mark        = True
+            ls.select_material_boundary = True
+            # Thin dark lines
+            ls.linestyle.color     = (0.0, 0.0, 0.0)  # black
+            ls.linestyle.thickness = 0.3               # very thin (pixels)
+            ls.linestyle.alpha     = 0.6               # slightly transparent
+        # Crease angle: edges sharper than this are drawn
+        vl.freestyle_settings.crease_angle = math.radians(15)
+        print("  [RENDER] Freestyle edge lines enabled (0.3 px, 15° crease)",
+              flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] Freestyle setup failed: {exc}", flush=True)
+
     # Compositor — Glare node for IP glow bloom.
     # The compositor API changed substantially in Blender 5.0 (node properties
     # removed, node graph restructured) and a half-built graph causes a process

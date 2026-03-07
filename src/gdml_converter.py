@@ -74,19 +74,19 @@ def _max_placements_for_lv(lv_name: str) -> int:
 
     The tiers ensure that deeply nested tracker hierarchies (sensitive inside
     module inside stave inside layer) stay within a manageable total actor
-    count: even worst-case 2×3×5×8 = 240 leaf actors fit easily in memory.
+    count: worst-case 1×2×2×3 = 12 leaf actors for trackers.
     """
     n = lv_name.lower()
     if any(k in n for k in _LEAF_KEYS):
-        return 2
+        return 1
     if any(k in n for k in _SUBMOD_KEYS):
-        return 3
+        return 2
     if any(k in n for k in _MOD_KEYS):
-        return 5
+        return 2
     if any(k in n for k in _TRACKER_KEYS):
-        return 8
+        return 3
     if any(k in n for k in _CALO_KEYS):
-        return 5
+        return 3
     return 10_000   # effectively unlimited
 
 
@@ -467,7 +467,7 @@ def _simplify_gdml_envelopes(
 
 def _limit_gdml_placements(
     gdml_path: "Path",
-    default_max: int = 20,
+    default_max: int = 10,
 ) -> "Path":
     """
     Parse *gdml_path* with lxml and remove excess repeated physical-volume
@@ -577,6 +577,195 @@ def _limit_gdml_placements(
     print(f"  [GDML-LIMIT] Removed {total_removed} excess placements → {tmp.name}",
           flush=True)
     return type(gdml_path)(tmp.name)   # return same type (Path or str)
+
+
+# ---------------------------------------------------------------------------
+# GDML garbage collection — strip unreferenced elements after pruning
+# ---------------------------------------------------------------------------
+
+def _strip_unreferenced_gdml_elements(gdml_path: "Path") -> "Path":
+    """
+    Walk the GDML structure starting from the world volume and remove any
+    solids, logical volumes, materials, and defines that are no longer
+    reachable.
+
+    After ``_limit_gdml_placements`` removes physvols, the tree may contain
+    thousands of orphaned definitions.  Stripping them dramatically reduces
+    the work pyg4ometry must do during parsing and tessellation.
+
+    Returns a new temp file path if anything was removed, else the original.
+    """
+    try:
+        from lxml import etree
+    except ImportError:
+        return gdml_path
+
+    tree = etree.parse(str(gdml_path))
+    root = tree.getroot()
+
+    ns_uri = root.nsmap.get(None, "")
+    ns_pfx = f"{{{ns_uri}}}" if ns_uri else ""
+
+    def tag(local):
+        return f"{ns_pfx}{local}"
+
+    # Build indexes
+    define_sec   = root.find(tag("define"))
+    material_sec = root.find(tag("materials"))
+    solids_sec   = root.find(tag("solids"))
+    structure    = root.find(tag("structure"))
+
+    if structure is None:
+        return gdml_path
+
+    # Index elements by name
+    def _index(section):
+        if section is None:
+            return {}
+        return {el.get("name"): el for el in section if el.get("name") is not None}
+
+    define_idx   = _index(define_sec)
+    material_idx = _index(material_sec)
+    solid_idx    = _index(solids_sec)
+    logvol_idx   = _index(structure)
+
+    # Find world volume
+    setup = root.find(tag("setup"))
+    if setup is None:
+        setup = root.find("setup")
+    if setup is None:
+        return gdml_path
+    world_el = setup.find(tag("world"))
+    if world_el is None:
+        world_el = setup.find("world")
+    if world_el is None:
+        return gdml_path
+    world_name = world_el.get("ref")
+
+    # Walk the tree and collect reachable names
+    reached_logvols:   set[str] = set()
+    reached_solids:    set[str] = set()
+    reached_materials: set[str] = set()
+    reached_defines:   set[str] = set()
+
+    def _collect_solid(name):
+        if name is None or name in reached_solids:
+            return
+        reached_solids.add(name)
+        el = solid_idx.get(name)
+        if el is None:
+            return
+        ltag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+        if ltag in ("subtraction", "union", "intersection"):
+            for sub in ("first", "second"):
+                r = el.find(f"{ns_pfx}{sub}" if ns_pfx else sub)
+                if r is not None:
+                    _collect_solid(r.get("ref"))
+            for ref_tag in ("positionref", "rotationref"):
+                r = el.find(f"{ns_pfx}{ref_tag}" if ns_pfx else ref_tag)
+                if r is not None:
+                    reached_defines.add(r.get("ref"))
+        elif ltag == "multiUnion":
+            for node in el.findall(f"{ns_pfx}multiUnionNode" if ns_pfx else "multiUnionNode"):
+                s = node.find(f"{ns_pfx}solid" if ns_pfx else "solid")
+                if s is not None:
+                    _collect_solid(s.get("ref"))
+                for ref_tag in ("positionref", "rotationref"):
+                    r = node.find(f"{ns_pfx}{ref_tag}" if ns_pfx else ref_tag)
+                    if r is not None:
+                        reached_defines.add(r.get("ref"))
+        elif ltag in ("reflectedSolid", "scaledSolid"):
+            sr = el.find(f"{ns_pfx}solidref" if ns_pfx else "solidref")
+            if sr is not None:
+                _collect_solid(sr.get("ref"))
+
+    def _collect_material(name):
+        if name is None or name in reached_materials:
+            return
+        if name.startswith("G4_"):
+            return
+        reached_materials.add(name)
+        mat = material_idx.get(name)
+        if mat is None:
+            return
+        for child in mat:
+            ref = child.get("ref")
+            if ref:
+                _collect_material(ref)
+
+    def _collect_pv_defines(pv):
+        for ref_tag in ("positionref", "rotationref", "scaleref"):
+            r = pv.find(f"{ns_pfx}{ref_tag}" if ns_pfx else ref_tag)
+            if r is not None:
+                reached_defines.add(r.get("ref"))
+
+    def _collect_logvol(name):
+        if name is None or name in reached_logvols:
+            return
+        reached_logvols.add(name)
+        lv = logvol_idx.get(name)
+        if lv is None:
+            return
+        # Solid
+        sref = lv.find(f"{ns_pfx}solidref" if ns_pfx else "solidref")
+        if sref is not None:
+            _collect_solid(sref.get("ref"))
+        # Material
+        mref = lv.find(f"{ns_pfx}materialref" if ns_pfx else "materialref")
+        if mref is not None:
+            _collect_material(mref.get("ref"))
+        # Daughters
+        for pv in lv.findall(f"{ns_pfx}physvol" if ns_pfx else "physvol"):
+            vref = pv.find(f"{ns_pfx}volumeref" if ns_pfx else "volumeref")
+            if vref is not None:
+                _collect_logvol(vref.get("ref"))
+            _collect_pv_defines(pv)
+
+    _collect_logvol(world_name)
+
+    # Remove unreachable elements
+    n_removed = 0
+
+    if structure is not None:
+        for el in list(structure):
+            name = el.get("name")
+            if name is not None and name not in reached_logvols:
+                structure.remove(el)
+                n_removed += 1
+
+    if solids_sec is not None:
+        for el in list(solids_sec):
+            name = el.get("name")
+            if name is not None and name not in reached_solids:
+                solids_sec.remove(el)
+                n_removed += 1
+
+    if material_sec is not None:
+        for el in list(material_sec):
+            name = el.get("name")
+            if name is not None and name not in reached_materials:
+                material_sec.remove(el)
+                n_removed += 1
+
+    if define_sec is not None:
+        for el in list(define_sec):
+            name = el.get("name")
+            if name is not None and name not in reached_defines:
+                define_sec.remove(el)
+                n_removed += 1
+
+    if n_removed == 0:
+        return gdml_path
+
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".gdml", delete=False, prefix="ddgeo_stripped_"
+    )
+    tree.write(tmp.name, pretty_print=True,
+               xml_declaration=True, encoding="UTF-8")
+    tmp.close()
+    print(f"  [GDML-STRIP] Removed {n_removed} unreferenced elements → {tmp.name}",
+          flush=True)
+    return type(gdml_path)(tmp.name)
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +1067,7 @@ def _auto_split_and_convert(
         for i, (lv_name, sub_gdml) in enumerate(split_files):
             sub_label = f"{label_prefix}/{lv_name}"
             pruned_sub = _limit_gdml_placements(sub_gdml)
+            pruned_sub = _strip_unreferenced_gdml_elements(pruned_sub)
 
             # Check if this chunk still needs further splitting
             sub_size = Path(pruned_sub).stat().st_size
@@ -1125,6 +1315,15 @@ def convert_gdml(
         gdml_to_load = _limit_gdml_placements(gdml_to_process)
         if gdml_to_load != gdml_to_process:
             print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
+
+    # ---- Strip unreferenced elements (solids, logvols, materials, defines) ----
+    # After pruning or simplification many definitions become orphaned.
+    # Removing them shrinks the file and avoids unnecessary pyg4ometry work.
+    t0 = time.monotonic()
+    gdml_stripped = _strip_unreferenced_gdml_elements(gdml_to_load)
+    if gdml_stripped != gdml_to_load:
+        gdml_to_load = gdml_stripped
+    print(f"  [{_ts()}] Unreferenced-element strip done ({_elapsed(t0)})", flush=True)
 
     # ---- Complexity check: auto-split if still too many physvols ----
     file_size = Path(gdml_to_load).stat().st_size
