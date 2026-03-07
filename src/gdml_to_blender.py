@@ -687,7 +687,7 @@ def _add_weld(obj, threshold: float = 1e-4):
     return mod
 
 
-def _add_solidify(obj, thickness_mm: float = 2.0):
+def _add_solidify(obj, thickness_mm: float = 1.0):
     """
     Add a Solidify modifier so hollow shell meshes appear solid when cut.
 
@@ -699,14 +699,15 @@ def _add_solidify(obj, thickness_mm: float = 2.0):
 
     Parameters
     ----------
-    thickness_mm : wall thickness in mm (negative = extrude inward).
-                   2.0 mm is a good default for detector-scale geometry.
+    thickness_mm : wall thickness in mm.  1.0 mm default.
     """
     mod = obj.modifiers.new("Solidify", "SOLIDIFY")
-    mod.thickness = -abs(thickness_mm)    # negative → extrude inward
+    mod.thickness = thickness_mm
     mod.offset    = -1.0                  # keep outer surface in place
     mod.use_even_offset   = True          # uniform thickness on sloped faces
     mod.use_quality_normals = True        # better shading on the new faces
+    mod.use_rim_only      = False         # fill both rim and inner faces
+    mod.use_rim           = True          # generate rim faces at open edges
     # Assign material index for the inner faces (rim + inside) so they
     # receive the same material as the outer surface.
     mod.material_offset = 0
@@ -2231,7 +2232,10 @@ def create_blender_scene(
 
         # Weld + Solidify here; Boolean + Bevel are added after scene bounds are known
         _add_weld(obj, threshold=weld_threshold)
-        _add_solidify(obj)
+        # Skip Solidify for tracking detectors — they are thin by design.
+        _skip_solidify = any(kw in name for kw in ("Vertex", "Tracker"))
+        if not _skip_solidify:
+            _add_solidify(obj)
 
         # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
         # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
