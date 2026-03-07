@@ -331,7 +331,10 @@ def _simplify_gdml_envelopes(
             return
 
         if _is_assembly(vol_el):
-            # Keep ALL placements (don't thin) so every module is visible
+            # Keep one representative of each child type so the pattern is
+            # visible without producing hundreds of physvols.  Previous
+            # "keep ALL" approach caused convergence issues in auto-split.
+            _thin_assembly(vol_el)
             for pv in list(_get_pvs(vol_el)):
                 cn = _volref(pv)
                 if cn:
@@ -1306,15 +1309,14 @@ def convert_gdml(
             print(f"  [{_ts()}] Simplified GDML ready ({_elapsed(t0)})", flush=True)
 
     # ---- Pre-process GDML: limit repeated physical-volume placements ----
-    # Skip when simplify is on — the simplification already handled pruning
-    # and the aggressive budget (30 physvols) would destroy calorimeter layers.
-    if simplify:
-        gdml_to_load = gdml_to_process
-    else:
-        t0 = time.monotonic()
-        gdml_to_load = _limit_gdml_placements(gdml_to_process)
-        if gdml_to_load != gdml_to_process:
-            print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
+    # Applied even in simplify mode as a safety net: the simplification thins
+    # assemblies to one-of-each but deeply nested geometries can still exceed
+    # the budget.  The per-LV caps preserve the simplified structure while
+    # the global budget guarantees convergence.
+    t0 = time.monotonic()
+    gdml_to_load = _limit_gdml_placements(gdml_to_process)
+    if gdml_to_load != gdml_to_process:
+        print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
 
     # ---- Strip unreferenced elements (solids, logvols, materials, defines) ----
     # After pruning or simplification many definitions become orphaned.

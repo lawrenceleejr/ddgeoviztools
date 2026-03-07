@@ -90,6 +90,12 @@ _DETECTOR_MATERIALS = [
     # Beam pipe / vacuum chamber — brushed stainless steel
     (("beampipe", "beam_pipe", "vacuumchamber", "bpipe"),
      (0.78, 0.79, 0.82), 0.80, 0.40),
+    # BCH (beam-crossing housing) — soft white diffuse plastic
+    (("bch",),
+     (0.92, 0.91, 0.90), 0.00, 0.95),
+    # NozzleW — tungsten alloy, brushed metal finish
+    (("nozzlew",),
+     (0.42, 0.40, 0.38), 0.85, 0.40),
     # Nozzle / heavy-metal shielding — dark tungsten-grey
     (("nozzle", "tungsten", "shielding", "shield"),
      (0.28, 0.27, 0.25), 0.70, 0.65),
@@ -824,6 +830,35 @@ def _add_solidify(obj, thickness_mm: float = 1.0):
     # Assign material index for the inner faces (rim + inside) so they
     # receive the same material as the outer surface.
     mod.material_offset = 0
+    return mod
+
+
+def _add_wireframe(obj, thickness_mm: float = 0.15):
+    """
+    Add a Wireframe modifier so individual face edges are visible in renders.
+
+    Used for tracker and vertex sub-detectors where seeing individual module
+    outlines is more informative than a smooth shaded surface.  The wireframe
+    material (slot 1) is set to near-black so edges contrast with the base
+    material.
+    """
+    # Create a thin dark wire material for the edges
+    wire_mat_name = "Wire_Edge"
+    wire_mat = bpy.data.materials.get(wire_mat_name)
+    if wire_mat is None:
+        wire_mat = _make_material(wire_mat_name, (0.02, 0.02, 0.02), 0.0, 0.9)
+    # Ensure the object has the wire material in slot 1
+    if len(obj.data.materials) < 2:
+        obj.data.materials.append(wire_mat)
+    else:
+        obj.data.materials[1] = wire_mat
+
+    mod = obj.modifiers.new("Wireframe", "WIREFRAME")
+    mod.thickness = thickness_mm
+    mod.use_replace = False          # overlay on top of the base mesh
+    mod.material_offset = 1          # use wire material (slot 1)
+    mod.use_even_offset = True
+    mod.use_boundary = True          # draw open boundary edges too
     return mod
 
 
@@ -2351,9 +2386,16 @@ def create_blender_scene(
         _add_weld(obj, threshold=weld_threshold)
         # Skip Solidify for tracking detectors (thin by design) and nozzles
         # (already filled to solid convex hull during loading).
-        _skip_solidify = any(kw in name for kw in ("Vertex", "Tracker")) or _is_nozzle
+        _is_tracker_or_vertex = any(kw in name for kw in ("Vertex", "Tracker"))
+        _skip_solidify = _is_tracker_or_vertex or _is_nozzle
         if not _skip_solidify:
             _add_solidify(obj)
+
+        # Wireframe modifier for tracker and vertex: renders each face edge
+        # as a thin dark line, making individual modules distinguishable and
+        # preventing thin annular end-caps from blending into solid discs.
+        if _is_tracker_or_vertex:
+            _add_wireframe(obj, thickness_mm=0.15)
 
         # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
         # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
