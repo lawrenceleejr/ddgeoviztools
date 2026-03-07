@@ -332,10 +332,8 @@ def _simplify_gdml_envelopes(
             return
 
         if _is_assembly(vol_el):
-            # Keep one representative of each child type so the pattern is
-            # visible without producing hundreds of physvols.  Previous
-            # "keep ALL" approach caused convergence issues in auto-split.
-            _thin_assembly(vol_el)
+            # Keep ALL placements so every tracker module position is
+            # visible in the final visualisation (full cylindrical pattern).
             for pv in list(_get_pvs(vol_el)):
                 cn = _volref(pv)
                 if cn:
@@ -455,6 +453,10 @@ def _simplify_gdml_envelopes(
         if _is_assembly(vol_el):
             continue
         if not _has_solid(vol_el):
+            continue
+        # Never convert the world volume to an assembly — pyg4ometry
+        # requires the world to be a <volume> with a solid.
+        if vol_el.get("name") == world_name:
             continue
         mat = _material(vol_el)
         if mat in _AIR_MATERIALS:
@@ -1349,14 +1351,16 @@ def convert_gdml(
             print(f"  [{_ts()}] Simplified GDML ready ({_elapsed(t0)})", flush=True)
 
     # ---- Pre-process GDML: limit repeated physical-volume placements ----
-    # Applied even in simplify mode as a safety net: the simplification thins
-    # assemblies to one-of-each but deeply nested geometries can still exceed
-    # the budget.  The per-LV caps preserve the simplified structure while
-    # the global budget guarantees convergence.
-    t0 = time.monotonic()
-    gdml_to_load = _limit_gdml_placements(gdml_to_process)
-    if gdml_to_load != gdml_to_process:
-        print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
+    # In simplify mode the physics-aware simplification already prunes the
+    # geometry intentionally (e.g. keeping all tracker module placements).
+    # Running the generic placement limiter on top would undo that work.
+    if simplify:
+        gdml_to_load = gdml_to_process
+    else:
+        t0 = time.monotonic()
+        gdml_to_load = _limit_gdml_placements(gdml_to_process)
+        if gdml_to_load != gdml_to_process:
+            print(f"  [{_ts()}] Placement-pruned GDML ready ({_elapsed(t0)})", flush=True)
 
     # ---- Strip unreferenced elements (solids, logvols, materials, defines) ----
     # After pruning or simplification many definitions become orphaned.
