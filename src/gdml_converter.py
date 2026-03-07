@@ -246,6 +246,7 @@ def _simplify_gdml_envelopes(
     # Keep first + last slice per layer; layer envelope → assembly.
     # ------------------------------------------------------------------
     def _simplify_calo(vol_name):
+        nonlocal total_removed
         if vol_name in _visited:
             return
         _visited.add(vol_name)
@@ -350,7 +351,6 @@ def _simplify_gdml_envelopes(
         if mat in _AIR_MATERIALS:
             # Air/Vacuum container — convert to <assembly> so pyg4ometry
             # won't tessellate the envelope solid (no big cylinder mesh).
-            # Children (modules) are preserved and placed correctly.
             solidref = vol_el.find(tag("solidref"))
             if solidref is None:
                 solidref = vol_el.find("solidref")
@@ -362,10 +362,27 @@ def _simplify_gdml_envelopes(
             if matref is not None:
                 vol_el.remove(matref)
             vol_el.tag = "assembly"
+
+            # Check if all children are leaves (no grandchildren).
+            # If so, this is a module-level container — strip internal
+            # components entirely (silicon, kapton, etc. aren't useful
+            # for visualization; only the module envelope matters).
+            all_leaves = True
             for pv in pvs:
                 cn = _volref(pv)
-                if cn:
-                    _simplify_tracker(cn)
+                if cn is None:
+                    continue
+                cv = vol_index.get(cn)
+                if cv is not None and (_is_assembly(cv) or _get_pvs(cv)):
+                    all_leaves = False
+                    break
+            if all_leaves:
+                _remove_pvs(vol_el)
+            else:
+                for pv in list(pvs):
+                    cn = _volref(pv)
+                    if cn:
+                        _simplify_tracker(cn)
             return
 
         # Non-Air volume with children → module. Strip children.
@@ -509,17 +526,26 @@ def _limit_gdml_placements(
 
     total_removed = 0
 
-    for lv_el in structure.findall(tag("volume")):
+    # Process both <volume> and <assembly> elements — after simplification
+    # many containers are converted to assemblies but still hold physvols.
+    all_vol_els = list(structure.findall(tag("volume"))) + \
+                  list(structure.findall(tag("assembly")))
+    from collections import defaultdict
+
+    for lv_el in all_vol_els:
         # Collect all <physvol> children
         physvols = lv_el.findall(tag("physvol"))
+        if not physvols:
+            physvols = lv_el.findall("physvol")
         if not physvols:
             continue
 
         # Group by referenced logical volume name
-        from collections import defaultdict
         groups: dict[str, list] = defaultdict(list)
         for pv in physvols:
             ref_el = pv.find(tag("volumeref"))
+            if ref_el is None:
+                ref_el = pv.find("volumeref")
             ref    = ref_el.get("ref", "") if ref_el is not None else "__unknown__"
             groups[ref].append(pv)
 
@@ -535,6 +561,8 @@ def _limit_gdml_placements(
         # a parent LV with many different child LV types can still end up with
         # hundreds of physvols.  Cap any parent LV to default_max total.
         remaining = lv_el.findall(tag("physvol"))
+        if not remaining:
+            remaining = lv_el.findall("physvol")
         if len(remaining) > default_max:
             for pv in remaining[default_max:]:
                 lv_el.remove(pv)
@@ -544,8 +572,10 @@ def _limit_gdml_placements(
     # Count every physvol still in the structure after pass 1.  If we're over
     # budget, uniformly thin each LV's physvol list until we're within budget.
     all_pvs_by_lv = []
-    for lv_el in structure.findall(tag("volume")):
+    for lv_el in all_vol_els:
         pvs = lv_el.findall(tag("physvol"))
+        if not pvs:
+            pvs = lv_el.findall("physvol")
         if pvs:
             all_pvs_by_lv.append((lv_el, pvs))
 
@@ -750,10 +780,20 @@ def _strip_unreferenced_gdml_elements(gdml_path: "Path") -> "Path":
                 material_sec.remove(el)
                 n_removed += 1
 
+    # Strip orphaned <position> and <rotation> elements from <define>.
+    # These are referenced only by physvols and boolean solid transforms,
+    # all of which are tracked in reached_defines.  We keep constants,
+    # variables, quantities, and matrices — they may be referenced by
+    # solid dimension attributes via GDML expressions and are hard to
+    # trace reliably.
+    _STRIPPABLE_DEFINE_TAGS = {"position", "rotation", "scale"}
     if define_sec is not None:
         for el in list(define_sec):
             name = el.get("name")
-            if name is not None and name not in reached_defines:
+            if name is None:
+                continue
+            local_tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+            if local_tag in _STRIPPABLE_DEFINE_TAGS and name not in reached_defines:
                 define_sec.remove(el)
                 n_removed += 1
 
