@@ -581,6 +581,82 @@ def _decimate_vtk_actors(ren, target_faces_per_actor: int = 20_000):
           f"(target ≤{target_faces_per_actor:,} faces each)", flush=True)
 
 
+def _merge_vtk_actors(ren):
+    """
+    Merge all polydata actors in the renderer into a single actor.
+
+    This produces a single combined mesh in the exported GLTF/OBJ/VTP
+    instead of one mesh per logical volume.  The merged actor inherits
+    the first actor's visual properties.
+    """
+    actors = ren.GetActors()
+    actors.InitTraversal()
+
+    append = vtk.vtkAppendPolyData()
+    n_merged = 0
+    first_actor = None
+    actor_list = []
+
+    actor = actors.GetNextActor()
+    while actor is not None:
+        actor_list.append(actor)
+        mapper = actor.GetMapper()
+        if mapper is not None:
+            try:
+                poly = mapper.GetInput()
+            except Exception:
+                poly = None
+            if poly is not None and poly.GetNumberOfCells() > 0:
+                # Transform polydata by the actor's matrix so positions
+                # are in world space before merging.
+                mat = actor.GetMatrix()
+                if mat is not None:
+                    tf = vtk.vtkTransform()
+                    tf.SetMatrix(mat)
+                    tpd = vtk.vtkTransformPolyDataFilter()
+                    tpd.SetInputData(poly)
+                    tpd.SetTransform(tf)
+                    tpd.Update()
+                    append.AddInputData(tpd.GetOutput())
+                else:
+                    append.AddInputData(poly)
+                n_merged += 1
+                if first_actor is None:
+                    first_actor = actor
+        actor = actors.GetNextActor()
+
+    if n_merged <= 1 or first_actor is None:
+        print(f"  [VTK-MERGE] {n_merged} actor(s) — no merge needed", flush=True)
+        return
+
+    append.Update()
+    merged = append.GetOutput()
+
+    # Clean duplicate points from the merge
+    clean = vtk.vtkCleanPolyData()
+    clean.SetInputData(merged)
+    clean.Update()
+    merged = clean.GetOutput()
+
+    # Remove all existing actors
+    for a in actor_list:
+        ren.RemoveActor(a)
+
+    # Add a single merged actor
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputData(merged)
+    merged_actor = vtk.vtkActor()
+    merged_actor.SetMapper(mapper)
+    # Reset transform since geometry is already in world space
+    merged_actor.SetPosition(0, 0, 0)
+    merged_actor.SetOrientation(0, 0, 0)
+    merged_actor.SetScale(1, 1, 1)
+    ren.AddActor(merged_actor)
+
+    print(f"  [VTK-MERGE] Merged {n_merged} actors → 1 "
+          f"({merged.GetNumberOfCells():,} faces)", flush=True)
+
+
 def _count_physvols_in_gdml(gdml_path: "Path") -> int:
     """
     Count the total number of <physvol> elements in a GDML file's <structure>
@@ -841,6 +917,11 @@ def _convert_single(
         t0 = time.monotonic()
         _decimate_vtk_actors(ren, target_faces_per_actor=20_000)
         print(f"  [{_ts()}] Post-render decimation done ({_elapsed(t0)})", flush=True)
+
+        # ---- Merge all actors into a single mesh ----
+        t0 = time.monotonic()
+        _merge_vtk_actors(ren)
+        print(f"  [{_ts()}] Actor merge done ({_elapsed(t0)})", flush=True)
 
         # ---- Export ----
         t0 = time.monotonic()
