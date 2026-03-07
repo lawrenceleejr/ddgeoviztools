@@ -732,6 +732,35 @@ def _count_physvols_in_gdml(gdml_path: "Path") -> int:
         return 0
 
 
+def _rename_gltf_nodes(output_path: "Path", name: str) -> None:
+    """
+    Patch a GLTF JSON file so that all nodes and meshes are named *name*.
+
+    When imported into Blender this produces a single object called *name*
+    instead of VTK's auto-generated names like "actor0" / "mesh0".
+    """
+    import json
+
+    try:
+        data = json.loads(output_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    changed = False
+    for node in data.get("nodes", []):
+        node["name"] = name
+        changed = True
+    for mesh in data.get("meshes", []):
+        mesh["name"] = name
+        changed = True
+
+    if changed:
+        output_path.write_text(
+            json.dumps(data, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+
 def _write_vtk_export(
     ren: "vtk.vtkRenderer",
     renWin: "vtk.vtkRenderWindow",
@@ -747,6 +776,8 @@ def _write_vtk_export(
         exp.SetRenderWindow(renWin)
         exp.InlineDataOn()
         exp.Write()
+        # Rename nodes/meshes to match the sub-detector name
+        _rename_gltf_nodes(output_path, output_path.stem)
     elif fmt == "obj":
         prefix = str(output_path.with_suffix(""))
         exp = vtk.vtkOBJExporter()
