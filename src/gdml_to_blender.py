@@ -2370,12 +2370,6 @@ def create_blender_scene(
         if not _skip_solidify:
             _add_solidify(obj)
 
-        # Wireframe modifier for tracker and vertex: renders each face edge
-        # as a thin dark line, making individual modules distinguishable and
-        # preventing thin annular end-caps from blending into solid discs.
-        if _is_tracker_or_vertex:
-            _add_wireframe(obj, thickness_mm=0.15)
-
         # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
         # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
         # line horizontal along the Blender X axis.
