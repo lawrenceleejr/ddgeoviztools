@@ -958,10 +958,14 @@ def _count_physvols_in_gdml(gdml_path: "Path") -> int:
         structure = root.find(f"{ns_pfx}structure")
         if structure is None:
             return 0
-        return sum(
-            len(lv.findall(f"{ns_pfx}physvol"))
-            for lv in structure.findall(f"{ns_pfx}volume")
-        )
+        # Count physvols in BOTH <volume> and <assembly> elements.
+        # After simplification many containers become assemblies but still
+        # hold the bulk of the physvol placements.
+        count = 0
+        for tag in ("volume", "assembly"):
+            for lv in structure.findall(f"{ns_pfx}{tag}"):
+                count += len(lv.findall(f"{ns_pfx}physvol"))
+        return count
     except Exception:
         return 0
 
@@ -1056,17 +1060,19 @@ def _auto_split_and_convert(
     output_path: "Path",
     fmt: str,
     t_total: float,
+    simplify: bool = False,
 ) -> "list[Path]":
     """
     Split *gdml_path* into per-sub-detector GDMLs using gdml_splitter, then
-    convert each piece independently so that peak VTK memory is bounded by
-    _GLOBAL_PHYSVOL_BUDGET × tessellation cost rather than the whole scene.
+    convert each piece independently so that peak VTK memory is bounded.
 
     If a sub-detector chunk still exceeds thresholds after the first split,
     it is recursively re-split at a deeper level in the GDML hierarchy (up to
-    _MAX_RESPLIT_DEPTH levels deep).  This handles deeply nested sub-detectors
-    (e.g. tracker staves inside layers inside barrels) that remain too large
-    after the initial depth=1 split.
+    _MAX_RESPLIT_DEPTH levels deep).
+
+    When *simplify* is True, per-chunk placement limits are skipped because
+    the simplification already made physics-aware pruning choices (e.g. keeping
+    all tracker module placements).
 
     Each output file is named  <output_path.stem>_det<NNN>_<lv_name>.<fmt>.
     Returns the list of successfully written output paths.
@@ -1089,6 +1095,16 @@ def _auto_split_and_convert(
     results: list[Path] = []
     chunk_counter = [0]   # mutable counter for unique filenames across recursion
 
+    # In simplify mode each physvol is already a simple solid (no children),
+    # so VTK can handle more actors per chunk than in the full-detail case.
+    pvs_threshold = 50_000 if simplify else _AUTO_SPLIT_PHYSVOL_THRESHOLD
+
+    # Maximum sub-detectors from a single split before we stop splitting.
+    # If split produces more than this, the children are individual physvol
+    # placements (e.g. 15K modules in one layer) — converting them as
+    # separate GDMLs would be wasteful; better to convert the parent directly.
+    _MAX_SPLIT_CHILDREN = 100
+
     def _split_and_convert_recursive(gdml_to_split, split_depth, label_prefix):
         """Recursively split and convert a GDML file."""
         split_dir = Path(tempfile.mkdtemp(prefix=f"ddgeo_split_d{split_depth}_"))
@@ -1100,7 +1116,6 @@ def _auto_split_and_convert(
             print(f"  [{_ts()}] [SPLIT d={split_depth}] Split failed: {exc}",
                   flush=True)
             shutil.rmtree(split_dir, ignore_errors=True)
-            # Fall back to converting this chunk directly
             _convert_chunk(gdml_to_split, label_prefix)
             return
 
@@ -1109,9 +1124,46 @@ def _auto_split_and_convert(
             _convert_chunk(gdml_to_split, label_prefix)
             return
 
+        # If depth=1 produced only 1 result, the GDML has a wrapper world
+        # volume with a single daughter.  Try depth=2 to reach that
+        # daughter's children (the actual sub-systems we want to split on).
+        if len(split_files) == 1:
+            shutil.rmtree(split_dir, ignore_errors=True)
+            split_dir = Path(tempfile.mkdtemp(prefix=f"ddgeo_split_d{split_depth}b_"))
+            try:
+                split_files = split_gdml(gdml_to_split, split_dir, depth=2)
+            except Exception as exc:
+                print(f"  [{_ts()}] [SPLIT d={split_depth}] depth=2 split failed: {exc}",
+                      flush=True)
+                shutil.rmtree(split_dir, ignore_errors=True)
+                _convert_chunk(gdml_to_split, label_prefix)
+                return
+            if len(split_files) <= 1:
+                # Can't split further — convert directly
+                shutil.rmtree(split_dir, ignore_errors=True)
+                _convert_chunk(gdml_to_split, label_prefix)
+                return
+
+        # Guard: too many children means we've reached individual physvol
+        # placements (e.g. thousands of identical module placements in a
+        # tracker layer).  Converting each as a separate GDML is wasteful;
+        # convert the parent assembly directly instead.
+        if len(split_files) > _MAX_SPLIT_CHILDREN:
+            print(f"  [{_ts()}] [SPLIT d={split_depth}] {len(split_files)} children "
+                  f"(> {_MAX_SPLIT_CHILDREN}) — converting directly", flush=True)
+            shutil.rmtree(split_dir, ignore_errors=True)
+            _convert_chunk(gdml_to_split, label_prefix)
+            return
+
         for i, (lv_name, sub_gdml) in enumerate(split_files):
             sub_label = f"{label_prefix}/{lv_name}"
-            pruned_sub = _limit_gdml_placements(sub_gdml)
+
+            # In simplify mode, skip placement limits — the simplification
+            # already made intentional pruning choices.
+            if simplify:
+                pruned_sub = sub_gdml
+            else:
+                pruned_sub = _limit_gdml_placements(sub_gdml)
             pruned_sub = _strip_unreferenced_gdml_elements(pruned_sub)
 
             # Check if this chunk still needs further splitting
@@ -1119,7 +1171,7 @@ def _auto_split_and_convert(
             sub_pvs = _count_physvols_in_gdml(pruned_sub)
 
             still_too_large = (
-                sub_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD
+                sub_pvs > pvs_threshold
                 or sub_size > _AUTO_SPLIT_FILESIZE_BYTES
             )
 
@@ -1391,7 +1443,8 @@ def convert_gdml(
         print(f"  [{_ts()}] Scene is complex ({'; '.join(reason)}) — splitting "
               f"into per-sub-detector chunks to keep peak memory bounded ...",
               flush=True)
-        return _auto_split_and_convert(gdml_to_load, output_path, fmt, t_total)
+        return _auto_split_and_convert(gdml_to_load, output_path, fmt, t_total,
+                                       simplify=simplify)
 
     # ---- Single-pass conversion ----
     return _convert_single(gdml_to_load, output_path, fmt, t_total)
