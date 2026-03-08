@@ -1700,58 +1700,52 @@ def _set_light_temperature(light_data, name: str, energy: float,
                            temp_kelvin: float) -> None:
     """
     Configure *light_data* to render with *temp_kelvin* colour temperature
-    using Blender's blackbody mechanism — not an RGB approximation.
+    using Blender's native blackbody — not an RGB approximation.
 
     Tries, in order:
-      1. light_data.color_mode = 'TEMPERATURE'  (Blender 4.0+ native property)
-      2. ShaderNodeBlackbody in the light's node tree  (Blender 3.x)
-      3. _kelvin_to_rgb RGB fallback (should never be reached in normal use)
+      1. light_data.use_color_temperature + light_data.temperature  (Blender 4.4+)
+      2. ShaderNodeBlackbody in the light's node tree  (Blender 3.x / 4.x)
+      3. _kelvin_to_rgb RGB fallback (last resort)
     """
-    # --- Attempt 1: native color_mode = 'TEMPERATURE' (Blender 4.0+) ---
-    if hasattr(light_data, "color_mode"):
+    # --- Attempt 1: native use_color_temperature (Blender 4.4+) ---
+    # Blender 4.4 introduced a dedicated color-temperature property on lights.
+    # When enabled, the light colour is computed from a true Planck blackbody
+    # spectrum rather than a user-supplied RGB.
+    if hasattr(light_data, "use_color_temperature"):
         try:
-            light_data.color_mode = "TEMPERATURE"
+            light_data.use_color_temperature = True
             light_data.temperature = float(temp_kelvin)
             print(f"  [LIGHT] {name}  {energy:.0f} W  "
-                  f"{temp_kelvin:.0f} K  (native color_mode=TEMPERATURE)",
+                  f"{temp_kelvin:.0f} K  (native use_color_temperature)",
                   flush=True)
             return
         except Exception as exc:
-            print(f"  [LIGHT] {name}  color_mode=TEMPERATURE failed: {exc}",
+            print(f"  [LIGHT] {name}  use_color_temperature failed: {exc}",
                   flush=True)
 
-    # On Blender 5.0+ skip the ShaderNodeBlackbody-in-light-tree approach.
-    # Those node trees crash save_as_mainfile on 5.0 (same root cause as the
-    # world Principled Volume crash).  Fall straight through to RGB approx.
-    if bpy.app.version >= (5, 0, 0):
-        r, g, b = _kelvin_to_rgb(temp_kelvin)
-        light_data.color = (r, g, b)
-        print(f"  [LIGHT] {name}  {energy:.0f} W  "
-              f"{temp_kelvin:.0f} K → rgb({r:.3f},{g:.3f},{b:.3f})  "
-              f"(RGB approx — Blackbody node skipped on Blender 5+)",
-              flush=True)
-        return
-
     # --- Attempt 2: ShaderNodeBlackbody in node tree (Blender 3.x / 4.x) ---
-    try:
-        light_data.use_nodes = True
-        tree     = light_data.node_tree
-        nodes    = tree.nodes
-        links    = tree.links
-        nodes.clear()
-        out      = nodes.new("ShaderNodeOutputLight")
-        emission = nodes.new("ShaderNodeEmission")
-        bb       = nodes.new("ShaderNodeBlackbody")
-        bb.inputs["Temperature"].default_value   = float(temp_kelvin)
-        emission.inputs["Strength"].default_value = 1.0
-        links.new(bb.outputs["Color"],       emission.inputs["Color"])
-        links.new(emission.outputs["Emission"], out.inputs["Surface"])
-        print(f"  [LIGHT] {name}  {energy:.0f} W  "
-              f"{temp_kelvin:.0f} K  (ShaderNodeBlackbody node tree)",
-              flush=True)
-        return
-    except Exception as exc:
-        print(f"  [LIGHT] {name}  ShaderNodeBlackbody failed: {exc}", flush=True)
+    # On Blender 5.0+ ShaderNodeBlackbody in light node trees can crash
+    # save_as_mainfile, so skip this path for those versions.
+    if bpy.app.version < (5, 0, 0):
+        try:
+            light_data.use_nodes = True
+            tree     = light_data.node_tree
+            nodes    = tree.nodes
+            links    = tree.links
+            nodes.clear()
+            out      = nodes.new("ShaderNodeOutputLight")
+            emission = nodes.new("ShaderNodeEmission")
+            bb       = nodes.new("ShaderNodeBlackbody")
+            bb.inputs["Temperature"].default_value   = float(temp_kelvin)
+            emission.inputs["Strength"].default_value = 1.0
+            links.new(bb.outputs["Color"],       emission.inputs["Color"])
+            links.new(emission.outputs["Emission"], out.inputs["Surface"])
+            print(f"  [LIGHT] {name}  {energy:.0f} W  "
+                  f"{temp_kelvin:.0f} K  (ShaderNodeBlackbody node tree)",
+                  flush=True)
+            return
+        except Exception as exc:
+            print(f"  [LIGHT] {name}  ShaderNodeBlackbody failed: {exc}", flush=True)
 
     # --- Fallback 3: RGB approximation ---
     r, g, b = _kelvin_to_rgb(temp_kelvin)
@@ -1808,15 +1802,25 @@ def _add_point_light(
     energy: float,
     color_rgb: tuple,
     soft_size: float,
+    temp_kelvin: float | None = None,
 ):
     """
-    Create a point light with a fixed colour (not temperature-based).
+    Create a point light.
+
+    If *temp_kelvin* is given, the colour is set via Blender's native
+    blackbody colour-temperature mechanism (true Planck spectrum).
+    Otherwise *color_rgb* is used as a fixed RGB colour.
 
     soft_size controls the shadow softness radius.
     """
     light_data        = bpy.data.lights.new(name, type="POINT")
     light_data.energy = energy
-    light_data.color  = color_rgb
+
+    if temp_kelvin is not None:
+        _set_light_temperature(light_data, name, energy, temp_kelvin)
+    else:
+        light_data.color = color_rgb
+
     # shadow_soft_size was renamed/removed in Blender 5.0; try the new name first
     if hasattr(light_data, "shadow_source_angle"):
         light_data.shadow_source_angle = soft_size * 0.01  # rough conversion
@@ -1936,7 +1940,8 @@ def _add_god_ray_spot(
     spot_energy = energy_base * 2000.0   # strong spot to produce visible scattering
     light_data        = bpy.data.lights.new(name, type="SPOT")
     light_data.energy = spot_energy
-    light_data.color  = (0.95, 0.92, 0.80)     # warm golden-white
+    # Use true blackbody colour temperature for the god-ray spot
+    _set_light_temperature(light_data, name, spot_energy, 3500.0)
     light_data.spot_size   = math.radians(35)   # 35° cone — wide enough to fill opening
     light_data.spot_blend  = 0.25               # soft penumbra
     # Shadow cast ON so the beam terminates at detector surfaces (essential for rays)
@@ -2580,8 +2585,9 @@ def create_blender_scene(
         location=(0.0, r * 0.45 * math.cos(_phi_fill_rad),
                        r * 0.45 * math.sin(_phi_fill_rad)),
         energy=energy_base * 300.0,
-        color_rgb=(1.0, 0.97, 0.92),   # near-white / warm white
+        color_rgb=(1.0, 0.97, 0.92),   # fallback if temperature fails
         soft_size=r * 0.50,
+        temp_kelvin=4000.0,             # warm white via true blackbody
     )
 
     # Purple glow at the interaction point (IP / beam origin)

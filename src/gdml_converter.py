@@ -118,9 +118,10 @@ _MAX_RESPLIT_DEPTH = 3
 # this many recursion levels for names containing tracker-related keywords.
 _MAX_RESPLIT_DEPTH_TRACKER = 6
 
-_TRACKER_KEYS = (
+_TRACKER_RESPLIT_KEYS = (
     "tracker", "trk", "tpc", "silicon", "vertex", "inner_tracker",
     "outer_tracker", "barrel_tracker", "endcap_tracker",
+    "strip_layer", "disk", "ring", "endcap", "barrel_layer",
 )
 
 
@@ -1007,6 +1008,7 @@ def _merge_gltf_files(
     all_accessors: list[dict] = []
     all_buffer_views: list[dict] = []
     all_materials: list[dict] = []
+    scene_root_indices: list[int] = []   # only root nodes go here
     asset: dict = {"version": "2.0", "generator": "ddgeoviztools"}
 
     for gltf_path in gltf_paths:
@@ -1020,6 +1022,7 @@ def _merge_gltf_files(
         acc_off  = len(all_accessors)
         mesh_off = len(all_meshes)
         mat_off  = len(all_materials)
+        node_off = len(all_nodes)
 
         # ---- Decode inline buffer ----
         buf_data = b""
@@ -1070,15 +1073,34 @@ def _merge_gltf_files(
                 new_mesh["primitives"].append(new_prim)
             all_meshes.append(new_mesh)
 
-        # ---- nodes: remap mesh index, preserve transforms ----
+        # ---- nodes: remap mesh, children, and transform ----
+        # VTK's GLTF exporter creates node hierarchies (root → children).
+        # We must remap children indices and only add root nodes to the
+        # merged scene — otherwise child nodes are traversed twice and
+        # stale indices cause out-of-range errors on import.
         for node in data.get("nodes", []):
             new_node: dict = {"name": name}
             if "mesh" in node:
                 new_node["mesh"] = node["mesh"] + mesh_off
+            if "children" in node:
+                new_node["children"] = [c + node_off for c in node["children"]]
             for key in ("translation", "rotation", "scale", "matrix"):
                 if key in node:
                     new_node[key] = node[key]
             all_nodes.append(new_node)
+
+        # Collect only root-level node indices for the merged scene.
+        # Root nodes are those listed in the file's scene(s); child nodes
+        # are reached via their parent's "children" array.
+        file_roots = set()
+        for scene in data.get("scenes", []):
+            for ri in scene.get("nodes", []):
+                file_roots.add(ri)
+        # If the file has no scenes defined, treat all nodes as roots
+        if not file_roots:
+            file_roots = set(range(len(data.get("nodes", []))))
+        for ri in sorted(file_roots):
+            scene_root_indices.append(ri + node_off)
 
         # ---- append raw buffer bytes ----
         merged_buf.extend(buf_data)
@@ -1095,7 +1117,7 @@ def _merge_gltf_files(
     merged_gltf: dict = {
         "asset": asset,
         "scene": 0,
-        "scenes": [{"nodes": list(range(len(all_nodes)))}],
+        "scenes": [{"nodes": scene_root_indices}],
         "nodes": all_nodes,
         "meshes": all_meshes,
         "accessors": all_accessors,
@@ -1320,7 +1342,7 @@ def _auto_split_and_convert(
             # Tracker sub-detectors get a higher recursion depth limit
             _lv_lower = lv_name.lower()
             max_depth = _MAX_RESPLIT_DEPTH_TRACKER \
-                if any(k in _lv_lower for k in _TRACKER_KEYS) \
+                if any(k in _lv_lower for k in _TRACKER_RESPLIT_KEYS) \
                 else _MAX_RESPLIT_DEPTH
 
             if still_too_large and split_depth < max_depth:
@@ -1570,7 +1592,34 @@ def convert_gdml(
         if gdml_to_process != input_path:
             print(f"  [{_ts()}] Simplified GDML ready ({_elapsed(t0)})", flush=True)
 
+    # ---- Complexity check (early) ----
+    # Decide BEFORE pruning whether auto-split is needed.  If it is, skip
+    # the aggressive global placement limit — auto-split handles memory
+    # bounding per-chunk.  Applying _limit_gdml_placements first would
+    # destroy most of the geometry (e.g. 5000 tracker modules → 30) that
+    # auto-split was designed to distribute across manageable chunks.
+    raw_pvs   = _count_physvols_in_gdml(gdml_to_process)
+    file_size = Path(gdml_to_process).stat().st_size
+    needs_split = (
+        raw_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD
+        or file_size > _AUTO_SPLIT_FILESIZE_BYTES
+    )
+
+    if needs_split:
+        reason = []
+        if raw_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD:
+            reason.append(f"{raw_pvs} physvols > {_AUTO_SPLIT_PHYSVOL_THRESHOLD}")
+        if file_size > _AUTO_SPLIT_FILESIZE_BYTES:
+            reason.append(f"file size {file_size/1e6:.1f} MB > "
+                         f"{_AUTO_SPLIT_FILESIZE_BYTES/1e6:.0f} MB")
+        print(f"  [{_ts()}] Scene is complex ({'; '.join(reason)}) — going "
+              f"directly to auto-split (per-chunk limits provide memory safety)",
+              flush=True)
+        return _auto_split_and_convert(gdml_to_process, output_path, fmt, t_total,
+                                       simplify=simplify)
+
     # ---- Pre-process GDML: limit repeated physical-volume placements ----
+    # Only for single-pass conversion (small scenes).
     # In simplify mode the physics-aware simplification already prunes the
     # geometry intentionally (e.g. keeping all tracker module placements).
     # Running the generic placement limiter on top would undo that work.
@@ -1590,29 +1639,6 @@ def convert_gdml(
     if gdml_stripped != gdml_to_load:
         gdml_to_load = gdml_stripped
     print(f"  [{_ts()}] Unreferenced-element strip done ({_elapsed(t0)})", flush=True)
-
-    # ---- Complexity check: auto-split if still too many physvols ----
-    file_size = Path(gdml_to_load).stat().st_size
-    remaining_pvs = _count_physvols_in_gdml(gdml_to_load)
-    print(f"  [{_ts()}] {remaining_pvs} physvols after pruning "
-          f"(threshold={_AUTO_SPLIT_PHYSVOL_THRESHOLD}), "
-          f"file size {file_size/1e6:.1f} MB "
-          f"(threshold={_AUTO_SPLIT_FILESIZE_BYTES/1e6:.0f} MB)", flush=True)
-
-    needs_split = (remaining_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD
-                   or file_size > _AUTO_SPLIT_FILESIZE_BYTES)
-    if needs_split:
-        reason = []
-        if remaining_pvs > _AUTO_SPLIT_PHYSVOL_THRESHOLD:
-            reason.append(f"{remaining_pvs} physvols > {_AUTO_SPLIT_PHYSVOL_THRESHOLD}")
-        if file_size > _AUTO_SPLIT_FILESIZE_BYTES:
-            reason.append(f"file size {file_size/1e6:.1f} MB > "
-                         f"{_AUTO_SPLIT_FILESIZE_BYTES/1e6:.0f} MB")
-        print(f"  [{_ts()}] Scene is complex ({'; '.join(reason)}) — splitting "
-              f"into per-sub-detector chunks to keep peak memory bounded ...",
-              flush=True)
-        return _auto_split_and_convert(gdml_to_load, output_path, fmt, t_total,
-                                       simplify=simplify)
 
     # ---- Single-pass conversion ----
     return _convert_single(gdml_to_load, output_path, fmt, t_total)
