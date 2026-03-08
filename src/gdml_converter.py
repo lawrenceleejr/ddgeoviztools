@@ -1355,13 +1355,14 @@ def _auto_split_and_convert(
         for i, (lv_name, sub_gdml) in enumerate(split_files):
             sub_label = f"{label_prefix}/{lv_name}"
 
-            # In simplify mode, skip placement limits — the simplification
-            # already made intentional pruning choices.
-            if simplify:
-                pruned_sub = sub_gdml
-            else:
-                pruned_sub = _limit_gdml_placements(sub_gdml)
-            pruned_sub = _strip_unreferenced_gdml_elements(pruned_sub)
+            # Do NOT run _limit_gdml_placements on auto-split chunks.
+            # The recursive splitting already keeps each chunk within a
+            # manageable physvol count.  Running placement limits on top
+            # strips the actual detector physvols (silicon sensors, modules)
+            # while leaving invisible Air/Vacuum containers, producing
+            # GLTF files with only world-volume bounding boxes.
+            # Only strip unreferenced elements (cheap, no geometry loss).
+            pruned_sub = _strip_unreferenced_gdml_elements(sub_gdml)
 
             # Check if this chunk still needs further splitting
             sub_size = Path(pruned_sub).stat().st_size
