@@ -970,6 +970,148 @@ def _count_physvols_in_gdml(gdml_path: "Path") -> int:
         return 0
 
 
+def _merge_gltf_files(
+    gltf_paths: "list[Path]",
+    output_path: "Path",
+    name: str,
+) -> None:
+    """
+    Merge multiple GLTF files (with inline base64 data) into a single GLTF.
+
+    Each input file is expected to use a single buffer with an inline data URI
+    (``data:application/octet-stream;base64,...``) as produced by VTK's
+    ``vtkGLTFExporter`` with ``InlineDataOn()``.
+
+    The merged file contains one node per input-file node, all under a single
+    scene.  All nodes and meshes are named *name* so that Blender imports the
+    combined geometry as one logical object.
+
+    This is a lightweight JSON + base64 operation — no VTK or pyg4ometry
+    needed — so it adds negligible overhead after the expensive conversion.
+    """
+    import base64
+    import json
+    import shutil
+
+    if not gltf_paths:
+        return
+    if len(gltf_paths) == 1:
+        if gltf_paths[0].resolve() != output_path.resolve():
+            shutil.copy2(gltf_paths[0], output_path)
+        _rename_gltf_nodes(output_path, name)
+        return
+
+    merged_buf = bytearray()
+    all_nodes: list[dict] = []
+    all_meshes: list[dict] = []
+    all_accessors: list[dict] = []
+    all_buffer_views: list[dict] = []
+    all_materials: list[dict] = []
+    asset: dict = {"version": "2.0", "generator": "ddgeoviztools"}
+
+    for gltf_path in gltf_paths:
+        try:
+            data = json.loads(gltf_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        # Current array lengths — used as offsets for index remapping
+        bv_off   = len(all_buffer_views)
+        acc_off  = len(all_accessors)
+        mesh_off = len(all_meshes)
+        mat_off  = len(all_materials)
+
+        # ---- Decode inline buffer ----
+        buf_data = b""
+        for buf in data.get("buffers", []):
+            uri = buf.get("uri", "")
+            if uri.startswith("data:") and "," in uri:
+                buf_data = base64.b64decode(uri.split(",", 1)[1])
+                break
+
+        # Pad merged buffer to 4-byte alignment before appending
+        pad = (4 - len(merged_buf) % 4) % 4
+        merged_buf.extend(b"\x00" * pad)
+        buf_byte_off = len(merged_buf)
+
+        # ---- bufferViews: remap buffer index & byte offset ----
+        for bv in data.get("bufferViews", []):
+            new_bv = dict(bv)
+            new_bv["buffer"] = 0
+            new_bv["byteOffset"] = bv.get("byteOffset", 0) + buf_byte_off
+            all_buffer_views.append(new_bv)
+
+        # ---- accessors: remap bufferView index ----
+        for acc in data.get("accessors", []):
+            new_acc = dict(acc)
+            if "bufferView" in acc:
+                new_acc["bufferView"] = acc["bufferView"] + bv_off
+            all_accessors.append(new_acc)
+
+        # ---- materials: collect as-is ----
+        for mat in data.get("materials", []):
+            all_materials.append(mat)
+
+        # ---- meshes: remap accessor & material indices ----
+        for mesh in data.get("meshes", []):
+            new_mesh: dict = {"name": name, "primitives": []}
+            for prim in mesh.get("primitives", []):
+                new_prim: dict = {}
+                if "attributes" in prim:
+                    new_prim["attributes"] = {
+                        k: v + acc_off for k, v in prim["attributes"].items()
+                    }
+                if "indices" in prim:
+                    new_prim["indices"] = prim["indices"] + acc_off
+                if "mode" in prim:
+                    new_prim["mode"] = prim["mode"]
+                if "material" in prim:
+                    new_prim["material"] = prim["material"] + mat_off
+                new_mesh["primitives"].append(new_prim)
+            all_meshes.append(new_mesh)
+
+        # ---- nodes: remap mesh index, preserve transforms ----
+        for node in data.get("nodes", []):
+            new_node: dict = {"name": name}
+            if "mesh" in node:
+                new_node["mesh"] = node["mesh"] + mesh_off
+            for key in ("translation", "rotation", "scale", "matrix"):
+                if key in node:
+                    new_node[key] = node[key]
+            all_nodes.append(new_node)
+
+        # ---- append raw buffer bytes ----
+        merged_buf.extend(buf_data)
+
+    if not all_nodes:
+        return
+
+    # ---- Build merged GLTF ----
+    merged_uri = (
+        "data:application/octet-stream;base64,"
+        + base64.b64encode(bytes(merged_buf)).decode("ascii")
+    )
+
+    merged_gltf: dict = {
+        "asset": asset,
+        "scene": 0,
+        "scenes": [{"nodes": list(range(len(all_nodes)))}],
+        "nodes": all_nodes,
+        "meshes": all_meshes,
+        "accessors": all_accessors,
+        "bufferViews": all_buffer_views,
+        "buffers": [{"uri": merged_uri, "byteLength": len(merged_buf)}],
+    }
+    if all_materials:
+        merged_gltf["materials"] = all_materials
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(merged_gltf, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
 def _rename_gltf_nodes(output_path: "Path", name: str) -> None:
     """
     Patch a GLTF JSON file so that all nodes and meshes are named *name*.
@@ -1212,6 +1354,32 @@ def _auto_split_and_convert(
         gc.collect()
 
     _split_and_convert_recursive(gdml_path, split_depth=1, label_prefix=Path(gdml_path).stem)
+
+    # ---- Merge split GLTF/GLB chunks back into one file ----
+    # The splitting was only needed to keep VTK/pyg4ometry peak memory
+    # bounded during conversion.  Now that every chunk has been exported,
+    # merge them into a single GLTF so each sub-detector is one logical
+    # object in downstream tools (Blender, three.js, etc.).
+    if fmt in ("gltf", "glb") and len(results) > 1:
+        print(
+            f"  [{_ts()}] [MERGE] Merging {len(results)} GLTF chunks back "
+            f"into one file → {output_path.name}",
+            flush=True,
+        )
+        t0 = time.monotonic()
+        try:
+            _merge_gltf_files(results, output_path, output_path.stem)
+            # Remove individual chunk files (they've been merged)
+            for p in results:
+                if p.resolve() != output_path.resolve() and p.exists():
+                    p.unlink()
+            results = [output_path]
+            print(f"  [{_ts()}] [MERGE] Done ({_elapsed(t0)})", flush=True)
+        except Exception as exc:
+            print(
+                f"  [{_ts()}] [MERGE] Failed: {exc} — keeping individual chunks",
+                flush=True,
+            )
 
     total_sz = sum(p.stat().st_size for p in results if p.exists()) / 1e6
     print(
