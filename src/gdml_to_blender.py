@@ -365,10 +365,15 @@ def _slice_mesh_plane_np(
     # Signed distance of every vertex from the plane
     d = (vertices - plane_co) @ plane_no          # (V,)
 
-    # Classify vertices: +1 positive, -1 negative, 0 on-plane
+    # Classify vertices: +1 positive (kept side), -1 negative (removed side).
+    # On-plane vertices (|d| <= eps) are treated as positive: they lie on the
+    # cut boundary and belong to the kept side.  Without this, a straddle face
+    # with one positive, one negative, and one on-plane vertex only has ONE
+    # crossing edge instead of two.  The missing intersection index stays at
+    # -1, which numpy interprets as the last vertex → wild triangles shooting
+    # off to an arbitrary point in the mesh.
     eps = 1e-8
-    sign = np.zeros(len(d), dtype=np.int8)
-    sign[d > eps] = 1
+    sign = np.ones(len(d), dtype=np.int8)
     sign[d < -eps] = -1
 
     # Per-face vertex signs
