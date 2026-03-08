@@ -977,15 +977,19 @@ def _merge_gltf_files(
     name: str,
 ) -> None:
     """
-    Merge multiple GLTF files (with inline base64 data) into a single GLTF.
+    Merge multiple GLTF files into a single GLTF.
 
-    Each input file is expected to use a single buffer with an inline data URI
-    (``data:application/octet-stream;base64,...``) as produced by VTK's
-    ``vtkGLTFExporter`` with ``InlineDataOn()``.
+    VTK's ``vtkGLTFExporter`` (with ``InlineDataOn()``) produces one inline
+    base64 buffer **per bufferView** — not one buffer for the whole file.
+    Each ``bufferView[N]`` references ``buffer[N]``.  This function handles
+    that layout by decoding *every* buffer, concatenating their data into
+    a single merged buffer, and remapping all ``bufferView.buffer`` indices
+    to 0 with adjusted ``byteOffset`` values.
 
-    The merged file contains one node per input-file node, all under a single
-    scene.  All nodes and meshes are named *name* so that Blender imports the
-    combined geometry as one logical object.
+    The merged file contains all nodes from all input files under a single
+    scene.  Only the root nodes of each file's scene are promoted to scene
+    roots; child nodes are reached through their parent's ``children`` array.
+    Camera nodes are skipped (they carry no geometry).
 
     This is a lightweight JSON + base64 operation — no VTK or pyg4ometry
     needed — so it adds negligible overhead after the expensive conversion.
@@ -1008,7 +1012,7 @@ def _merge_gltf_files(
     all_accessors: list[dict] = []
     all_buffer_views: list[dict] = []
     all_materials: list[dict] = []
-    scene_root_indices: list[int] = []   # only root nodes go here
+    scene_root_indices: list[int] = []
     asset: dict = {"version": "2.0", "generator": "ddgeoviztools"}
 
     for gltf_path in gltf_paths:
@@ -1017,31 +1021,42 @@ def _merge_gltf_files(
         except Exception:
             continue
 
-        # Current array lengths — used as offsets for index remapping
+        # ---- Decode ALL buffers from this file ----
+        # VTK produces one buffer per bufferView, each with its own inline
+        # base64 data URI.  We decode every buffer and record where each
+        # one lands in the merged buffer.
+        file_buffers = data.get("buffers", [])
+        # Map: old buffer index → byte offset in merged_buf
+        buf_start: dict[int, int] = {}
+        for buf_idx, buf in enumerate(file_buffers):
+            uri = buf.get("uri", "")
+            if uri.startswith("data:") and "," in uri:
+                raw = base64.b64decode(uri.split(",", 1)[1])
+            else:
+                raw = b""
+
+            # Pad to 4-byte alignment
+            pad = (4 - len(merged_buf) % 4) % 4
+            if pad and len(merged_buf) > 0:
+                merged_buf.extend(b"\x00" * pad)
+
+            buf_start[buf_idx] = len(merged_buf)
+            merged_buf.extend(raw)
+
+        # ---- Index offsets for remapping ----
         bv_off   = len(all_buffer_views)
         acc_off  = len(all_accessors)
         mesh_off = len(all_meshes)
         mat_off  = len(all_materials)
         node_off = len(all_nodes)
 
-        # ---- Decode inline buffer ----
-        buf_data = b""
-        for buf in data.get("buffers", []):
-            uri = buf.get("uri", "")
-            if uri.startswith("data:") and "," in uri:
-                buf_data = base64.b64decode(uri.split(",", 1)[1])
-                break
-
-        # Pad merged buffer to 4-byte alignment before appending
-        pad = (4 - len(merged_buf) % 4) % 4
-        merged_buf.extend(b"\x00" * pad)
-        buf_byte_off = len(merged_buf)
-
         # ---- bufferViews: remap buffer index & byte offset ----
         for bv in data.get("bufferViews", []):
             new_bv = dict(bv)
+            old_buf = bv.get("buffer", 0)
+            base = buf_start.get(old_buf, 0)
             new_bv["buffer"] = 0
-            new_bv["byteOffset"] = bv.get("byteOffset", 0) + buf_byte_off
+            new_bv["byteOffset"] = bv.get("byteOffset", 0) + base
             all_buffer_views.append(new_bv)
 
         # ---- accessors: remap bufferView index ----
@@ -1073,37 +1088,53 @@ def _merge_gltf_files(
                 new_mesh["primitives"].append(new_prim)
             all_meshes.append(new_mesh)
 
-        # ---- nodes: remap mesh, children, and transform ----
-        # VTK's GLTF exporter creates node hierarchies (root → children).
-        # We must remap children indices and only add root nodes to the
-        # merged scene — otherwise child nodes are traversed twice and
-        # stale indices cause out-of-range errors on import.
-        for node in data.get("nodes", []):
+        # ---- nodes: remap mesh, children; skip camera nodes ----
+        # Build a set of nodes that carry cameras (no geometry to merge).
+        camera_nodes: set[int] = set()
+        for ni, node in enumerate(data.get("nodes", [])):
+            if "camera" in node:
+                camera_nodes.add(ni)
+
+        # Remap table: old node index → new node index (None if skipped)
+        node_remap: dict[int, int | None] = {}
+        for ni, node in enumerate(data.get("nodes", [])):
+            if ni in camera_nodes:
+                node_remap[ni] = None
+                continue
             new_node: dict = {"name": name}
             if "mesh" in node:
                 new_node["mesh"] = node["mesh"] + mesh_off
             if "children" in node:
-                new_node["children"] = [c + node_off for c in node["children"]]
+                # Remap later after all node indices are known
+                new_node["_old_children"] = node["children"]
             for key in ("translation", "rotation", "scale", "matrix"):
                 if key in node:
                     new_node[key] = node[key]
+            node_remap[ni] = len(all_nodes)
             all_nodes.append(new_node)
 
-        # Collect only root-level node indices for the merged scene.
-        # Root nodes are those listed in the file's scene(s); child nodes
-        # are reached via their parent's "children" array.
+        # Fixup children references now that we have the remap table
+        for new_ni, new_node in enumerate(all_nodes[node_off:], start=node_off):
+            if "_old_children" in new_node:
+                new_children = []
+                for old_ci in new_node.pop("_old_children"):
+                    mapped = node_remap.get(old_ci)
+                    if mapped is not None:
+                        new_children.append(mapped)
+                if new_children:
+                    new_node["children"] = new_children
+
+        # Collect root nodes for the merged scene
         file_roots = set()
         for scene in data.get("scenes", []):
             for ri in scene.get("nodes", []):
                 file_roots.add(ri)
-        # If the file has no scenes defined, treat all nodes as roots
         if not file_roots:
             file_roots = set(range(len(data.get("nodes", []))))
         for ri in sorted(file_roots):
-            scene_root_indices.append(ri + node_off)
-
-        # ---- append raw buffer bytes ----
-        merged_buf.extend(buf_data)
+            mapped = node_remap.get(ri)
+            if mapped is not None:
+                scene_root_indices.append(mapped)
 
     if not all_nodes:
         return
@@ -1113,7 +1144,6 @@ def _merge_gltf_files(
         "data:application/octet-stream;base64,"
         + base64.b64encode(bytes(merged_buf)).decode("ascii")
     )
-
     merged_gltf: dict = {
         "asset": asset,
         "scene": 0,
@@ -1132,6 +1162,9 @@ def _merge_gltf_files(
         json.dumps(merged_gltf, separators=(",", ":")),
         encoding="utf-8",
     )
+    print(f"  [MERGE] Wrote {output_path.name}: "
+          f"{len(all_nodes)} nodes, {len(all_meshes)} meshes, "
+          f"{len(merged_buf)/1e6:.2f} MB buffer", flush=True)
 
 
 def _rename_gltf_nodes(output_path: "Path", name: str) -> None:
