@@ -1523,15 +1523,14 @@ def _merge_gltf_files(
 
     # ---- Collapse all meshes into a single mesh (one object in Blender) ----
     # Collect every primitive from every mesh into one combined mesh, then
-    # remap all node.mesh references to 0 and drop unreferenced mesh entries.
-    if len(all_meshes) > 1:
-        combined_primitives: list[dict] = []
-        for m in all_meshes:
-            combined_primitives.extend(m.get("primitives", []))
-        all_meshes = [{"name": name, "primitives": combined_primitives}]
-        for node in all_nodes:
-            if "mesh" in node:
-                node["mesh"] = 0
+    # replace all nodes with a single node referencing that mesh.
+    # VTK bakes transforms into vertex data, so no node transform is needed.
+    combined_primitives: list[dict] = []
+    for m in all_meshes:
+        combined_primitives.extend(m.get("primitives", []))
+    all_meshes = [{"name": name, "primitives": combined_primitives}]
+    all_nodes = [{"name": name, "mesh": 0}]
+    scene_root_indices = [0]
 
     # ---- Build merged GLTF ----
     merged_uri = (
@@ -1575,31 +1574,21 @@ def _rename_gltf_nodes(output_path: "Path", name: str) -> None:
     except Exception:
         return
 
-    changed = False
-    for node in data.get("nodes", []):
-        node["name"] = name
-        changed = True
+    if not data.get("meshes"):
+        return
 
-    # Collapse multiple meshes into one (one object in Blender)
-    meshes = data.get("meshes", [])
-    if len(meshes) > 1:
-        combined: list[dict] = []
-        for m in meshes:
-            combined.extend(m.get("primitives", []))
-        data["meshes"] = [{"name": name, "primitives": combined}]
-        for node in data.get("nodes", []):
-            if "mesh" in node:
-                node["mesh"] = 0
-        changed = True
-    elif meshes:
-        meshes[0]["name"] = name
-        changed = True
+    # Collapse all meshes and nodes into one (one object in Blender).
+    combined: list[dict] = []
+    for m in data.get("meshes", []):
+        combined.extend(m.get("primitives", []))
+    data["meshes"] = [{"name": name, "primitives": combined}]
+    data["nodes"] = [{"name": name, "mesh": 0}]
+    data["scenes"] = [{"nodes": [0]}]
 
-    if changed:
-        output_path.write_text(
-            json.dumps(data, separators=(",", ":")),
-            encoding="utf-8",
-        )
+    output_path.write_text(
+        json.dumps(data, separators=(",", ":")),
+        encoding="utf-8",
+    )
 
 
 def _write_vtk_export(
