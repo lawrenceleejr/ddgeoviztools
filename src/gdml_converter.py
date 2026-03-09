@@ -1521,6 +1521,18 @@ def _merge_gltf_files(
     if not all_nodes:
         return
 
+    # ---- Collapse all meshes into a single mesh (one object in Blender) ----
+    # Collect every primitive from every mesh into one combined mesh, then
+    # remap all node.mesh references to 0 and drop unreferenced mesh entries.
+    if len(all_meshes) > 1:
+        combined_primitives: list[dict] = []
+        for m in all_meshes:
+            combined_primitives.extend(m.get("primitives", []))
+        all_meshes = [{"name": name, "primitives": combined_primitives}]
+        for node in all_nodes:
+            if "mesh" in node:
+                node["mesh"] = 0
+
     # ---- Build merged GLTF ----
     merged_uri = (
         "data:application/octet-stream;base64,"
@@ -1567,8 +1579,20 @@ def _rename_gltf_nodes(output_path: "Path", name: str) -> None:
     for node in data.get("nodes", []):
         node["name"] = name
         changed = True
-    for mesh in data.get("meshes", []):
-        mesh["name"] = name
+
+    # Collapse multiple meshes into one (one object in Blender)
+    meshes = data.get("meshes", [])
+    if len(meshes) > 1:
+        combined: list[dict] = []
+        for m in meshes:
+            combined.extend(m.get("primitives", []))
+        data["meshes"] = [{"name": name, "primitives": combined}]
+        for node in data.get("nodes", []):
+            if "mesh" in node:
+                node["mesh"] = 0
+        changed = True
+    elif meshes:
+        meshes[0]["name"] = name
         changed = True
 
     if changed:
