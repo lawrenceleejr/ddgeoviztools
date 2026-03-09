@@ -1940,7 +1940,9 @@ def _convert_single(
         print(f"  [{_ts()}] Building geometry scene ...", flush=True)
         viewer = _offscreen_viewer()
         viewer.addLogicalVolume(world)
-        print(f"  [{_ts()}] Scene built ({_elapsed(t0)})", flush=True)
+        n_actors = viewer.ren.GetActors().GetNumberOfItems()
+        print(f"  [{_ts()}] Scene built ({_elapsed(t0)}) — {n_actors} VTK actors",
+              flush=True)
 
         ren    = viewer.ren
         renWin = _find_renwin(viewer)
