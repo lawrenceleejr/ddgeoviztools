@@ -221,6 +221,9 @@ def _simplify_gdml_envelopes(
     # double-modifying shared volume definitions (e.g. 12 staves all
     # referencing the same stave_outer volume).
     _visited: set[str] = set()
+    # Volumes whose solid must be kept even though they use Air/Vacuum
+    # (e.g. tracker module envelopes that ARE the visible geometry).
+    _keep_solid: set[str] = set()
 
     def _remove_pvs(vol_el):
         nonlocal total_removed
@@ -367,6 +370,8 @@ def _simplify_gdml_envelopes(
                 # want.  Only strip the internal components (silicon,
                 # kapton, etc.) which are too fine for overview rendering.
                 _remove_pvs(vol_el)
+                # Mark this volume so the final Air→assembly pass skips it.
+                _keep_solid.add(vol_name)
                 return
 
             # Non-leaf Air/Vacuum container (e.g. tracker layer/disk) —
@@ -461,9 +466,11 @@ def _simplify_gdml_envelopes(
             continue
         if not _has_solid(vol_el):
             continue
-        # Never convert the world volume to an assembly — pyg4ometry
-        # requires the world to be a <volume> with a solid.
-        if vol_el.get("name") == world_name:
+        # Never convert the world volume or tracker module envelopes
+        # to assemblies — pyg4ometry needs the world as a <volume>,
+        # and module envelopes ARE the visible detector geometry.
+        vname = vol_el.get("name")
+        if vname == world_name or vname in _keep_solid:
             continue
         mat = _material(vol_el)
         if mat in _AIR_MATERIALS:
