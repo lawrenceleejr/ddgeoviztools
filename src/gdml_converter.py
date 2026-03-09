@@ -467,6 +467,23 @@ def _simplify_gdml_envelopes(
             print(f"  [SIMPLIFY] {child_name}: calorimeter "
                   f"(first+last slice per layer)", flush=True)
             _simplify_calo(child_name)
+            # --- Post-simplification physvol summary for diagnostics ---
+            def _dump_pvs(vname, depth=0):
+                vel = vol_index.get(vname)
+                if vel is None or depth > 4:
+                    return
+                n = len(_get_pvs(vel))
+                refs = [_volref(p) for p in _get_pvs(vel) if _volref(p)]
+                unique = len(set(refs))
+                print(f"  [CALO-STRUCT]{'  ' * depth}{vname}: "
+                      f"{'asm' if _is_assembly(vel) else 'vol'} "
+                      f"{n} pvs ({unique} unique)", flush=True)
+                seen = set()
+                for r in refs:
+                    if r not in seen:
+                        seen.add(r)
+                        _dump_pvs(r, depth + 1)
+            _dump_pvs(child_name)
         elif any(k in name_lower for k in _TRACKER_NAMES):
             print(f"  [SIMPLIFY] {child_name}: tracker "
                   f"(all modules, strip components)", flush=True)
