@@ -412,7 +412,11 @@ def _simplify_gdml_envelopes(
             return
 
         if _is_assembly(vol_el):
-            _thin_assembly(vol_el)
+            # Do NOT thin generic assemblies: the same logical volume is often
+            # intentionally placed at multiple positions (e.g. beam-pipe
+            # sections at different z, solenoid coils at different φ).
+            # _thin_assembly would keep only the first placement and discard
+            # the rest, leaving only a single piece near the origin.
             for pv in _get_pvs(vol_el):
                 cn = _volref(pv)
                 if cn:
