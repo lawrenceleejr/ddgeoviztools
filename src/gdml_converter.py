@@ -259,6 +259,11 @@ def _simplify_gdml_envelopes(
         if vol_el is None:
             return
 
+        pvs_before = len(_get_pvs(vol_el))
+        is_asm = _is_assembly(vol_el)
+        print(f"  [CALO-SIMPL] {vol_name}: "
+              f"{'assembly' if is_asm else 'volume'}, "
+              f"{pvs_before} physvols", flush=True)
         if _is_assembly(vol_el):
             # Do NOT thin calo assemblies: the same stave/module logical
             # volume is placed many times at different phi angles to give full
@@ -299,6 +304,8 @@ def _simplify_gdml_envelopes(
                 for pv in pvs_list[1:-1]:
                     vol_el.remove(pv)
                     total_removed += 1
+                print(f"  [CALO-SIMPL]   → layer: kept first+last "
+                      f"({len(pvs_list)} → 2 slices)", flush=True)
             # Strip the layer's own solid/material so only slices render
             for child_tag in ("solidref", "materialref"):
                 el = vol_el.find(tag(child_tag))
@@ -320,10 +327,16 @@ def _simplify_gdml_envelopes(
                     if el is not None:
                         vol_el.remove(el)
                 vol_el.tag = "assembly"
+            child_names = []
             for pv in list(_get_pvs(vol_el)):
                 cn = _volref(pv)
                 if cn:
+                    child_names.append(cn)
                     _simplify_calo(cn)
+            unique = len(set(child_names))
+            if unique < len(child_names):
+                print(f"  [CALO-SIMPL]   → container: {len(child_names)} physvols "
+                      f"→ {unique} unique LVs", flush=True)
 
     # ------------------------------------------------------------------
     # Tracker: assembly → layers → modules → components
