@@ -30,8 +30,13 @@ def _convert_worker(args_tuple):
     """
     Called in a child process.  Returns (lv_name, output_path, error_str|None).
     """
-    # Support both 4-tuple (legacy) and 5-tuple (with simplify)
-    if len(args_tuple) == 5:
+    # Support 4-tuple (legacy), 5-tuple (with simplify), and 7-tuple
+    # (with simplify + chunk_timeout + skip_existing)
+    chunk_timeout = None
+    skip_existing = False
+    if len(args_tuple) == 7:
+        lv_name, gdml_path, out_path, fmt, simplify, chunk_timeout, skip_existing = args_tuple
+    elif len(args_tuple) == 5:
         lv_name, gdml_path, out_path, fmt, simplify = args_tuple
     else:
         lv_name, gdml_path, out_path, fmt = args_tuple
@@ -40,7 +45,8 @@ def _convert_worker(args_tuple):
     from gdml_converter import convert_gdml
     try:
         convert_gdml(input_path=gdml_path, output_path=out_path, fmt=fmt,
-                      simplify=simplify)
+                     simplify=simplify, chunk_timeout=chunk_timeout,
+                     skip_existing=skip_existing)
         return (lv_name, out_path, None)
     except Exception as exc:
         return (lv_name, out_path, str(exc))
@@ -124,16 +130,24 @@ def cmd_convert(args: argparse.Namespace) -> int:
         )
         return 1
 
-    simplify = not getattr(args, "no_simplify", False)
+    simplify       = not getattr(args, "no_simplify", False)
+    chunk_timeout  = getattr(args, "chunk_timeout", None)
+    skip_existing  = getattr(args, "resume", False)
     print(f"Converting {args.gdml_file}  →  {output_path}  [{fmt.upper()}]", flush=True)
     if simplify:
         print("  Simplify mode: keeping envelope shapes only (no internal structure)", flush=True)
+    if chunk_timeout:
+        print(f"  chunk-timeout: {chunk_timeout}s per auto-split chunk", flush=True)
+    if skip_existing:
+        print("  resume: skipping chunks with existing output files", flush=True)
     try:
         written = convert_gdml(
             input_path=args.gdml_file,
             output_path=output_path,
             fmt=fmt,
             simplify=simplify,
+            chunk_timeout=chunk_timeout,
+            skip_existing=skip_existing,
         )
     except Exception as exc:
         print(f"\nError: {exc}", file=sys.stderr, flush=True)
@@ -151,13 +165,15 @@ def cmd_convert(args: argparse.Namespace) -> int:
 def cmd_split_convert(args: argparse.Namespace) -> int:
     from gdml_splitter import split_gdml
 
-    fmt        = args.format
-    output_dir = Path(args.output_dir)
-    gdml_dir   = output_dir / "gdml"
-    timeout    = args.timeout      # seconds per detector, or None
-    parallel   = args.parallel     # number of workers, or 1 for serial
-    simplify   = not getattr(args, "no_simplify", False)
-    skip_set   = set()
+    fmt           = args.format
+    output_dir    = Path(args.output_dir)
+    gdml_dir      = output_dir / "gdml"
+    timeout       = args.timeout      # seconds per detector, or None
+    parallel      = args.parallel     # number of workers, or 1 for serial
+    simplify      = not getattr(args, "no_simplify", False)
+    chunk_timeout = getattr(args, "chunk_timeout", None)
+    skip_existing = getattr(args, "resume", False)
+    skip_set      = set()
     if args.skip_detectors:
         skip_set = {d.strip() for d in args.skip_detectors.split(",") if d.strip()}
 
@@ -196,11 +212,16 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
         print(f"      simplify: envelope shapes only (no internal structure)", flush=True)
     if timeout:
         print(f"      timeout: {timeout}s per detector", flush=True)
+    if chunk_timeout:
+        print(f"      chunk-timeout: {chunk_timeout}s per auto-split chunk", flush=True)
+    if skip_existing:
+        print(f"      resume: skipping chunks with existing output files", flush=True)
     if parallel > 1:
         print(f"      parallel workers: {parallel}", flush=True)
 
     work_items = [
-        (lv_name, gdml_path, output_dir / f"{gdml_path.stem}.{fmt}", fmt, simplify)
+        (lv_name, gdml_path, output_dir / f"{gdml_path.stem}.{fmt}", fmt, simplify,
+         chunk_timeout, skip_existing)
         for lv_name, gdml_path in gdml_files
     ]
 
@@ -244,7 +265,7 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
 
     else:
         # --- Serial mode (original behaviour, with optional timeout) ---
-        for lv_name, gdml_path, out_path, _, _simplify in work_items:
+        for lv_name, gdml_path, out_path, _, _simplify, _ct, _se in work_items:
             print(f"\n  [{lv_name}]", flush=True)
             t0 = time.monotonic()
 
@@ -263,7 +284,9 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
                 from gdml_converter import convert_gdml
                 try:
                     convert_gdml(input_path=gdml_path, output_path=out_path,
-                                 fmt=fmt, simplify=simplify)
+                                 fmt=fmt, simplify=simplify,
+                                 chunk_timeout=chunk_timeout,
+                                 skip_existing=skip_existing)
                 except Exception as exc:
                     print(f"  [WARN] conversion failed: {exc}", file=sys.stderr, flush=True)
                     errors.append((lv_name, str(exc)))
@@ -434,6 +457,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-simplify", action="store_true",
         help="Disable physics-aware simplification (full detail, slower).",
     )
+    p_conv.add_argument(
+        "--chunk-timeout", type=int, default=None, metavar="SECS",
+        dest="chunk_timeout",
+        help=(
+            "Per auto-split chunk timeout in seconds.  If a single chunk "
+            "takes longer than SECS, it is split in half by physvol placement "
+            "index and each half retried independently.  Recommended: 1800. "
+            "Default: no limit."
+        ),
+    )
+    p_conv.add_argument(
+        "--resume", action="store_true",
+        help=(
+            "Skip chunks whose output file already exists (resume interrupted run)."
+        ),
+    )
     p_conv.set_defaults(func=cmd_convert)
 
     # ---- split-convert ----
@@ -500,6 +539,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_sc.add_argument(
         "--no-simplify", action="store_true",
         help="Disable physics-aware simplification (full detail, slower).",
+    )
+    p_sc.add_argument(
+        "--chunk-timeout", type=int, default=None, metavar="SECS",
+        dest="chunk_timeout",
+        help=(
+            "Per auto-split chunk timeout in seconds.  If a single chunk "
+            "(e.g. one tracker layer) takes longer than SECS, it is split "
+            "in half by physvol placement index and each half is retried "
+            "independently in a subprocess.  Halves are split recursively "
+            "until they succeed.  Last resort: replace complex boolean solids "
+            "with their outermost primitive.  Recommended: 1800 (30 min). "
+            "Default: no limit (original behaviour)."
+        ),
+    )
+    p_sc.add_argument(
+        "--resume", action="store_true",
+        help=(
+            "Skip auto-split chunks whose output file already exists and is "
+            "non-empty.  Use this to restart an interrupted run without "
+            "re-processing already-completed chunks."
+        ),
     )
     p_sc.set_defaults(func=cmd_split_convert)
 

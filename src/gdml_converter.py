@@ -984,6 +984,244 @@ def _count_physvols_in_gdml(gdml_path: "Path") -> int:
         return 0
 
 
+def _split_gdml_physvols(gdml_path: "Path", n_parts: int = 2) -> "list[Path]":
+    """
+    Split a GDML by distributing physvol placements across *n_parts* files.
+
+    Every part contains all LV/solid/material/define definitions so each is
+    a self-contained GDML.  Only the physvol instances inside the assembly /
+    volume with the most placements are divided — the first N/2 go to part 0,
+    the last N/2 to part 1 (and so on for more parts).  For cylindrical tracker
+    layers whose modules are placed in phi order this corresponds roughly to
+    the two azimuthal halves.
+
+    Returns a list of temporary GDML paths.  Returns ``[gdml_path]`` unchanged
+    if there is nothing meaningful to split (fewer physvols than *n_parts*, or
+    *n_parts* ≤ 1).
+    """
+    try:
+        from lxml import etree
+    except ImportError:
+        return [gdml_path]
+
+    try:
+        tree = etree.parse(str(gdml_path))
+    except Exception:
+        return [gdml_path]
+
+    root   = tree.getroot()
+    ns_uri = root.nsmap.get(None, "")
+    ns_pfx = f"{{{ns_uri}}}" if ns_uri else ""
+
+    def _tag(local: str) -> str:
+        return f"{ns_pfx}{local}"
+
+    structure = root.find(_tag("structure"))
+    if structure is None:
+        return [gdml_path]
+
+    # Find the volume / assembly that holds the most physvol children
+    all_vols = (list(structure.findall(_tag("volume")))
+                + list(structure.findall(_tag("assembly"))))
+    if not all_vols:
+        return [gdml_path]
+
+    target_vol = max(all_vols, key=lambda v: len(v.findall(_tag("physvol"))))
+    pvs = target_vol.findall(_tag("physvol"))
+    total = len(pvs)
+
+    if total < n_parts:
+        return [gdml_path]
+
+    # Build n_parts contiguous index slices
+    part_size  = total // n_parts
+    boundaries = [(i * part_size, (i + 1) * part_size) for i in range(n_parts - 1)]
+    boundaries.append(((n_parts - 1) * part_size, total))
+
+    part_paths: list[Path] = []
+    for i, (lo, hi) in enumerate(boundaries):
+        # Reparse for each part so each tree is independent
+        part_tree = etree.parse(str(gdml_path))
+        part_root = part_tree.getroot()
+        part_structure = part_root.find(_tag("structure"))
+        if part_structure is None:
+            continue
+
+        # Find the same target volume in the fresh tree (match by physvol count)
+        part_vols = (list(part_structure.findall(_tag("volume")))
+                     + list(part_structure.findall(_tag("assembly"))))
+        part_target = None
+        for vol in part_vols:
+            if len(vol.findall(_tag("physvol"))) == total:
+                part_target = vol
+                break
+        if part_target is None:
+            continue
+
+        # Remove every physvol outside [lo, hi)
+        all_part_pvs = part_target.findall(_tag("physvol"))
+        for j, pv in enumerate(all_part_pvs):
+            if j < lo or j >= hi:
+                part_target.remove(pv)
+
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".gdml", delete=False, prefix=f"ddgeo_pvpart{i}_")
+        part_tree.write(tmp.name, pretty_print=True,
+                        xml_declaration=True, encoding="UTF-8")
+        tmp.close()
+        part_paths.append(Path(tmp.name))
+
+    return part_paths if len(part_paths) > 1 else [gdml_path]
+
+
+def _resolve_to_outer_primitive(solid_name: str, solids_map: dict) -> str:
+    """
+    Walk a boolean solid chain and return the name of its outermost
+    non-boolean primitive operand.
+
+    E.g. subtraction(subtraction(A, B), C) → name of A (a tubs / box / etc.).
+    For a non-boolean solid the input name is returned unchanged.
+    """
+    BOOLEAN_TAGS = {"subtraction", "union", "intersection", "multiUnion"}
+    visited: set[str] = set()
+    name = solid_name
+    while name not in visited:
+        visited.add(name)
+        el = solids_map.get(name)
+        if el is None:
+            break
+        ltag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+        if ltag not in BOOLEAN_TAGS:
+            break  # reached a primitive (tubs, box, polycone, …)
+        # Follow the "first" operand (the outer shape in a subtraction)
+        ns_pfx = "{" + el.tag.split("}")[0].lstrip("{") + "}" if "}" in el.tag else ""
+        first = el.find(f"{ns_pfx}first") if ns_pfx else el.find("first")
+        if first is None:
+            break
+        name = first.get("ref", name)
+    return name
+
+
+def _replace_booleans_with_outer_primitive(gdml_path: "Path") -> "Path":
+    """
+    Replace every boolean solid referenced by a <volume> with the outermost
+    non-boolean primitive in its operand chain.
+
+    This is the last-resort fallback when even a single-physvol chunk still
+    causes OCC tessellation to hang.  The outermost primitive (typically a
+    ``<tubs>`` for tracker modules) tessellates in milliseconds.
+
+    Returns the original path unchanged if nothing needs replacing.
+    """
+    try:
+        from lxml import etree
+    except ImportError:
+        return gdml_path
+
+    tree = etree.parse(str(gdml_path))
+    root = tree.getroot()
+    ns_uri = root.nsmap.get(None, "")
+    ns_pfx = f"{{{ns_uri}}}" if ns_uri else ""
+
+    def _tag(local: str) -> str:
+        return f"{ns_pfx}{local}"
+
+    solids_sec = root.find(_tag("solids"))
+    structure  = root.find(_tag("structure"))
+    if solids_sec is None or structure is None:
+        return gdml_path
+
+    solids_map = {el.get("name"): el
+                  for el in solids_sec if el.get("name") is not None}
+
+    changed = 0
+    for vol in list(structure.findall(_tag("volume"))):
+        sref = vol.find(_tag("solidref"))
+        if sref is None:
+            continue
+        orig  = sref.get("ref", "")
+        outer = _resolve_to_outer_primitive(orig, solids_map)
+        if outer != orig:
+            sref.set("ref", outer)
+            changed += 1
+
+    if changed == 0:
+        return gdml_path
+
+    print(f"  [FALLBACK] Replaced {changed} boolean solid(s) with outermost "
+          f"primitive (last-resort OCC fallback)", flush=True)
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".gdml", delete=False, prefix="ddgeo_fallback_")
+    tree.write(tmp.name, pretty_print=True,
+               xml_declaration=True, encoding="UTF-8")
+    tmp.close()
+    return Path(tmp.name)
+
+
+# ---------------------------------------------------------------------------
+# Per-chunk subprocess conversion with timeout
+# ---------------------------------------------------------------------------
+
+def _chunk_convert_worker(
+    q: "multiprocessing.Queue",
+    chunk_gdml_str: str,
+    chunk_path_str: str,
+    fmt: str,
+    t_total: float,
+) -> None:
+    """
+    Subprocess worker: call ``_convert_single`` and place the result on *q*.
+
+    Must be a module-level function (not a nested closure) so that
+    ``multiprocessing`` can pickle it when using the 'spawn' start method.
+    """
+    try:
+        results = _convert_single(
+            Path(chunk_gdml_str), Path(chunk_path_str), fmt, t_total)
+        q.put((True, [str(p) for p in results], None))
+    except Exception as exc:
+        q.put((False, [], str(exc)))
+
+
+def _run_chunk_with_timeout(
+    chunk_gdml: "Path",
+    chunk_path: "Path",
+    fmt: str,
+    t_total: float,
+    timeout_secs: int,
+) -> "tuple[bool, list[Path], str | None]":
+    """
+    Run ``_convert_single`` in a child process; kill it if it exceeds
+    *timeout_secs*.
+
+    Returns ``(success, result_paths, error_or_None)``.
+    """
+    import multiprocessing as _mp
+
+    ctx  = _mp.get_context("spawn")
+    q    = ctx.Queue()
+    proc = ctx.Process(
+        target=_chunk_convert_worker,
+        args=(q, str(chunk_gdml), str(chunk_path), fmt, t_total),
+    )
+    proc.start()
+    proc.join(timeout_secs)
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        return False, [], f"timed out after {timeout_secs}s"
+
+    if not q.empty():
+        ok, paths, err = q.get_nowait()
+        return ok, [Path(p) for p in paths], err
+
+    return False, [], "child process exited without result"
+
+
 def _merge_gltf_files(
     gltf_paths: "list[Path]",
     output_path: "Path",
@@ -1271,6 +1509,8 @@ def _auto_split_and_convert(
     fmt: str,
     t_total: float,
     simplify: bool = True,
+    chunk_timeout: "int | None" = None,
+    skip_existing: bool = False,
 ) -> "list[Path]":
     """
     Split *gdml_path* into per-sub-detector GDMLs using gdml_splitter, then
@@ -1283,6 +1523,15 @@ def _auto_split_and_convert(
     When *simplify* is True, per-chunk placement limits are skipped because
     the simplification already made physics-aware pruning choices (e.g. keeping
     all tracker module placements).
+
+    *chunk_timeout* — if set, each individual chunk conversion runs in a child
+    process and is killed after this many seconds.  On timeout the chunk is
+    split in half by physvol placement index and each half is retried
+    independently (recursively, until single-physvol GDMLs are reached).
+    This avoids indefinite hangs caused by OCC tessellation of complex solids.
+
+    *skip_existing* — if True, skip any chunk whose output file already exists
+    and is non-empty (useful for resuming an interrupted run).
 
     Each output file is named  <output_path.stem>_det<NNN>_<lv_name>.<fmt>.
     Returns the list of successfully written output paths.
@@ -1403,22 +1652,167 @@ def _auto_split_and_convert(
 
         shutil.rmtree(split_dir, ignore_errors=True)
 
-    def _convert_chunk(chunk_gdml, label):
-        """Convert a single GDML chunk to mesh format."""
+    # Maximum physvol-fraction split depth (2^8 = 256 halves — single physvol)
+    _MAX_PHYSVOL_SPLIT_DEPTH = 8
+
+    def _convert_chunk(chunk_gdml, label, pv_split_depth=0):
+        """
+        Convert a single GDML chunk to mesh format.
+
+        When *chunk_timeout* is set:
+          1. Attempt conversion in a child subprocess with the timeout.
+          2. On failure / timeout: split the chunk in half by physvol index
+             and retry each half independently (recursive, up to
+             _MAX_PHYSVOL_SPLIT_DEPTH levels).  Successfully converted halves
+             are merged back into a single output file.
+          3. If a single-physvol chunk still hangs: replace boolean solids with
+             their outermost primitive operand (last resort) and retry once.
+        """
         safe_name = label.split("/")[-1][:30].replace("/", "_").replace(" ", "_")
         idx = chunk_counter[0]
         chunk_counter[0] += 1
         chunk_path = output_dir / f"{stem}_det{idx:03d}_{safe_name}.{fmt}"
+
+        # --resume: skip chunks whose output already exists and is non-empty
+        if skip_existing and chunk_path.exists() and chunk_path.stat().st_size > 0:
+            print(f"  [{_ts()}] [SKIP] {chunk_path.name} already exists — "
+                  f"skipping (--resume)", flush=True)
+            results.append(chunk_path)
+            return
+
         print(f"  [{_ts()}] [CONVERT] {label} → {chunk_path.name}", flush=True)
-        try:
-            partial = _convert_single(chunk_gdml, chunk_path, fmt, t_total)
+
+        if chunk_timeout is None:
+            # No timeout: original behaviour — direct call in this process
+            try:
+                partial = _convert_single(chunk_gdml, chunk_path, fmt, t_total)
+                results.extend(partial)
+            except Exception as exc:
+                print(f"  [{_ts()}] [CONVERT] {label} failed: {exc}", flush=True)
+            gc.collect()
+            gc.collect()
+            return
+
+        # ---- Subprocess with timeout ----
+        ok, partial, err = _run_chunk_with_timeout(
+            chunk_gdml, chunk_path, fmt, t_total, chunk_timeout)
+
+        if ok:
             results.extend(partial)
-        except Exception as exc:
-            print(f"  [{_ts()}] [CONVERT] {label} failed: {exc}", flush=True)
+            gc.collect()
+            gc.collect()
+            return
+
+        # First attempt failed or timed out
+        print(f"  [{_ts()}] [WARN] {label} failed ({err})", flush=True)
+
+        # ---- Physvol-fraction split ----
+        if pv_split_depth < _MAX_PHYSVOL_SPLIT_DEPTH:
+            part_gdmls = _split_gdml_physvols(Path(chunk_gdml), n_parts=2)
+            if len(part_gdmls) > 1:
+                n_pvs = _count_physvols_in_gdml(Path(chunk_gdml))
+                print(
+                    f"  [{_ts()}] [PV-SPLIT] Splitting {label} ({n_pvs} physvols) "
+                    f"into {len(part_gdmls)} halves "
+                    f"(pv_split_depth={pv_split_depth + 1})",
+                    flush=True,
+                )
+                part_results: list[Path] = []
+                for pi, pg in enumerate(part_gdmls):
+                    part_out = (output_dir
+                                / f"{stem}_det{idx:03d}_{safe_name}_p{pi}.{fmt}")
+                    ok2, pp, err2 = _run_chunk_with_timeout(
+                        pg, part_out, fmt, t_total, chunk_timeout)
+                    if ok2:
+                        part_results.extend(pp)
+                    else:
+                        # This half also failed — recurse to split it further
+                        print(
+                            f"  [{_ts()}] [PV-SPLIT] Half {pi} of {label} "
+                            f"also failed ({err2}) — splitting deeper",
+                            flush=True,
+                        )
+                        saved_len = len(results)
+                        # Recursively convert this half (adds its results
+                        # to the outer `results` list as a side effect).
+                        _convert_chunk(pg, f"{label}_p{pi}",
+                                        pv_split_depth + 1)
+                        # Harvest results added by the recursive call so we
+                        # can merge them together with the other halves, then
+                        # remove them from `results` (they'll be re-added as
+                        # part of the merged chunk_path below).
+                        new_results = results[saved_len:]
+                        part_results.extend(new_results)
+                        del results[saved_len:]
+
+                if part_results:
+                    if fmt in ("gltf", "glb") and len(part_results) > 1:
+                        try:
+                            _merge_gltf_files(part_results, chunk_path,
+                                              chunk_path.stem)
+                            for p in part_results:
+                                if (p.resolve() != chunk_path.resolve()
+                                        and p.exists()):
+                                    p.unlink()
+                            results.append(chunk_path)
+                        except Exception as merge_exc:
+                            print(
+                                f"  [{_ts()}] [PV-SPLIT] Merge failed "
+                                f"({merge_exc}) — keeping individual parts",
+                                flush=True,
+                            )
+                            results.extend(part_results)
+                    else:
+                        results.extend(part_results)
+                else:
+                    print(
+                        f"  [{_ts()}] [PV-SPLIT] No parts succeeded for "
+                        f"{label} — chunk skipped",
+                        flush=True,
+                    )
+
+                # Clean up temporary part GDMLs
+                for pg in part_gdmls:
+                    try:
+                        Path(pg).unlink()
+                    except Exception:
+                        pass
+
+                gc.collect()
+                gc.collect()
+                return
+
+        # ---- Last resort: outer-primitive fallback ----
+        # Reached when physvol splitting cannot help (e.g. single physvol
+        # still hangs because the solid definition itself is pathological).
+        print(
+            f"  [{_ts()}] [FALLBACK] {label}: physvol split exhausted — "
+            f"retrying with outer-primitive solid replacement",
+            flush=True,
+        )
+        fallback_gdml = _replace_booleans_with_outer_primitive(Path(chunk_gdml))
+        ok3, partial3, err3 = _run_chunk_with_timeout(
+            fallback_gdml, chunk_path, fmt, t_total, chunk_timeout)
+        if ok3:
+            results.extend(partial3)
+            print(
+                f"  [{_ts()}] [FALLBACK] {label}: outer-primitive fallback "
+                f"succeeded",
+                flush=True,
+            )
+        else:
+            print(
+                f"  [{_ts()}] [ERROR] {label}: outer-primitive fallback also "
+                f"failed ({err3}) — skipping chunk",
+                flush=True,
+            )
+        if fallback_gdml != Path(chunk_gdml):
+            try:
+                fallback_gdml.unlink()
+            except Exception:
+                pass
+
         # Aggressively release VTK/pyg4ometry objects from the previous chunk.
-        # VTK render windows and mappers hold large C++ allocations that Python
-        # gc alone won't reclaim.  Delete the viewer/registry references and
-        # collect twice to break weak references and ref cycles.
         gc.collect()
         gc.collect()
 
@@ -1589,10 +1983,12 @@ def _offscreen_viewer() -> pg4.visualisation.VtkViewer:
 
 
 def convert_gdml(
-    input_path: str | Path,
-    output_path: str | Path,
+    input_path: "str | Path",
+    output_path: "str | Path",
     fmt: str = "gltf",
     simplify: bool = True,
+    chunk_timeout: "int | None" = None,
+    skip_existing: bool = False,
 ) -> "list[Path]":
     """
     Convert a GDML file to OBJ, GLTF (or GLB), or VTP.
@@ -1605,13 +2001,20 @@ def convert_gdml(
 
     Parameters
     ----------
-    input_path  : path to the input GDML file
-    output_path : path for the primary output file; when auto-splitting, sibling
-                  files named <stem>_det<NNN>_<lv_name>.<fmt> are written
-    fmt         : one of 'gltf', 'glb', 'obj', 'vtp'
-                  (inferred from output_path suffix when not supplied)
-    simplify    : if True, strip internal structure and keep only envelope
-                  shapes for each sub-detector (fast "essence" mode)
+    input_path     : path to the input GDML file
+    output_path    : path for the primary output file; when auto-splitting,
+                     sibling files named <stem>_det<NNN>_<lv_name>.<fmt>
+                     are written
+    fmt            : one of 'gltf', 'glb', 'obj', 'vtp'
+                     (inferred from output_path suffix when not supplied)
+    simplify       : if True, strip internal structure and keep only envelope
+                     shapes for each sub-detector (fast "essence" mode)
+    chunk_timeout  : per-chunk subprocess timeout in seconds.  When set, each
+                     auto-split chunk runs in a child process and is killed after
+                     this many seconds.  On timeout the chunk is split in half by
+                     physvol placement index and each half retried recursively.
+    skip_existing  : if True, skip any chunk whose output file already exists
+                     and is non-empty (resume an interrupted run).
 
     Returns
     -------
@@ -1662,8 +2065,12 @@ def convert_gdml(
         print(f"  [{_ts()}] Scene is complex ({'; '.join(reason)}) — going "
               f"directly to auto-split (per-chunk limits provide memory safety)",
               flush=True)
-        return _auto_split_and_convert(gdml_to_process, output_path, fmt, t_total,
-                                       simplify=simplify)
+        return _auto_split_and_convert(
+            gdml_to_process, output_path, fmt, t_total,
+            simplify=simplify,
+            chunk_timeout=chunk_timeout,
+            skip_existing=skip_existing,
+        )
 
     # ---- Pre-process GDML: limit repeated physical-volume placements ----
     # Only for single-pass conversion (small scenes).
