@@ -348,8 +348,30 @@ def _simplify_gdml_envelopes(
         mat = _material(vol_el)
 
         if mat in _AIR_MATERIALS:
-            # Air/Vacuum container — convert to <assembly> so pyg4ometry
-            # won't tessellate the envelope solid (no big cylinder mesh).
+            # Check if all children are leaves (no grandchildren) FIRST,
+            # before deciding whether to convert to assembly.
+            all_leaves = True
+            for pv in pvs:
+                cn = _volref(pv)
+                if cn is None:
+                    continue
+                cv = vol_index.get(cn)
+                if cv is not None and (_is_assembly(cv) or _get_pvs(cv)):
+                    all_leaves = False
+                    break
+
+            if all_leaves:
+                # Module-level Air container (e.g. tracker module box).
+                # Keep the solid envelope so it renders as a visible shape
+                # in the visualisation — this IS the detector geometry we
+                # want.  Only strip the internal components (silicon,
+                # kapton, etc.) which are too fine for overview rendering.
+                _remove_pvs(vol_el)
+                return
+
+            # Non-leaf Air/Vacuum container (e.g. tracker layer/disk) —
+            # convert to <assembly> so pyg4ometry won't tessellate the
+            # large envelope solid (avoids big cylinder/tube meshes).
             solidref = vol_el.find(tag("solidref"))
             if solidref is None:
                 solidref = vol_el.find("solidref")
@@ -362,26 +384,10 @@ def _simplify_gdml_envelopes(
                 vol_el.remove(matref)
             vol_el.tag = "assembly"
 
-            # Check if all children are leaves (no grandchildren).
-            # If so, this is a module-level container — strip internal
-            # components entirely (silicon, kapton, etc. aren't useful
-            # for visualization; only the module envelope matters).
-            all_leaves = True
-            for pv in pvs:
+            for pv in list(pvs):
                 cn = _volref(pv)
-                if cn is None:
-                    continue
-                cv = vol_index.get(cn)
-                if cv is not None and (_is_assembly(cv) or _get_pvs(cv)):
-                    all_leaves = False
-                    break
-            if all_leaves:
-                _remove_pvs(vol_el)
-            else:
-                for pv in list(pvs):
-                    cn = _volref(pv)
-                    if cn:
-                        _simplify_tracker(cn)
+                if cn:
+                    _simplify_tracker(cn)
             return
 
         # Non-Air volume with children → module. Strip children.
