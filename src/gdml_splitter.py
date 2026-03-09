@@ -325,8 +325,9 @@ def split_gdml(
         c = _Collector(defines, materials, solids_map, logvols)
         c.collect_logvol(lv_name)
         c.collect_placement_defines(placement_pv)
-        if world_solid_name:
-            c.collect_solid(world_solid_name)
+        # Do NOT collect the real world solid — it is a large bounding box
+        # that would render as visible geometry.  A tiny dummy box is written
+        # instead (see _write_subdetector_gdml).
         _log(
             f"    Collected in {time.monotonic() - t0:.1f}s: "
             f"{len(c.logvol_order)} logvols, {len(c.solid_order)} solids, "
@@ -413,7 +414,16 @@ def _write_subdetector_gdml(
         fh.write(b'  </materials>\n')
 
         # <solids> — topological order (boolean children before parents)
+        # A tiny 1 mm dummy box is added first as the world solid so that
+        # pyg4ometry has a valid <volume> world, but it is invisible at
+        # detector scales and is excluded from the Air→assembly conversion
+        # in the converter's simplifier.
+        _WORLD_DUMMY_SOLID = "_DDGeoViz_WorldBox_"
         fh.write(b'  <solids>\n')
+        fh.write(
+            f'    <box name="{_WORLD_DUMMY_SOLID}" '
+            f'x="1.0" y="1.0" z="1.0" lunit="mm"/>\n'.encode()
+        )
         for name in collector.solid_order:
             el = solids_map.get(name)
             if el is not None:
@@ -429,10 +439,10 @@ def _write_subdetector_gdml(
                 fh.write(b'    ')
                 fh.write(etree.tostring(el, pretty_print=True))
 
-        # Minimal world volume containing only this sub-detector
+        # Minimal world volume containing only this sub-detector.
+        # References the tiny dummy box so the world envelope does not render.
         fh.write(f'    <volume name="{new_world_name}">\n'.encode())
-        if world_solid_name:
-            fh.write(f'      <solidref ref="{world_solid_name}"/>\n'.encode())
+        fh.write(f'      <solidref ref="{_WORLD_DUMMY_SOLID}"/>\n'.encode())
         fh.write(b'      <materialref ref="G4_AIR"/>\n')
         fh.write(b'      ')
         fh.write(etree.tostring(placement_pv, pretty_print=True))

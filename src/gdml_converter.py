@@ -260,7 +260,10 @@ def _simplify_gdml_envelopes(
             return
 
         if _is_assembly(vol_el):
-            _thin_assembly(vol_el)
+            # Do NOT thin calo assemblies: the same stave/module logical
+            # volume is placed many times at different phi angles to give full
+            # 4π coverage.  _thin_assembly would keep only the first placement
+            # and drop all others, leaving just a single azimuthal slice.
             for pv in _get_pvs(vol_el):
                 cn = _volref(pv)
                 if cn:
