@@ -2154,6 +2154,8 @@ def _setup_render_and_compositor(scene):
         ls.select_material_boundary = True
         # Visible dark lines — 1.0 px works well at 4K (3840×2160).
         # Previous 0.3 px was sub-pixel and invisible after denoising.
+        if ls.linestyle is None:
+            raise RuntimeError("linestyle is None — Freestyle not available")
         ls.linestyle.color     = (0.05, 0.05, 0.05)  # near-black
         ls.linestyle.thickness = 1.0                  # 1 px — visible at 4K
         ls.linestyle.alpha     = 0.85                 # mostly opaque
@@ -2163,6 +2165,13 @@ def _setup_render_and_compositor(scene):
               flush=True)
     except Exception as exc:
         print(f"  [RENDER] Freestyle setup failed: {exc}", flush=True)
+        # Disable Freestyle so a partially-configured lineset doesn't
+        # leave Blender in an inconsistent state that segfaults on save.
+        try:
+            scene.view_layers[0].use_freestyle = False
+            scene.render.use_freestyle = False
+        except Exception:
+            pass
 
     # Compositor — Glare node for IP glow bloom.
     # The compositor API changed substantially in Blender 5.0 (node properties
