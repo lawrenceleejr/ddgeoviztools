@@ -2138,40 +2138,43 @@ def _setup_render_and_compositor(scene):
     # Freestyle — draw edge lines on every visible mesh edge so that
     # adjacent coplanar faces remain distinguishable and the cutaway
     # reveals clean structural outlines.
-    try:
-        vl = scene.view_layers[0]
-        vl.use_freestyle = True
-        scene.render.use_freestyle = True
-        # Ensure at least one lineset exists (some Blender builds start empty)
-        if not vl.freestyle_settings.linesets:
-            vl.freestyle_settings.linesets.new("EdgeLines")
-        ls = vl.freestyle_settings.linesets[0]
-        # Edge types: silhouette + border + crease + material boundary + edge mark
-        ls.select_silhouette       = True
-        ls.select_border           = True
-        ls.select_crease           = True
-        ls.select_edge_mark        = True
-        ls.select_material_boundary = True
-        # Visible dark lines — 1.0 px works well at 4K (3840×2160).
-        # Previous 0.3 px was sub-pixel and invisible after denoising.
-        if ls.linestyle is None:
-            raise RuntimeError("linestyle is None — Freestyle not available")
-        ls.linestyle.color     = (0.05, 0.05, 0.05)  # near-black
-        ls.linestyle.thickness = 1.0                  # 1 px — visible at 4K
-        ls.linestyle.alpha     = 0.85                 # mostly opaque
-        # Crease angle: edges sharper than this are drawn
-        vl.freestyle_settings.crease_angle = math.radians(20)
-        print("  [RENDER] Freestyle edge lines enabled (1.0 px, 20° crease)",
-              flush=True)
-    except Exception as exc:
-        print(f"  [RENDER] Freestyle setup failed: {exc}", flush=True)
-        # Disable Freestyle so a partially-configured lineset doesn't
-        # leave Blender in an inconsistent state that segfaults on save.
+    # Blender 5.0 removed the Freestyle linestyle data block and leaves
+    # ls.linestyle as None; accessing it or even keeping the lineset in
+    # the file causes a SIGSEGV on save.  Skip entirely on 5.0+.
+    if bpy.app.version < (5, 0, 0):
         try:
-            scene.view_layers[0].use_freestyle = False
-            scene.render.use_freestyle = False
-        except Exception:
-            pass
+            vl = scene.view_layers[0]
+            vl.use_freestyle = True
+            scene.render.use_freestyle = True
+            # Ensure at least one lineset exists (some Blender builds start empty)
+            if not vl.freestyle_settings.linesets:
+                vl.freestyle_settings.linesets.new("EdgeLines")
+            ls = vl.freestyle_settings.linesets[0]
+            # Edge types: silhouette + border + crease + material boundary + edge mark
+            ls.select_silhouette       = True
+            ls.select_border           = True
+            ls.select_crease           = True
+            ls.select_edge_mark        = True
+            ls.select_material_boundary = True
+            # Visible dark lines — 1.0 px works well at 4K (3840×2160).
+            # Previous 0.3 px was sub-pixel and invisible after denoising.
+            ls.linestyle.color     = (0.05, 0.05, 0.05)  # near-black
+            ls.linestyle.thickness = 1.0                  # 1 px — visible at 4K
+            ls.linestyle.alpha     = 0.85                 # mostly opaque
+            # Crease angle: edges sharper than this are drawn
+            vl.freestyle_settings.crease_angle = math.radians(20)
+            print("  [RENDER] Freestyle edge lines enabled (1.0 px, 20° crease)",
+                  flush=True)
+        except Exception as exc:
+            print(f"  [RENDER] Freestyle setup failed: {exc}", flush=True)
+            try:
+                scene.view_layers[0].use_freestyle = False
+                scene.render.use_freestyle = False
+            except Exception:
+                pass
+    else:
+        print("  [INFO] Freestyle skipped (Blender 5.0+ removed linestyle support).",
+              flush=True)
 
     # Compositor — Glare node for IP glow bloom.
     # The compositor API changed substantially in Blender 5.0 (node properties
