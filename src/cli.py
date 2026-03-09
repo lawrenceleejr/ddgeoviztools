@@ -35,7 +35,7 @@ def _convert_worker(args_tuple):
         lv_name, gdml_path, out_path, fmt, simplify = args_tuple
     else:
         lv_name, gdml_path, out_path, fmt = args_tuple
-        simplify = False
+        simplify = True  # default on for legacy 4-tuple callers
     # Re-import inside child so env vars are set before vtk loads
     from gdml_converter import convert_gdml
     try:
@@ -124,7 +124,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
         )
         return 1
 
-    simplify = getattr(args, "simplify", False)
+    simplify = not getattr(args, "no_simplify", False)
     print(f"Converting {args.gdml_file}  →  {output_path}  [{fmt.upper()}]", flush=True)
     if simplify:
         print("  Simplify mode: keeping envelope shapes only (no internal structure)", flush=True)
@@ -156,7 +156,7 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
     gdml_dir   = output_dir / "gdml"
     timeout    = args.timeout      # seconds per detector, or None
     parallel   = args.parallel     # number of workers, or 1 for serial
-    simplify   = getattr(args, "simplify", False)
+    simplify   = not getattr(args, "no_simplify", False)
     skip_set   = set()
     if args.skip_detectors:
         skip_set = {d.strip() for d in args.skip_detectors.split(",") if d.strip()}
@@ -423,12 +423,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format. Inferred from --output extension when omitted.",
     )
     p_conv.add_argument(
-        "--simplify", action="store_true",
+        "--simplify", action="store_true", default=True,
         help=(
-            "Physics-aware simplification: calorimeters keep per-layer shapes "
-            "(strip slices), trackers keep 1 module per type (strip components), "
-            "Air/Vacuum volumes produce no mesh. Much faster conversion."
+            "Physics-aware simplification (ON by default): calorimeters keep "
+            "per-layer shapes (strip slices), trackers keep module envelopes "
+            "(strip components), Air/Vacuum containers produce no mesh."
         ),
+    )
+    p_conv.add_argument(
+        "--no-simplify", action="store_true",
+        help="Disable physics-aware simplification (full detail, slower).",
     )
     p_conv.set_defaults(func=cmd_convert)
 
@@ -486,12 +490,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Abort on the first conversion failure (default: warn and continue).",
     )
     p_sc.add_argument(
-        "--simplify", action="store_true",
+        "--simplify", action="store_true", default=True,
         help=(
-            "Physics-aware simplification: calorimeters keep per-layer shapes "
-            "(strip slices), trackers keep 1 module per type (strip components), "
-            "Air/Vacuum volumes produce no mesh. Much faster conversion."
+            "Physics-aware simplification (ON by default): calorimeters keep "
+            "per-layer shapes (strip slices), trackers keep module envelopes "
+            "(strip components), Air/Vacuum containers produce no mesh."
         ),
+    )
+    p_sc.add_argument(
+        "--no-simplify", action="store_true",
+        help="Disable physics-aware simplification (full detail, slower).",
     )
     p_sc.set_defaults(func=cmd_split_convert)
 

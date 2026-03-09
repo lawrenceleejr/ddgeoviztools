@@ -1263,7 +1263,7 @@ def _auto_split_and_convert(
     output_path: "Path",
     fmt: str,
     t_total: float,
-    simplify: bool = False,
+    simplify: bool = True,
 ) -> "list[Path]":
     """
     Split *gdml_path* into per-sub-detector GDMLs using gdml_splitter, then
@@ -1585,7 +1585,7 @@ def convert_gdml(
     input_path: str | Path,
     output_path: str | Path,
     fmt: str = "gltf",
-    simplify: bool = False,
+    simplify: bool = True,
 ) -> "list[Path]":
     """
     Convert a GDML file to OBJ, GLTF (or GLB), or VTP.
