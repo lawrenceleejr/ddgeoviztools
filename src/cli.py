@@ -458,13 +458,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable physics-aware simplification (full detail, slower).",
     )
     p_conv.add_argument(
-        "--chunk-timeout", type=int, default=None, metavar="SECS",
+        "--chunk-timeout", type=int, default=1200, metavar="SECS",
         dest="chunk_timeout",
         help=(
             "Per auto-split chunk timeout in seconds.  If a single chunk "
             "takes longer than SECS, it is split in half by physvol placement "
             "index and each half retried independently.  Recommended: 1800. "
-            "Default: no limit."
+            "Default: 1200 (20 min)."
         ),
     )
     p_conv.add_argument(
@@ -541,7 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable physics-aware simplification (full detail, slower).",
     )
     p_sc.add_argument(
-        "--chunk-timeout", type=int, default=None, metavar="SECS",
+        "--chunk-timeout", type=int, default=1200, metavar="SECS",
         dest="chunk_timeout",
         help=(
             "Per auto-split chunk timeout in seconds.  If a single chunk "
@@ -550,7 +550,7 @@ def build_parser() -> argparse.ArgumentParser:
             "independently in a subprocess.  Halves are split recursively "
             "until they succeed.  Last resort: replace complex boolean solids "
             "with their outermost primitive.  Recommended: 1800 (30 min). "
-            "Default: no limit (original behaviour)."
+            "Default: 1200 (20 min)."
         ),
     )
     p_sc.add_argument(
