@@ -125,6 +125,81 @@ _TRACKER_RESPLIT_KEYS = (
 )
 
 
+def _unroll_shared_lvs(structure, vol_index, ns_pfx: str) -> int:
+    """
+    pyg4ometry renders each logical-volume name at most once, even when the
+    same LV is placed multiple times (e.g. 12 phi-symmetric staves in a
+    barrel calorimeter).  Only the first placement gets a VTK actor; all
+    others are silently skipped, leaving a single phi sector in the output.
+
+    Fix: repeatedly scan the structure for LV names referenced by more than
+    one physvol across the whole geometry.  For every extra reference, append
+    a uniquely-named shallow copy of that LV to the structure and redirect the
+    physvol.  Iterate until every LV is referenced at most once.
+
+    Because copies initially share their children, each pass propagates the
+    uniqueness requirement one level deeper.  Typically 3–5 passes suffice for
+    a full-depth barrel (barrel → stave_outer → stave_inner → layer → slice).
+    """
+    import copy as _copy
+    from collections import defaultdict
+
+    def _tag(local: str) -> str:
+        return f"{ns_pfx}{local}" if ns_pfx else local
+
+    def _get_pvs(el):
+        pvs = el.findall(_tag("physvol"))
+        return pvs if pvs else el.findall("physvol")
+
+    def _vref_el(pv):
+        vr = pv.find(_tag("volumeref"))
+        return vr if vr is not None else pv.find("volumeref")
+
+    total_new = 0
+    _MAX_PASSES = 25
+
+    for pass_n in range(_MAX_PASSES):
+        # Build child_name → [(parent_el, physvol, volumeref_el), …]
+        usages: dict = defaultdict(list)
+        for lv_el in list(structure):          # snapshot: skip newly added copies this pass
+            for pv in _get_pvs(lv_el):
+                vr = _vref_el(pv)
+                if vr is not None:
+                    child = vr.get("ref")
+                    if child:
+                        usages[child].append((lv_el, pv, vr))
+
+        changed = False
+        for child_name, uses in usages.items():
+            if len(uses) <= 1:
+                continue
+            child_el = vol_index.get(child_name)
+            if child_el is None:
+                continue
+            # Keep the first reference as-is; create unique copies for the rest.
+            # Naming: _u1, _u2, … to avoid collisions with other suffixes.
+            for i, (_, _, vr) in enumerate(uses[1:], 1):
+                new_name = f"{child_name}_u{i}"
+                if new_name not in vol_index:
+                    new_el = _copy.deepcopy(child_el)
+                    new_el.set("name", new_name)
+                    structure.append(new_el)
+                    vol_index[new_name] = new_el
+                    total_new += 1
+                    changed = True
+                vr.set("ref", new_name)
+
+        if not changed:
+            print(f"  [SIMPLIFY] LV-unroll: stable after {pass_n + 1} pass(es), "
+                  f"{total_new} unique copies created", flush=True)
+            break
+    else:
+        print(f"  [SIMPLIFY] LV-unroll: hit {_MAX_PASSES}-pass limit, "
+              f"{total_new} unique copies created", flush=True)
+
+    return total_new
+
+
 def _simplify_gdml_envelopes(
     gdml_path: "Path",
 ) -> "Path":
@@ -528,6 +603,13 @@ def _simplify_gdml_envelopes(
 
     print(f"  [SIMPLIFY] Done: removed {total_removed} physvols, "
           f"converted {air_converted} Air envelopes", flush=True)
+
+    # ------------------------------------------------------------------
+    # Unroll shared logical volumes so pyg4ometry creates one VTK actor
+    # per placement instead of re-using the first actor for all.
+    # Must run AFTER all simplification so we only copy the reduced tree.
+    # ------------------------------------------------------------------
+    _unroll_shared_lvs(structure, vol_index, ns_pfx)
 
     tmp = tempfile.NamedTemporaryFile(
         suffix=".gdml", delete=False, prefix="ddgeo_simplified_"
