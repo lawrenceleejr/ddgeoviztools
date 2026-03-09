@@ -1198,6 +1198,18 @@ def _run_chunk_with_timeout(
     """
     import multiprocessing as _mp
 
+    # Daemon processes cannot spawn children (raises "daemonic processes are
+    # not allowed to have children").  When we are already inside a daemon
+    # worker (e.g. a --parallel pool worker), fall back to a direct call in
+    # the current process — the outer pool timeout will still kill us if we
+    # exceed the per-detector limit.
+    if _mp.current_process().daemon:
+        try:
+            partial = _convert_single(chunk_gdml, chunk_path, fmt, t_total)
+            return True, partial, None
+        except Exception as exc:
+            return False, [], str(exc)
+
     ctx  = _mp.get_context("spawn")
     q    = ctx.Queue()
     proc = ctx.Process(
