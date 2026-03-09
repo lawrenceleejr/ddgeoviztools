@@ -2022,6 +2022,29 @@ def _convert_single(
         print(f"  [{_ts()}] Building geometry scene ...", flush=True)
         viewer = _offscreen_viewer()
         viewer.addLogicalVolume(world)
+
+        # Remove the 1 mm dummy-box actor that the splitter injects as the
+        # world solid (required to keep pyg4ometry happy with a valid
+        # <volume> world, but must not appear in the final GLTF).
+        # Real detector elements are always >> 10 mm; the dummy box is
+        # 1 mm on each side (diagonal ≈ 1.7 mm).
+        _actors_col = viewer.ren.GetActors()
+        _actors_col.InitTraversal()
+        _tiny = []
+        while True:
+            _a = _actors_col.GetNextActor()
+            if _a is None:
+                break
+            b = _a.GetBounds()
+            diag = ((b[1]-b[0])**2 + (b[3]-b[2])**2 + (b[5]-b[4])**2) ** 0.5
+            if diag < 10.0:   # mm — safely below any real detector element
+                _tiny.append(_a)
+        for _a in _tiny:
+            viewer.ren.RemoveActor(_a)
+        if _tiny:
+            print(f"  [{_ts()}] Removed {len(_tiny)} sub-10 mm world-box actor(s)",
+                  flush=True)
+
         n_actors = viewer.ren.GetActors().GetNumberOfItems()
         print(f"  [{_ts()}] Scene built ({_elapsed(t0)}) — {n_actors} VTK actors",
               flush=True)
