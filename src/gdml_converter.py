@@ -1329,14 +1329,41 @@ def _run_chunk_with_timeout(
 
     # Daemon processes cannot spawn children (raises "daemonic processes are
     # not allowed to have children").  When we are already inside a daemon
-    # worker (e.g. a --parallel pool worker), fall back to a direct call in
-    # the current process — the outer pool timeout will still kill us if we
-    # exceed the per-detector limit.
+    # worker (e.g. a --parallel pool worker), use SIGALRM (Linux/macOS) to
+    # enforce the timeout in the current process instead.
     if _mp.current_process().daemon:
+        import signal as _signal
+
+        class _AlarmTimeout(Exception):
+            pass
+
+        def _alarm_handler(signum, frame):
+            raise _AlarmTimeout()
+
+        # SIGALRM is only available on Unix and only usable in the main thread.
+        # Pool workers are the main thread of their process, so this works.
+        try:
+            old_handler = _signal.signal(_signal.SIGALRM, _alarm_handler)
+        except (AttributeError, OSError):
+            # Windows or non-main thread — run without timeout
+            try:
+                partial = _convert_single(chunk_gdml, chunk_path, fmt, t_total)
+                return True, partial, None
+            except Exception as exc:
+                return False, [], str(exc)
+
+        _signal.alarm(timeout_secs)
         try:
             partial = _convert_single(chunk_gdml, chunk_path, fmt, t_total)
+            _signal.alarm(0)
+            _signal.signal(_signal.SIGALRM, old_handler)
             return True, partial, None
+        except _AlarmTimeout:
+            _signal.signal(_signal.SIGALRM, old_handler)
+            return False, [], f"timed out after {timeout_secs}s"
         except Exception as exc:
+            _signal.alarm(0)
+            _signal.signal(_signal.SIGALRM, old_handler)
             return False, [], str(exc)
 
     ctx  = _mp.get_context("spawn")
