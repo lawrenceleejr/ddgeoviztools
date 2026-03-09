@@ -515,7 +515,17 @@ def _simplify_gdml_envelopes(
             return
 
         if _has_solid(vol_el):
-            _remove_pvs(vol_el)
+            # If this volume is made of Air/Vacuum, the later air→assembly pass
+            # will convert it to an assembly.  Stripping its children here would
+            # leave that assembly empty with nothing to render.  Instead, recurse
+            # so that the real-material descendants survive as visible geometry.
+            if _material(vol_el) in _AIR_MATERIALS:
+                for pv in _get_pvs(vol_el):
+                    cn = _volref(pv)
+                    if cn:
+                        _simplify_generic(cn)
+            else:
+                _remove_pvs(vol_el)
 
     # ------------------------------------------------------------------
     # Classify each world daughter and apply the right strategy
