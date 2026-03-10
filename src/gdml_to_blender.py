@@ -787,9 +787,20 @@ def _load_mesh(
     me = bpy.data.meshes.new(name)
     me.from_pydata(verts, [], faces)
     me.update()
-    # Shade smooth on every face of the base mesh (propagates through modifiers)
-    me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
+    # Shade smooth — mesh.shade_smooth() is the Blender 4.1+ API.
+    # In Blender 5.0 the per-face 'use_smooth' flag was removed from the
+    # internal mesh representation; foreach_set("use_smooth", …) writes to a
+    # legacy shim and can corrupt the CustomData layer table in a way that
+    # causes save_as_mainfile to crash with SIGSEGV.  Use shade_smooth() when
+    # available, otherwise skip smooth shading rather than risk corruption.
+    try:
+        me.shade_smooth()
+    except AttributeError:
+        pass   # Blender < 4.1 fallback: flat shading acceptable for vis
     me.update()
+    # Clean any degenerate / out-of-range mesh data before handing the mesh
+    # to Blender's modifier stack and serialiser.
+    me.validate(verbose=False, clean_customdata=True)
 
     obj = bpy.data.objects.new(name, me)
     bpy.data.scenes[0].collection.objects.link(obj)
@@ -1593,7 +1604,10 @@ def _add_environment_sphere(radius: float):
     bm.to_mesh(mesh)
     bm.free()
     mesh.update()
-    mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
+    try:
+        mesh.shade_smooth()
+    except AttributeError:
+        pass
     mesh.update()
 
     obj = bpy.data.objects.new("EnvironmentSphere", mesh)
@@ -2671,6 +2685,27 @@ def create_blender_scene(
     scene = bpy.data.scenes[0]
     _setup_render_and_compositor(scene)
     print(f"  [SETUP] Render settings done", flush=True)
+
+    # ---- Pre-save: validate meshes and log scene contents ----
+    # Blender 5.0 changed internal mesh data layouts; corrupted CustomData
+    # layers (e.g. stale smooth-shading flags) crash save_as_mainfile.
+    # validate(clean_customdata=True) removes any invalid attribute layers.
+    _mesh_issues = 0
+    for _m in bpy.data.meshes:
+        try:
+            if _m.validate(verbose=False, clean_customdata=True):
+                _mesh_issues += 1
+                print(f"  [SAVE] Cleaned mesh data: '{_m.name}'", flush=True)
+        except Exception as _e:
+            print(f"  [SAVE] WARNING mesh validation skipped for '{_m.name}': {_e}",
+                  flush=True)
+    print(f"  [SAVE] Meshes: {len(bpy.data.meshes)}  "
+          f"Materials: {len(bpy.data.materials)}  "
+          f"Node groups: {len(bpy.data.node_groups)}  "
+          f"Lights: {len(bpy.data.lights)}  "
+          f"Objects: {len(bpy.data.objects)}  "
+          f"Worlds: {len(bpy.data.worlds)}",
+          flush=True)
 
     # ---- Save ----
     output_path.parent.mkdir(parents=True, exist_ok=True)
