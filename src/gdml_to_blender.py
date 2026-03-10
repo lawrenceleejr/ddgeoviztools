@@ -2086,25 +2086,37 @@ def _setup_render_and_compositor(scene):
     scene.render.resolution_y          = 2160
     scene.render.resolution_percentage = 100
 
-    # Cycles samples
-    scene.cycles.samples         = 128
-    scene.cycles.use_denoising  = True
-    try:
-        scene.cycles.denoiser = "OPENIMAGEDENOISE"
-    except Exception:
-        pass  # older / newer bpy builds may not accept the string assignment
-
-    # Volumetric light transport — needed for the god-ray Volume Scatter sphere.
-    # Without explicit volume bounces Cycles may skip volume scattering entirely.
-    try:
-        scene.cycles.volume_bounces    = 4   # allow multiple volume scattering events
-        scene.cycles.volume_step_rate  = 1.0 # default stepping rate
-        scene.cycles.volume_max_steps  = 256 # enough to resolve fine shafts
-        print(f"  [RENDER] Volume bounces: {scene.cycles.volume_bounces}  "
-              f"step_rate: {scene.cycles.volume_step_rate}  "
-              f"max_steps: {scene.cycles.volume_max_steps}", flush=True)
-    except (AttributeError, TypeError) as exc:
-        print(f"  [RENDER] Volume settings not available: {exc}", flush=True)
+    # Cycles samples and denoising.
+    # In Blender 5.0+, setting use_denoising=True or denoiser="OPENIMAGEDENOISE"
+    # can trigger the OIDN plugin loader.  On a headless build where the OIDN
+    # shared library is not present this leaves a dangling plugin reference that
+    # crashes save_as_mainfile with SIGSEGV.  Skip on 5.0+; the user can enable
+    # denoising after opening the file on their rendering workstation.
+    # Volume settings are also skipped: the volume sphere is already excluded on
+    # 5.0+ so there is no reason to touch Cycles volume transport settings.
+    if bpy.app.version < (5, 0, 0):
+        scene.cycles.samples        = 128
+        scene.cycles.use_denoising  = True
+        try:
+            scene.cycles.denoiser = "OPENIMAGEDENOISE"
+        except Exception:
+            pass
+        try:
+            scene.cycles.volume_bounces    = 4
+            scene.cycles.volume_step_rate  = 1.0
+            scene.cycles.volume_max_steps  = 256
+            print(f"  [RENDER] Volume bounces: {scene.cycles.volume_bounces}  "
+                  f"step_rate: {scene.cycles.volume_step_rate}  "
+                  f"max_steps: {scene.cycles.volume_max_steps}", flush=True)
+        except (AttributeError, TypeError) as exc:
+            print(f"  [RENDER] Volume settings not available: {exc}", flush=True)
+    else:
+        try:
+            scene.cycles.samples = 128
+        except Exception:
+            pass
+        print("  [RENDER] Cycles: samples=128  "
+              "(denoising/volume skipped on Blender 5.0+ headless)", flush=True)
 
     # Colour management — cinematic tone mapping.
     # Blender 4.x uses "Filmic"; Blender 5.0+ replaced it with "AgX".
