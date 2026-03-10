@@ -2628,18 +2628,24 @@ def create_blender_scene(
     # phi-cut opening scatters photons inside this medium, producing visible
     # light shafts (god rays) when rendered with Cycles.
     # Both objects are render-only so they never clutter the editing viewport.
+    # Blender 5.0+ crashes in save_as_mainfile with any Volume material node
+    # tree (VolumeScatter, VolumePrincipled) — skip entirely on 5.0+.
     _phi_center_deg = (phi_min + phi_max) / 2.0 if not no_phi_cut else 45.0
-    vol_sphere = _add_volume_scatter_sphere(r * 1.75)
-    _link_to_collection(vol_sphere, col_lights)
-    if not no_phi_cut:
-        god_ray_spot = _add_god_ray_spot(
-            "Light_GodRay_Spot",
-            phi_center_deg=_phi_center_deg,
-            radius=r,
-            x_max=x_max,
-            energy_base=energy_base,
-        )
-        _link_to_collection(god_ray_spot, col_lights)
+    if bpy.app.version < (5, 0, 0):
+        vol_sphere = _add_volume_scatter_sphere(r * 1.75)
+        _link_to_collection(vol_sphere, col_lights)
+        if not no_phi_cut:
+            god_ray_spot = _add_god_ray_spot(
+                "Light_GodRay_Spot",
+                phi_center_deg=_phi_center_deg,
+                radius=r,
+                x_max=x_max,
+                energy_base=energy_base,
+            )
+            _link_to_collection(god_ray_spot, col_lights)
+    else:
+        print("  [INFO] God ray volume sphere skipped (Blender 5.0+ volume materials crash on save).",
+              flush=True)
 
     # ---- Render settings + compositor bloom ----
     print(f"  [SETUP] Configuring render settings ...", flush=True)
