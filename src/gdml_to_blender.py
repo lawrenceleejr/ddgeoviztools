@@ -829,7 +829,10 @@ def _add_solidify(obj, thickness_mm: float = 1.0):
     mod.thickness = thickness_mm
     mod.offset    = -1.0                  # keep outer surface in place
     mod.use_even_offset   = True          # uniform thickness on sloped faces
-    mod.use_quality_normals = True        # better shading on the new faces
+    try:
+        mod.use_quality_normals = True    # better shading (removed in Blender 5.0)
+    except AttributeError:
+        pass
     mod.use_rim_only      = False         # fill both rim and inner faces
     mod.use_rim           = True          # generate rim faces at open edges
     # Assign material index for the inner faces (rim + inside) so they
@@ -2067,12 +2070,16 @@ def _setup_render_and_compositor(scene):
     # Engine
     scene.render.engine = "CYCLES"
 
-    # Always set Cycles to GPU rendering.  The .blend file may be created
-    # on a headless build machine without a GPU, but will be opened for
-    # rendering on a workstation that has one.  Blender will automatically
-    # enumerate available GPU devices when the file is opened.
-    scene.cycles.device = "GPU"
-    print("  [RENDER] Cycles device set to GPU", flush=True)
+    # Set Cycles to GPU rendering so the .blend renders on a workstation GPU.
+    # In Blender 5.0+, setting GPU on a headless build without hardware triggers
+    # CUEW/HIP/Metal enumeration that can leave Cycles in an invalid state and
+    # crash save_as_mainfile.  Skip the device override on 5.0+; the user can
+    # select the render device when opening the file on their workstation.
+    if bpy.app.version < (5, 0, 0):
+        scene.cycles.device = "GPU"
+        print("  [RENDER] Cycles device set to GPU", flush=True)
+    else:
+        print("  [RENDER] Cycles device: not set (Blender 5.0+ — select on workstation)", flush=True)
 
     # Resolution — 4 K UHD
     scene.render.resolution_x          = 3840
