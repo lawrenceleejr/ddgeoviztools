@@ -372,7 +372,13 @@ def _slice_mesh_plane_np(
     # crossing edge instead of two.  The missing intersection index stays at
     # -1, which numpy interprets as the last vertex → wild triangles shooting
     # off to an arbitrary point in the mesh.
-    eps = 1e-8
+    #
+    # eps is 1e-3 mm (1 µm) — large enough to absorb float32 quantisation
+    # errors at GDML-scale coordinates (~2000 mm radius).  Vertices within
+    # 1 µm of the cut plane are treated as on-plane rather than positive/negative,
+    # which prevents near-zero-area sliver triangles at phi-sector seams where
+    # the GLTF exporter produced boundary vertices slightly off the exact cut plane.
+    eps = 1e-3
     sign = np.ones(len(d), dtype=np.int8)
     sign[d < -eps] = -1
 
