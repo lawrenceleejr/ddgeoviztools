@@ -589,17 +589,36 @@ def _cap_boundary_loops(mesh: "trimesh.Trimesh") -> "trimesh.Trimesh":
         # Add centroid as a new vertex
         center_idx = len(new_verts)
         new_verts.append(centroid)
-        # Compute a rough normal from the first few edges to orient winding
-        v0 = loop_verts[1] - loop_verts[0]
-        v1 = loop_verts[2] - loop_verts[0]
-        normal = np.cross(v0, v1)
-        # Fan direction: check winding against existing face normals.
-        # Use the average of nearby face normals as reference.
-        ref_normal = mesh.face_normals.mean(axis=0)
-        flip = np.dot(normal, ref_normal) < 0
-        for i in range(len(loop)):
+
+        # Determine winding order using the Newell method (area-weighted average
+        # of cross products around the polygon).  This gives a stable normal
+        # estimate for any planar or near-planar loop, regardless of vertex order.
+        # We then compare against the outward-facing normals of the mesh faces
+        # that *share* at least one boundary vertex, so the cap faces are
+        # consistently oriented outward.
+        n = len(loop)
+        newell_n = np.zeros(3)
+        for k in range(n):
+            a_v = loop_verts[k]
+            b_v = loop_verts[(k + 1) % n]
+            newell_n[0] += (a_v[1] - b_v[1]) * (a_v[2] + b_v[2])
+            newell_n[1] += (a_v[2] - b_v[2]) * (a_v[0] + b_v[0])
+            newell_n[2] += (a_v[0] - b_v[0]) * (a_v[1] + b_v[1])
+
+        # Reference: outward normals of faces adjacent to this boundary loop.
+        # Using only the boundary vertices' immediate face normals avoids the
+        # "mean-of-all-faces" heuristic which is unreliable for asymmetric cuts.
+        loop_set = set(loop)
+        adj_face_mask = np.any(np.isin(mesh.faces, list(loop_set)), axis=1)
+        if adj_face_mask.any():
+            ref_normal = mesh.face_normals[adj_face_mask].mean(axis=0)
+        else:
+            ref_normal = mesh.face_normals.mean(axis=0)
+
+        flip = np.dot(newell_n, ref_normal) < 0
+        for i in range(n):
             a = loop[i]
-            b = loop[(i + 1) % len(loop)]
+            b = loop[(i + 1) % n]
             if flip:
                 new_faces.append([center_idx, b, a])
             else:
@@ -611,6 +630,45 @@ def _cap_boundary_loops(mesh: "trimesh.Trimesh") -> "trimesh.Trimesh":
         process=True,
     )
     return result
+
+
+def _drop_sector_faces(
+    mesh: "trimesh.Trimesh",
+    phi_min: float,
+    phi_max: float,
+) -> "trimesh.Trimesh":
+    """
+    Remove any face whose centroid phi falls inside the removed sector
+    (phi_min, phi_max).  Used as a sanity pass after plane slicing to catch
+    the rare stray faces that survive numerical edge cases near the cut planes.
+
+    phi values use the same convention as the phi cutaway:
+        phi = atan2(-X_local, Y_local)
+
+    Both phi_min and phi_max are in radians.
+    """
+    if len(mesh.faces) == 0:
+        return mesh
+
+    c   = mesh.triangles_center          # (F, 3) centroid of each face
+    phi = np.arctan2(-c[:, 0], c[:, 1]) # phi of each centroid
+
+    # Normalise phi relative to phi_min so the sector is always [0, width]
+    # regardless of where it sits in the ±π range.
+    width = phi_max - phi_min            # positive, in (0, 2π)
+    phi_rel = (phi - phi_min + math.pi) % (2.0 * math.pi) - math.pi
+    # phi_rel ∈ [0, width) means "inside the removed sector"
+    eps_phi = 1e-6                       # radians ≈ 0.06 µrad — purely numerical guard
+    stray = (phi_rel > eps_phi) & (phi_rel < width - eps_phi)
+
+    if not stray.any():
+        return mesh
+
+    n_stray = int(stray.sum())
+    print(f"    [PHI-CLEAN] Dropping {n_stray} stray face(s) inside removed sector",
+          flush=True)
+    kept_faces = mesh.faces[~stray]
+    return trimesh.Trimesh(vertices=mesh.vertices, faces=kept_faces, process=True)
 
 
 def _phi_cut_np(
@@ -627,52 +685,78 @@ def _phi_cut_np(
         phi=0  → +Y_local   (after Ry+90°  →  +Y_blender = physics-up)
         phi=90 → −X_local   (after Ry+90°  →  +Z_blender = horiz transverse)
 
-    Strategy (sequential slicing to avoid face duplication):
-      1. Slice at the phi_min plane → LEFT = keep phi < phi_min
-      2. Slice the ORIGINAL at the phi_min plane with flipped normal → INNER =
-         keep phi >= phi_min (the sector + everything beyond phi_max)
-      3. Slice INNER at the phi_max plane → RIGHT = keep phi > phi_max
-      4. Concatenate LEFT + RIGHT
+    Uses trimesh's built-in ``slice_mesh_plane`` (battle-tested, handles all
+    edge cases) instead of the bespoke numpy slicer.  The sequential strategy
+    is the same as before:
 
-    The sequential approach (steps 2–3) ensures no face appears in both
-    halves, even when vertices lie exactly on the cut planes.
+      1. LEFT  = keep phi < phi_min  (positive side of normal_out_min)
+      2. INNER = keep phi ≥ phi_min  (positive side of −normal_out_min)
+      3. RIGHT = INNER ∩ phi > phi_max
+      4. Combine LEFT + RIGHT
 
-    New vertices are created at the exact edge–plane intersections, giving
-    clean, razor-sharp cut edges.  Pure numpy — no bmesh, no scipy.
+    A centroid-based sanity pass is run at the end to drop any stray faces
+    that numerically survived near the cut planes.
 
     Returns (new_vertices, new_faces).
     """
+    # Use trimesh's lower-level slice_faces_plane (no shapely dependency;
+    # slice_mesh_plane unconditionally imports trimesh.path.polygons → shapely).
+    from trimesh.intersections import slice_faces_plane as _sfp
+
     phi_min = math.radians(phi_min_deg)
     phi_max = math.radians(phi_max_deg)
-    origin = np.array([0.0, 0.0, 0.0])
+    origin  = np.zeros(3)
 
     # Normal at phi_min pointing AWAY from sector (toward phi < phi_min)
     normal_out_min = np.array([math.cos(phi_min), math.sin(phi_min), 0.0])
     # Normal at phi_max pointing AWAY from sector (toward phi > phi_max)
     normal_out_max = np.array([-math.cos(phi_max), -math.sin(phi_max), 0.0])
 
-    # Step 1: LEFT = slice keeping phi < phi_min
-    left_v, left_f = _slice_mesh_plane_np(vertices, faces, origin, normal_out_min)
+    def _slice(verts, faces_, normal):
+        """Slice keeping the positive-normal side; returns (verts, faces)."""
+        if len(faces_) == 0:
+            return verts, faces_
+        new_v, new_f, _ = _sfp(
+            vertices=verts, faces=faces_,
+            plane_normal=normal, plane_origin=origin,
+        )
+        return new_v, new_f
 
-    # Step 2: INNER = slice keeping phi >= phi_min (flipped normal)
-    inner_v, inner_f = _slice_mesh_plane_np(vertices, faces, origin, -normal_out_min)
+    # Step 1: LEFT = phi < phi_min
+    lv, lf = _slice(vertices, faces, normal_out_min)
+    # Step 2: INNER = phi ≥ phi_min  (flip normal)
+    iv, if_ = _slice(vertices, faces, -normal_out_min)
+    # Step 3: RIGHT = phi > phi_max  (applied to INNER only)
+    rv, rf = _slice(iv, if_, normal_out_max)
 
-    # Step 3: RIGHT = from INNER, keep only phi > phi_max
-    right_v, right_f = _slice_mesh_plane_np(inner_v, inner_f, origin, normal_out_max)
+    # Step 4: Concatenate LEFT + RIGHT
+    parts_v, parts_f = [], []
+    if len(lf) > 0:
+        parts_v.append(lv); parts_f.append(lf)
+    if len(rf) > 0:
+        parts_f.append(rf + len(parts_v[0]) if parts_v else rf)
+        parts_v.append(rv)
 
-    # Step 4: Concatenate LEFT + RIGHT (disjoint, no overlap)
-    n_left_v = len(left_v)
-    if len(left_f) > 0 and len(right_f) > 0:
-        combined_v = np.vstack([left_v, right_v])
-        combined_f = np.vstack([left_f, right_f + n_left_v])
-    elif len(left_f) > 0:
-        combined_v, combined_f = left_v, left_f
-    elif len(right_f) > 0:
-        combined_v, combined_f = right_v, right_f
+    if not parts_v:
+        return vertices[:0].copy(), np.empty((0, 3), dtype=np.int64)
+
+    if len(parts_v) == 1:
+        combined_v, combined_f = parts_v[0], parts_f[0]
     else:
-        return vertices[:0], faces[:0]   # empty mesh
+        n_left = len(lv)
+        combined_v = np.vstack([lv, rv])
+        combined_f  = np.vstack([lf, rf + n_left])
 
-    return combined_v, combined_f
+    # Merge seam vertices and remove any zero-area faces left by slicing
+    combined = trimesh.Trimesh(vertices=combined_v, faces=combined_f, process=True)
+
+    # Sanity pass: remove any faces whose centroid still falls in the sector
+    combined = _drop_sector_faces(combined, phi_min, phi_max)
+
+    return (
+        np.asarray(combined.vertices, dtype=np.float64),
+        np.asarray(combined.faces,    dtype=np.int64),
+    )
 
 
 def _load_mesh(
