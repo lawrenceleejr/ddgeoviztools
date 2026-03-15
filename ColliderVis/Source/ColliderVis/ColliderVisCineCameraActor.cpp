@@ -12,7 +12,7 @@ AColliderVisCineCameraActor::AColliderVisCineCameraActor()
 	{
 		// Anamorphic 50mm lens preset
 		CineCam->CurrentFocalLength  = 50.f;
-		CineCam->CurrentAperture     = 2.8f;
+		CineCam->CurrentAperture     = 1.8f;   // f/1.8 — shallower DoF, more cinematic
 
 		// Focus tracking — will be updated to event centroid each tick
 		CineCam->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
