@@ -17,7 +17,9 @@ public class ColliderVis : ModuleRules
 			"Json",
 			"JsonUtilities",
 			"CinematicCamera",
-			"ProceduralMeshComponent"
+			"ProceduralMeshComponent",
+			"HeadMountedDisplay",   // UMotionControllerComponent, IXRTrackingSystem
+			"XRBase"                // FXRMotionControllerBase source IDs
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

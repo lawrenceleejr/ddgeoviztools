@@ -16,6 +16,14 @@
 			"Enabled": true
 		},
 		{
+			"Name": "OpenXR",
+			"Enabled": true
+		},
+		{
+			"Name": "OpenXRHandTracking",
+			"Enabled": true
+		},
+		{
 			"Name": "CinematicCamera",
 			"Enabled": true
 		},
