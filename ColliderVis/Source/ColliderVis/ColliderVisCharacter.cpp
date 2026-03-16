@@ -1,4 +1,6 @@
+// Copyright ColliderVis Project. All Rights Reserved.
 #include "ColliderVisCharacter.h"
+#include "OrbitCameraActor.h"
 #include "EventDisplayManager.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -11,12 +13,12 @@
 
 AColliderVisCharacter::AColliderVisCharacter()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bCanEverTick = true;   // needed for arm-length zoom interpolation
 
 	// Spring Arm — cinematic lag for smooth follow
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(RootComponent);
-	CameraBoom->TargetArmLength          = 400.f;
+	CameraBoom->TargetArmLength          = DefaultArmLength;
 	CameraBoom->bUsePawnControlRotation  = true;
 	CameraBoom->bEnableCameraLag         = true;
 	CameraBoom->CameraLagSpeed           = 5.f;
@@ -55,6 +57,11 @@ void AColliderVisCharacter::BeginPlay()
 		EventDisplayManager = Cast<AEventDisplayManager>(Found[0]);
 	}
 
+	// Spawn the orbit camera at the world origin (detector centre).
+	// It stays there permanently; Tab swaps the view target to/from it.
+	OrbitCam = GetWorld()->SpawnActor<AOrbitCameraActor>(
+		AOrbitCameraActor::StaticClass(), FTransform::Identity);
+
 	// Register Enhanced Input mapping context
 	DiscoverInputAssets();
 
@@ -71,6 +78,20 @@ void AColliderVisCharacter::BeginPlay()
 	}
 }
 
+void AColliderVisCharacter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	// Smoothly interpolate the boom length for RMB zoom in third-person mode.
+	// In orbit mode there is nothing to interpolate here.
+	if (!bOrbitMode)
+	{
+		const float TargetLength = bZoomHeld ? ZoomedArmLength : DefaultArmLength;
+		CameraBoom->TargetArmLength = FMath::FInterpTo(
+			CameraBoom->TargetArmLength, TargetLength, DeltaTime, 8.f);
+	}
+}
+
 void AColliderVisCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	if (UEnhancedInputComponent* EIC = Cast<UEnhancedInputComponent>(PlayerInputComponent))
@@ -83,6 +104,12 @@ void AColliderVisCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 		if (OpenMenuAction)    EIC->BindAction(OpenMenuAction,    ETriggerEvent::Started,   this, &AColliderVisCharacter::OnOpenMenu);
 		if (SwitchModeAction)  EIC->BindAction(SwitchModeAction,  ETriggerEvent::Started,   this, &AColliderVisCharacter::OnSwitchMode);
 		if (ToggleDetectorMenuAction) EIC->BindAction(ToggleDetectorMenuAction, ETriggerEvent::Started, this, &AColliderVisCharacter::OnToggleDetectorMenu);
+
+		if (ZoomAction)
+		{
+			EIC->BindAction(ZoomAction, ETriggerEvent::Started,   this, &AColliderVisCharacter::OnZoomStarted);
+			EIC->BindAction(ZoomAction, ETriggerEvent::Completed, this, &AColliderVisCharacter::OnZoomCompleted);
+		}
 	}
 }
 
@@ -100,6 +127,9 @@ void AColliderVisCharacter::OnLanded(const FHitResult& Hit)
 
 void AColliderVisCharacter::Move(const FInputActionValue& Value)
 {
+	// Movement is disabled while in orbit mode — the character stays put.
+	if (bOrbitMode) return;
+
 	const FVector2D MovementVector = Value.Get<FVector2D>();
 	if (Controller)
 	{
@@ -117,8 +147,43 @@ void AColliderVisCharacter::Move(const FInputActionValue& Value)
 void AColliderVisCharacter::Look(const FInputActionValue& Value)
 {
 	const FVector2D LookAxis = Value.Get<FVector2D>();
-	AddControllerYawInput(LookAxis.X);
-	AddControllerPitchInput(LookAxis.Y);
+
+	if (bOrbitMode)
+	{
+		// Route mouse look to the orbit camera instead of the controller rotation.
+		if (OrbitCam)
+		{
+			OrbitCam->AddOrbitInput(LookAxis.X, -LookAxis.Y);
+		}
+	}
+	else
+	{
+		AddControllerYawInput(LookAxis.X);
+		AddControllerPitchInput(LookAxis.Y);
+	}
+}
+
+void AColliderVisCharacter::OnSwitchMode(const FInputActionValue& Value)
+{
+	if (!OrbitCam) return;
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC) return;
+
+	bOrbitMode = !bOrbitMode;
+
+	if (bOrbitMode)
+	{
+		// Switch view to the orbit camera — smooth 0.4 s cubic blend.
+		PC->SetViewTargetWithBlend(OrbitCam, 0.4f, VTBlend_Cubic);
+	}
+	else
+	{
+		// Return to the follow camera on this character.
+		PC->SetViewTargetWithBlend(this, 0.4f, VTBlend_Cubic);
+		// Reset arm length so any zoom state is cleared on re-entry.
+		bZoomHeld = false;
+	}
 }
 
 void AColliderVisCharacter::OnNextEvent(const FInputActionValue& Value)
@@ -135,16 +200,23 @@ void AColliderVisCharacter::OnOpenMenu(const FInputActionValue& Value)
 	// The WBP_EventMenu widget handles show/hide in Blueprint
 }
 
-void AColliderVisCharacter::OnSwitchMode(const FInputActionValue& Value)
-{
-	// Switch to Viz game mode
-	UGameplayStatics::OpenLevel(GetWorld(), FName(*GetWorld()->GetName()), false,
-	                             TEXT("game=/Script/ColliderVis.ColliderVisVizGameMode"));
-}
-
 void AColliderVisCharacter::OnToggleDetectorMenu(const FInputActionValue& Value)
 {
 	// Handled by Blueprint HUD via Blueprint implementable event
+}
+
+void AColliderVisCharacter::OnZoomStarted(const FInputActionValue& Value)
+{
+	// Only zoom in third-person; ignore RMB while orbiting.
+	if (!bOrbitMode)
+	{
+		bZoomHeld = true;
+	}
+}
+
+void AColliderVisCharacter::OnZoomCompleted(const FInputActionValue& Value)
+{
+	bZoomHeld = false;
 }
 
 void AColliderVisCharacter::DiscoverInputAssets()
@@ -166,4 +238,6 @@ void AColliderVisCharacter::DiscoverInputAssets()
 		SwitchModeAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_SwitchMode.IA_SwitchMode"));
 	if (!ToggleDetectorMenuAction)
 		ToggleDetectorMenuAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_ToggleDetectorMenu.IA_ToggleDetectorMenu"));
+	if (!ZoomAction)
+		ZoomAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_Zoom.IA_Zoom"));
 }

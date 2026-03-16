@@ -1,3 +1,4 @@
+// Copyright ColliderVis Project. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -10,10 +11,15 @@ class UCameraComponent;
 class UInputMappingContext;
 class UInputAction;
 class AEventDisplayManager;
+class AOrbitCameraActor;
 
 /**
  * Third-person playable character for Explore mode.
  * Uses Enhanced Input System exclusively — no legacy bindings.
+ *
+ * Tab         — toggles between third-person follow camera and orbit camera
+ *               (fixed pivot at world origin / detector centre, mouse rotates).
+ * RMB (held)  — zooms the third-person spring arm in toward the character.
  */
 UCLASS(BlueprintType, Blueprintable)
 class COLLIDERVIS_API AColliderVisCharacter : public ACharacter
@@ -29,6 +35,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaTime) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void OnLanded(const FHitResult& Hit) override;
 
@@ -61,11 +68,30 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
 	UInputAction* OpenMenuAction;
 
+	/** Tab — toggles between third-person and orbit camera */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
 	UInputAction* SwitchModeAction;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
 	UInputAction* ToggleDetectorMenuAction;
+
+	/** RMB — zoom in while in third-person mode */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
+	UInputAction* ZoomAction;
+
+	// ---- Orbit Camera ----
+
+	/** Spawned once in BeginPlay; lives at the world origin (detector centre). */
+	UPROPERTY()
+	AOrbitCameraActor* OrbitCam;
+
+	bool bOrbitMode = false;
+
+	// ---- Third-person RMB Zoom ----
+
+	bool  bZoomHeld        = false;
+	float DefaultArmLength = 400.f;
+	float ZoomedArmLength  = 150.f;
 
 	// ---- Input Handlers ----
 
@@ -75,6 +101,8 @@ private:
 	void OnOpenMenu(const FInputActionValue& Value);
 	void OnSwitchMode(const FInputActionValue& Value);
 	void OnToggleDetectorMenu(const FInputActionValue& Value);
+	void OnZoomStarted(const FInputActionValue& Value);
+	void OnZoomCompleted(const FInputActionValue& Value);
 
 	/** Subtle landing camera shake */
 	UPROPERTY(EditAnywhere, Category = "Camera", meta = (AllowPrivateAccess = "true"))
