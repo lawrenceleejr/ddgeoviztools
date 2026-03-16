@@ -2,6 +2,8 @@
 #include "ColliderVisCharacter.h"
 #include "OrbitCameraActor.h"
 #include "EventDisplayManager.h"
+#include "DetectorVisibilityManager.h"
+#include "DetectorVisibilityConfig.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -55,6 +57,14 @@ void AColliderVisCharacter::BeginPlay()
 	if (Found.Num() > 0)
 	{
 		EventDisplayManager = Cast<AEventDisplayManager>(Found[0]);
+	}
+
+	// Find DetectorVisibilityManager in level
+	Found.Empty();
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ADetectorVisibilityManager::StaticClass(), Found);
+	if (Found.Num() > 0)
+	{
+		VisibilityManager = Cast<ADetectorVisibilityManager>(Found[0]);
 	}
 
 	// Spawn the orbit camera at the world origin (detector centre).
@@ -117,6 +127,11 @@ void AColliderVisCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 		{
 			EIC->BindAction(ZoomAction, ETriggerEvent::Started,   this, &AColliderVisCharacter::OnZoomStarted);
 			EIC->BindAction(ZoomAction, ETriggerEvent::Completed, this, &AColliderVisCharacter::OnZoomCompleted);
+		}
+
+		if (DetectorKeyAction)
+		{
+			EIC->BindAction(DetectorKeyAction, ETriggerEvent::Started, this, &AColliderVisCharacter::OnDetectorKey);
 		}
 	}
 }
@@ -223,6 +238,25 @@ void AColliderVisCharacter::OnZoomCompleted(const FInputActionValue& Value)
 	bZoomHeld = false;
 }
 
+void AColliderVisCharacter::OnDetectorKey(const FInputActionValue& Value)
+{
+	if (!VisibilityManager || !VisibilityManager->Config) return;
+
+	// The float value is set by the Scalar input modifier on each key mapping:
+	// key 1 → 1.0, key 2 → 2.0, … key 9 → 9.0.
+	const int32 Slot = FMath::RoundToInt(Value.Get<float>());
+	if (Slot < 1 || Slot > 9) return;
+
+	for (const FSubDetectorEntry& Entry : VisibilityManager->Config->SubDetectors)
+	{
+		if (Entry.HotkeySlot == Slot)
+		{
+			VisibilityManager->ToggleSubDetector(Entry.Name);
+			break;
+		}
+	}
+}
+
 void AColliderVisCharacter::DiscoverInputAssets()
 {
 	// Only load if not already assigned via Blueprint defaults
@@ -244,4 +278,6 @@ void AColliderVisCharacter::DiscoverInputAssets()
 		ToggleDetectorMenuAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_ToggleDetectorMenu.IA_ToggleDetectorMenu"));
 	if (!ZoomAction)
 		ZoomAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_Zoom.IA_Zoom"));
+	if (!DetectorKeyAction)
+		DetectorKeyAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_DetectorKey.IA_DetectorKey"));
 }

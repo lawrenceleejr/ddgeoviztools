@@ -12,6 +12,7 @@ class UInputMappingContext;
 class UInputAction;
 class AEventDisplayManager;
 class AOrbitCameraActor;
+class ADetectorVisibilityManager;
 
 /**
  * Third-person playable character for Explore mode.
@@ -79,11 +80,23 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
 	UInputAction* ZoomAction;
 
+	/**
+	 * Single Axis1D action bound to keys 1–9 via scalar modifiers in IMC_Default.
+	 * The float value encodes which slot was pressed (1.0 = key 1 … 9.0 = key 9).
+	 * Each DA_DetectorVisibility entry's HotkeySlot field selects which key maps to it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
+	UInputAction* DetectorKeyAction;
+
 	// ---- Orbit Camera ----
 
 	/** Spawned once in BeginPlay; lives at the world origin (detector centre). */
 	UPROPERTY()
 	AOrbitCameraActor* OrbitCam;
+
+	/** Found in BeginPlay; drives sub-detector visibility via number keys. */
+	UPROPERTY()
+	ADetectorVisibilityManager* VisibilityManager;
 
 	bool bOrbitMode = false;
 
@@ -108,6 +121,7 @@ private:
 	void OnToggleDetectorMenu(const FInputActionValue& Value);
 	void OnZoomStarted(const FInputActionValue& Value);
 	void OnZoomCompleted(const FInputActionValue& Value);
+	void OnDetectorKey(const FInputActionValue& Value);
 
 	/** Subtle landing camera shake */
 	UPROPERTY(EditAnywhere, Category = "Camera", meta = (AllowPrivateAccess = "true"))
