@@ -86,9 +86,17 @@ void AColliderVisCharacter::Tick(float DeltaTime)
 	// In orbit mode there is nothing to interpolate here.
 	if (!bOrbitMode)
 	{
+		// Third-person: RMB zooms the follow camera toward the character.
 		const float TargetLength = bZoomHeld ? ZoomedArmLength : DefaultArmLength;
 		CameraBoom->TargetArmLength = FMath::FInterpTo(
 			CameraBoom->TargetArmLength, TargetLength, DeltaTime, 8.f);
+	}
+	else if (OrbitCam)
+	{
+		// Orbit mode: RMB zooms the orbit radius toward/away from the origin.
+		const float TargetRadius = bZoomHeld ? ZoomedOrbitRadius : DefaultOrbitRadius;
+		OrbitCam->Arm->TargetArmLength = FMath::FInterpTo(
+			OrbitCam->Arm->TargetArmLength, TargetRadius, DeltaTime, 6.f);
 	}
 }
 
@@ -207,11 +215,7 @@ void AColliderVisCharacter::OnToggleDetectorMenu(const FInputActionValue& Value)
 
 void AColliderVisCharacter::OnZoomStarted(const FInputActionValue& Value)
 {
-	// Only zoom in third-person; ignore RMB while orbiting.
-	if (!bOrbitMode)
-	{
-		bZoomHeld = true;
-	}
+	bZoomHeld = true;   // works in both third-person (arm) and orbit (radius) modes
 }
 
 void AColliderVisCharacter::OnZoomCompleted(const FInputActionValue& Value)

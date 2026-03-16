@@ -93,6 +93,11 @@ private:
 	float DefaultArmLength = 400.f;
 	float ZoomedArmLength  = 150.f;
 
+	// ---- Orbit RMB Zoom ----
+
+	float DefaultOrbitRadius = 1200.f;   // matches AOrbitCameraActor constructor
+	float ZoomedOrbitRadius  = 250.f;    // close enough to inspect detector detail
+
 	// ---- Input Handlers ----
 
 	void Move(const FInputActionValue& Value);
