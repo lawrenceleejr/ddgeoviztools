@@ -1,5 +1,6 @@
 #include "ColliderVisGameMode.h"
 #include "ColliderVisCharacter.h"
+#include "ColliderVisHUD.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/RectLight.h"
@@ -14,6 +15,7 @@
 AColliderVisGameMode::AColliderVisGameMode()
 {
 	DefaultPawnClass = AColliderVisCharacter::StaticClass();
+	HUDClass         = AColliderVisHUD::StaticClass();
 }
 
 void AColliderVisGameMode::BeginPlay()

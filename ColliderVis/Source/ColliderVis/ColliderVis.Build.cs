@@ -27,5 +27,11 @@ public class ColliderVis : ModuleRules
 			"Slate",
 			"SlateCore"
 		});
+
+		// Native OS file picker for the options menu (not available on Android/Quest)
+		if (Target.Platform != UnrealTargetPlatform.Android)
+		{
+			PrivateDependencyModuleNames.Add("DesktopPlatform");
+		}
 	}
 }

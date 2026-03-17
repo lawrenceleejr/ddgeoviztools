@@ -12,6 +12,7 @@
 #include "InputMappingContext.h"
 #include "InputAction.h"
 #include "Kismet/GameplayStatics.h"
+#include "ColliderVisHUD.h"
 
 AColliderVisCharacter::AColliderVisCharacter()
 {
@@ -219,13 +220,19 @@ void AColliderVisCharacter::OnNextEvent(const FInputActionValue& Value)
 
 void AColliderVisCharacter::OnOpenMenu(const FInputActionValue& Value)
 {
-	// Delegate to Blueprint via implementable event on the HUD or a widget manager
-	// The WBP_EventMenu widget handles show/hide in Blueprint
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		if (AColliderVisHUD* HUD = Cast<AColliderVisHUD>(PC->GetHUD()))
+		{
+			HUD->ToggleMenu();
+		}
+	}
 }
 
 void AColliderVisCharacter::OnToggleDetectorMenu(const FInputActionValue& Value)
 {
-	// Handled by Blueprint HUD via Blueprint implementable event
+	// V key opens the same unified options menu (detector section is inside it)
+	OnOpenMenu(Value);
 }
 
 void AColliderVisCharacter::OnZoomStarted(const FInputActionValue& Value)

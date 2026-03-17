@@ -15,10 +15,11 @@ input assets, materials, and packaging settings described here.
 4. [Create Materials](#4-create-materials)
 5. [Create Data Assets](#5-create-data-assets)
 6. [Set Up the Level](#6-set-up-the-level)
-7. [Advanced Rendering — Hyperrealism](#7-advanced-rendering--hyperrealism)
-8. [Android / Quest 3 Packaging (one-time)](#8-android--quest-3-packaging-one-time)
-9. [VR Mode](#9-vr-mode)
-10. [Building — Quest 3 & Mac](#10-building--quest-3--mac)
+7. [Options Menu (WBP_Options)](#7-options-menu-wbp_options)
+8. [Advanced Rendering — Hyperrealism](#8-advanced-rendering--hyperrealism)
+9. [Android / Quest 3 Packaging (one-time)](#9-android--quest-3-packaging-one-time)
+10. [VR Mode](#10-vr-mode)
+11. [Building — Quest 3 & Mac](#11-building--quest-3--mac)
 
 ---
 
@@ -215,13 +216,161 @@ workflow.
 
 ---
 
-## 7. Advanced Rendering — Hyperrealism
+---
+
+## 7. Options Menu (WBP_Options)
+
+The options menu opens when the player presses **Esc** (desktop) or the
+**left B / menu button** (Quest controller).  The C++ HUD (`AColliderVisHUD`)
+manages the widget lifecycle; your job is to create the visual Blueprint and
+implement a few events.
+
+### 7a. Create the folder and Widget Blueprint
+
+1. In the Content Browser, right-click → **New Folder** → name it `UI`.
+2. Inside `Content/UI/`, right-click → **User Interface → Widget Blueprint**.
+3. In the "Pick Parent Class" dialog:
+   - Click **All Classes** (top-right toggle).
+   - Search for `ColliderVisOptionsWidget`.
+   - Select it → **Create Widget Blueprint**.
+4. Name the asset exactly **`WBP_Options`**.
+   _(The C++ HUD auto-discovers it at `/Game/UI/WBP_Options` — this name matters.)_
+
+### 7b. Build the layout
+
+Open `WBP_Options` in the UMG Designer.  Here is a suggested layout.  You have
+complete visual freedom — the C++ doesn't care how it looks.
+
+```
+[Canvas Panel — fills screen]
+  └─ [Border — semi-transparent dark background, fills screen]
+       └─ [Vertical Box — centered, ~600px wide]
+            ├─ [Text "ColliderVis Options"  — heading]
+            │
+            ├─ ─── Events ────────────────────────────────
+            ├─ [Text — file path]          bound to CurrentFilePath variable
+            ├─ [Button "Browse / Load File"]
+            ├─ [Horizontal Box]
+            │    ├─ [Button "◀ Previous"]
+            │    ├─ [Text "Event 0 / 0"]  updated by OnEventStateChanged
+            │    └─ [Button "Next ▶"]
+            │
+            ├─ ─── Detector Visibility ───────────────────
+            ├─ [Horizontal Box]
+            │    ├─ [Button "Show All"]
+            │    └─ [Button "Hide All"]
+            ├─ [Scroll Box]               populated dynamically
+            │    └─ (rows added at runtime by OnMenuShown)
+            │
+            └─ [Button "Resume"]
+```
+
+### 7c. Wire up the buttons
+
+Select each button → **Details panel → On Clicked** → click the `+`:
+
+| Button | On Clicked |
+|---|---|
+| Browse / Load File | call `BrowseAndLoadFile` |
+| Previous | call `RequestPreviousEvent` |
+| Next ▶ | call `RequestNextEvent` |
+| Show All | call `SetAllSubDetectorsVisible` → `bVisible = true` |
+| Hide All | call `SetAllSubDetectorsVisible` → `bVisible = false` |
+| Resume | call `RequestClose` |
+
+### 7d. Implement OnEventStateChanged
+
+1. In the **My Blueprint** panel → **Functions → Override** → select
+   `OnEventStateChanged`.
+2. In the event graph: drag the `FilePath` and `NewIndex` / `Total` pins to
+   `Set Text` nodes on your file-path and counter labels.
+   Example: `"Event " + (NewIndex+1) + " / " + Total`.
+
+### 7e. Populate the detector toggle list in OnMenuShown
+
+This is where each sub-detector gets its own toggle row.
+
+1. Override **`OnMenuShown`** in the event graph.
+2. First, clear the Scroll Box: drag a reference to your Scroll Box →
+   `Clear Children`.
+3. Add a **For Each Loop** node → input = `GetSubDetectorList` (call the
+   function — it returns an array of sub-detector entries).
+4. Inside the loop body, for each `Array Element`:
+   - Call `Create Widget` → Widget Class = **`WBP_DetectorRow`** (create this
+     — see §7f below) → pass the entry as a parameter.
+   - Call `Scroll Box → Add Child` with the created row widget.
+
+### 7f. Create WBP_DetectorRow (the per-detector toggle row)
+
+1. Create another Widget Blueprint in `Content/UI/` named `WBP_DetectorRow`.
+   Parent class: `UserWidget` (standard, no custom C++ parent needed).
+2. Layout:
+
+   ```
+   [Horizontal Box]
+     ├─ [Border — 8×8 px color swatch]   set Fill Color to Entry.LabelColor
+     ├─ [Text]                            set to Entry.Name
+     └─ [Check Box]                       IsChecked = GetSubDetectorVisible(Entry.Name)
+   ```
+
+3. Add a variable `SubDetectorName` (type `Name`) to the widget.
+4. On **Check Box → On Check State Changed**:
+   - Call `SetSubDetectorVisible(SubDetectorName, bIsChecked)` on the parent
+     options widget.
+   - To get the parent: `Get All Widgets of Class → ColliderVisOptionsWidget →
+     Get (0)` (there is only one).
+
+### 7g. Wire OnSubDetectorVisibilityChanged (optional but nice)
+
+If you want the checkboxes to respond when the hotkeys (1–9) change visibility
+while the menu is open:
+
+1. Override **`OnSubDetectorVisibilityChanged`** in `WBP_Options`.
+2. Loop through all children of the Scroll Box, find the row whose
+   `SubDetectorName == SubDetectorName`, set its checkbox state.
+
+### 7h. Handle OnFilePickerNotAvailable (Quest only)
+
+On Android/Quest the native file picker is unavailable.  The C++ fires
+`OnFilePickerNotAvailable` in Blueprint so you can reveal an alternative:
+
+1. Override **`OnFilePickerNotAvailable`** in `WBP_Options`.
+2. Show a `Text Box` (initially hidden) where the user can type the file path,
+   and a **Load** button that calls `RequestLoadFile(TextBox.Text.ToString)`.
+3. Quest users should place `.root` or `.json` files in
+   `/sdcard/Android/data/com.yourname.collidervis/files/` and type that path.
+
+### 7i. Handle OnLoadingStarted / OnLoadingFinished
+
+File conversion can take a few seconds (Python subprocess).  Show feedback:
+
+1. Override `OnLoadingStarted`: set a `Text "Converting… please wait"` to
+   Visible, disable the Browse button.
+2. Override `OnLoadingFinished`:
+   - If `bSuccess` is true: hide the loading text, call `OnEventStateChanged`
+     to refresh labels.
+   - If false: show `Text "Load failed — check the file path"` in red.
+
+### 7j. Controls summary
+
+| Action | Desktop | Quest controller |
+|---|---|---|
+| Open/close menu | **Esc** or **V** | Left **B** button |
+| Browse file | Click "Browse / Load File" | Point + trigger |
+| Next event | Click "Next ▶" | Point + trigger |
+| Prev event | Click "◀ Previous" | Point + trigger |
+| Toggle sub-detector | Click checkbox row | Point + trigger |
+| Close menu | Click "Resume" or press **Esc** | Press **B** again |
+
+---
+
+## 8. Advanced Rendering — Hyperrealism
 
 The C++ code already sets up the void atmosphere, Lumen GI, chromatic
 aberration, shadow crush, and emissive bloom. The following are **editor-side
 additions** that push the renders further.
 
-### 7a. HDRI Sky Light (reflections on metallic detector surfaces)
+### 8a. HDRI Sky Light (reflections on metallic detector surfaces)
 
 Without an HDRI the sky light captures the scene itself, which gives flat
 reflections. Replace it with a real HDRI:
@@ -237,7 +386,7 @@ reflections. Replace it with a real HDRI:
    - **Intensity** → 0.05 (the void is dark; sky contribution stays minimal)
 4. Click **Recapture** if visible.
 
-### 7b. Bloom Convolution (real lens halos)
+### 8b. Bloom Convolution (real lens halos)
 
 The code uses sum-of-gaussians bloom. Bloom convolution uses a real photograph
 of a camera lens flare for physically accurate star-burst patterns around track
@@ -256,7 +405,7 @@ glow.
 > Or subclass `AColliderVisGameMode` in Blueprint and override `SetupAtmosphere`
 > to set the convolution kernel from a UPROPERTY.
 
-### 7c. Ambient Niagara Particles (floating void dust)
+### 8c. Ambient Niagara Particles (floating void dust)
 
 A very subtle ambient particle system makes the void feel inhabited rather than
 empty. It also catches the emissive light from tracks.
@@ -274,7 +423,7 @@ empty. It also catches the emissive light from tracks.
 4. Place the Niagara System actor in the level, position at origin, set
    **Spawn Radius** to 3000 cm (slightly larger than the detector).
 
-### 7d. Light Functions on Rect Lights
+### 8d. Light Functions on Rect Lights
 
 Light functions are animated textures projected by lights. Adding a subtle
 noise texture to the key light makes the detector surface feel like it's under
@@ -286,7 +435,7 @@ water / in a magnetic field.
 3. On the key rect light: **Light Function → Light Function Material** → assign
    your material. **Light Function Fade Distance** → 3000.
 
-### 7e. Per-Material Detector Tweaks (after geometry import)
+### 8e. Per-Material Detector Tweaks (after geometry import)
 
 After importing the detector geometry:
 
@@ -300,7 +449,7 @@ After importing the detector geometry:
 4. **Nanite**: enable on high-poly meshes (select mesh → Details → Nanite →
    Enable). This gives cinematic-quality geometry with no LOD pop.
 
-### 7f. Path Tracer (still images / screenshots)
+### 8f. Path Tracer (still images / screenshots)
 
 For publication-quality stills, switch to the Path Tracer:
 
@@ -314,7 +463,7 @@ To render an animation sequence:
 **Cinematics → Movie Render Queue → add your Level Sequence → render settings:
 Path Tracer, 128 samples, EXR output**.
 
-### 7g. Color Calibration
+### 8g. Color Calibration
 
 The C++ code already applies:
 - Shadow crush → blue-black void
@@ -329,11 +478,11 @@ To further refine, open the spawned Post Process Volume and adjust:
 
 ---
 
-## 8. Android / Quest 3 Packaging (one-time)
+## 9. Android / Quest 3 Packaging (one-time)
 
 Do this once in the editor **before** running `build_quest.sh`.
 
-### 8a. Install Android prerequisites
+### 9a. Install Android prerequisites
 
 1. **Edit → Preferences → Platforms → Android SDK** → set all four paths:
    - **SDK**: `~/Library/Android/sdk`
@@ -342,7 +491,7 @@ Do this once in the editor **before** running `build_quest.sh`.
    - **Android tools** auto-detected from SDK path.
 2. UE5 will show green checkmarks when paths are valid.
 
-### 8b. Project Settings → Android
+### 9b. Project Settings → Android
 
 **Edit → Project Settings → Platforms → Android**:
 
@@ -365,7 +514,7 @@ Scroll to **Build** → **Android Build Sub-Tools**:
 
 Click **Configure Now** if prompted about the manifest.
 
-### 8c. OpenXR / Meta Quest settings
+### 9c. OpenXR / Meta Quest settings
 
 **Edit → Project Settings → Plugins → OpenXR**:
 - ✓ Enable OpenXR
@@ -378,7 +527,7 @@ No MetaXR plugin is needed for basic VR. If you want passthrough or scene
 understanding, download the **Meta XR Plugin** from the
 [Meta Developer Hub](https://developer.oculus.com/downloads/package/unreal-engine-5-integration/).
 
-### 8d. Sign the APK
+### 9d. Sign the APK
 
 For sideloading (developer mode), a debug keystore works:
 
@@ -388,9 +537,9 @@ allows side-loading without submitting to the Meta store.
 
 ---
 
-## 9. VR Mode
+## 10. VR Mode
 
-### 9a. Testing in Editor (tethered Quest 3)
+### 10a. Testing in Editor (tethered Quest 3)
 
 1. Connect Quest 3 via USB-C or Wi-Fi (Meta Quest Link).
 2. In the Quest headset, accept the **Allow Computer Access** prompt.
@@ -410,7 +559,7 @@ allows side-loading without submitting to the Meta store.
 | Zoom orbit | Right trigger held (while in orbit) |
 | Next event | Right A button |
 
-### 9b. Standalone Quest binary
+### 10b. Standalone Quest binary
 
 Build with `./scripts/build_quest.sh`, then:
 
@@ -427,7 +576,7 @@ The app appears in **Unknown Sources** in the Quest library.
 
 ---
 
-## 10. Building — Quest 3 & Mac
+## 11. Building — Quest 3 & Mac
 
 Both scripts auto-detect the project path relative to themselves. Set
 `UE5_ROOT` if your engine isn't in the default location.

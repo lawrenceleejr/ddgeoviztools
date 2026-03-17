@@ -8,6 +8,7 @@
 #include "InputMappingContext.h"
 #include "InputAction.h"
 #include "Kismet/GameplayStatics.h"
+#include "ColliderVisHUD.h"
 
 AColliderVisVRPawn::AColliderVisVRPawn()
 {
@@ -115,6 +116,9 @@ void AColliderVisVRPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 
 		if (NextEventAction)
 			EIC->BindAction(NextEventAction, ETriggerEvent::Started, this, &AColliderVisVRPawn::OnNextEvent);
+
+		if (OpenMenuAction)
+			EIC->BindAction(OpenMenuAction, ETriggerEvent::Started, this, &AColliderVisVRPawn::OnOpenMenu);
 	}
 }
 
@@ -201,6 +205,17 @@ void AColliderVisVRPawn::OnNextEvent(const FInputActionValue& Value)
 	}
 }
 
+void AColliderVisVRPawn::OnOpenMenu(const FInputActionValue& Value)
+{
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		if (AColliderVisHUD* HUD = Cast<AColliderVisHUD>(PC->GetHUD()))
+		{
+			HUD->ToggleMenu();
+		}
+	}
+}
+
 void AColliderVisVRPawn::DiscoverInputAssets()
 {
 	// Loads assets by path if not already assigned in the Blueprint child.
@@ -217,4 +232,6 @@ void AColliderVisVRPawn::DiscoverInputAssets()
 		ZoomAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_Zoom.IA_Zoom"));
 	if (!NextEventAction)
 		NextEventAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_NextEvent.IA_NextEvent"));
+	if (!OpenMenuAction)
+		OpenMenuAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_OpenMenu.IA_OpenMenu"));
 }

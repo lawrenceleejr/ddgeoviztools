@@ -105,6 +105,10 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
 	UInputAction* NextEventAction;
 
+	/** Left menu / B button — open/close the options menu. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
+	UInputAction* OpenMenuAction;
+
 	// ---- Orbit State ----
 
 	bool  bOrbitMode  = false;
@@ -124,6 +128,7 @@ private:
 	void OnZoomStarted(const FInputActionValue& Value);
 	void OnZoomCompleted(const FInputActionValue& Value);
 	void OnNextEvent(const FInputActionValue& Value);
+	void OnOpenMenu(const FInputActionValue& Value);
 
 	/** Move the pawn onto the orbit sphere and face it toward the origin. */
 	void UpdateOrbitPosition();
