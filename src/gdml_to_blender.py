@@ -685,9 +685,10 @@ def _phi_cut_np(
         phi=0  → +Y_local   (after Ry+90°  →  +Y_blender = physics-up)
         phi=90 → −X_local   (after Ry+90°  →  +Z_blender = horiz transverse)
 
-    Uses trimesh's built-in ``slice_mesh_plane`` (battle-tested, handles all
-    edge cases) instead of the bespoke numpy slicer.  The sequential strategy
-    is the same as before:
+    Uses the bespoke ``_slice_mesh_plane_np`` slicer which classifies vertices
+    within eps=1e-3 mm of the cut plane as "on-plane" (positive side) to avoid
+    the index=-1 wild-polygon bug that trimesh's slice_faces_plane can produce
+    when a mesh vertex sits exactly on the cut boundary.  The strategy is:
 
       1. LEFT  = keep phi < phi_min  (positive side of normal_out_min)
       2. INNER = keep phi ≥ phi_min  (positive side of −normal_out_min)
@@ -699,10 +700,6 @@ def _phi_cut_np(
 
     Returns (new_vertices, new_faces).
     """
-    # Use trimesh's lower-level slice_faces_plane (no shapely dependency;
-    # slice_mesh_plane unconditionally imports trimesh.path.polygons → shapely).
-    from trimesh.intersections import slice_faces_plane as _sfp
-
     phi_min = math.radians(phi_min_deg)
     phi_max = math.radians(phi_max_deg)
     origin  = np.zeros(3)
@@ -713,14 +710,18 @@ def _phi_cut_np(
     normal_out_max = np.array([-math.cos(phi_max), -math.sin(phi_max), 0.0])
 
     def _slice(verts, faces_, normal):
-        """Slice keeping the positive-normal side; returns (verts, faces)."""
+        """Slice keeping the positive-normal side; returns (verts, faces).
+
+        Uses _slice_mesh_plane_np which treats vertices within eps=1e-3 mm of
+        the plane as on-plane (positive side).  This prevents the index=-1
+        wild-polygon bug: without the guard, a straddle face with one on-plane
+        vertex has only ONE crossing edge instead of two; the missing
+        intersection index is -1 which numpy silently maps to the last vertex,
+        producing triangles that shoot off to an arbitrary point in the mesh.
+        """
         if len(faces_) == 0:
             return verts, faces_
-        new_v, new_f, _ = _sfp(
-            vertices=verts, faces=faces_,
-            plane_normal=normal, plane_origin=origin,
-        )
-        return new_v, new_f
+        return _slice_mesh_plane_np(verts, faces_, origin, normal)
 
     # Step 1: LEFT = phi < phi_min
     lv, lf = _slice(vertices, faces, normal_out_min)
