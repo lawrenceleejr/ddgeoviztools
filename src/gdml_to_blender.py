@@ -1859,6 +1859,10 @@ def _area_light_with_temperature(
     light_data.energy = energy
     light_data.size   = size
     light_data.shape  = "SQUARE"
+    try:
+        light_data.normalize = False
+    except AttributeError:
+        pass
 
     # Use Blender's built-in colour temperature (real blackbody, not RGB approx).
     # Priority:
@@ -1895,6 +1899,10 @@ def _add_point_light(
     """
     light_data        = bpy.data.lights.new(name, type="POINT")
     light_data.energy = energy
+    try:
+        light_data.normalize = False
+    except AttributeError:
+        pass
 
     if temp_kelvin is not None:
         _set_light_temperature(light_data, name, energy, temp_kelvin)
@@ -2651,53 +2659,44 @@ def create_blender_scene(
     # regardless of detector size.
     energy_base = r * r * 0.0005   # W · BU⁻²
 
-    # Key light — warm golden-hour glow from above and slightly to one side.
-    # 3000 K ≈ incandescent / warm candlelight.
+    # All area/fill lights: 2800 K (warm incandescent), 50 W, normalize off.
     key_obj = _area_light_with_temperature(
         "Light_Key_Golden",
         location=( r * 0.40,  r * 1.20,  r * 0.90),
         target=(0, 0, 0),
         size=r * 0.60,
-        energy=energy_base * 400.0,
-        temp_kelvin=3000.0,
+        energy=50.0,
+        temp_kelvin=2800.0,
     )
 
-    # Fill light — cooler sky blue from the opposite side and slightly behind.
-    # 7500 K ≈ overcast skylight.
     fill_obj = _area_light_with_temperature(
         "Light_Fill_Sky",
         location=(-r * 0.50,  r * 0.70, -r * 1.00),
         target=(0, 0, 0),
         size=r * 0.48,
-        energy=energy_base * 72.0,
-        temp_kelvin=7500.0,
+        energy=50.0,
+        temp_kelvin=2800.0,
     )
 
-    # Rim light — warm backlight along the −beam direction to separate the
-    # detector silhouette from the dark background.
-    # 4500 K ≈ neutral warm white.
     rim_obj = _area_light_with_temperature(
         "Light_Rim_Warm",
         location=(-r * 1.30,  r * 0.30,  r * 0.20),
         target=(0, 0, 0),
         size=r * 0.30,
-        energy=energy_base * 120.0,
-        temp_kelvin=4500.0,
+        energy=50.0,
+        temp_kelvin=2800.0,
     )
 
-    # Interior fill — point light placed inside the phi-cut opening so it
-    # illuminates the inward-facing detector surfaces that the exterior area
-    # lights cannot directly reach.  Positioned halfway along the cut bisector.
     _phi_fill_rad = math.radians((phi_min + phi_max) / 2.0) if not no_phi_cut \
                     else math.radians(45.0)
     interior_obj = _add_point_light(
         "Light_Interior_Fill",
         location=(0.0, r * 0.45 * math.cos(_phi_fill_rad),
                        r * 0.45 * math.sin(_phi_fill_rad)),
-        energy=energy_base * 300.0,
-        color_rgb=(1.0, 0.97, 0.92),   # fallback if temperature fails
+        energy=50.0,
+        color_rgb=(1.0, 0.97, 0.92),
         soft_size=r * 0.50,
-        temp_kelvin=4000.0,             # warm white via true blackbody
+        temp_kelvin=2800.0,
     )
 
     # Purple glow at the interaction point (IP / beam origin)
@@ -2715,10 +2714,8 @@ def create_blender_scene(
         if light_obj is not None:
             _link_to_collection(light_obj, col_lights)
 
-    print(f"  [SETUP] Lights created (energy_base={energy_base:.3f} W, "
-          f"key={energy_base*400:.0f} W, fill={energy_base*72:.0f} W, "
-          f"rim={energy_base*120:.0f} W, interior={energy_base*300:.0f} W, "
-          f"IP={energy_base*80:.0f} W)", flush=True)
+    print(f"  [SETUP] Lights created: key/fill/rim/interior = 50 W @ 2800 K "
+          f"(normalize off), IP purple = {energy_base*80:.0f} W", flush=True)
 
     # ---- Volumetric god rays (render-only) ----
     # A large Volume Scatter sphere (hidden from viewport, visible in render)
