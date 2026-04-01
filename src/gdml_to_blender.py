@@ -849,29 +849,6 @@ def _load_mesh(
             print(f"    [SOLID] Convex hull failed ({exc}); keeping shell",
                   flush=True)
 
-    # Phi-sector cutaway (numpy level — fast, creates clean intersection edges)
-    if phi_min_deg is not None and phi_max_deg is not None:
-        n_before = len(raw.faces)
-        verts_np = np.asarray(raw.vertices, dtype=np.float64)
-        faces_np = np.asarray(raw.faces, dtype=np.int64)
-        verts_np, faces_np = _phi_cut_np(verts_np, faces_np, phi_min_deg, phi_max_deg)
-        print(f"    [PHI-NP] {n_before:,} → {len(faces_np):,} faces "
-              f"(cut [{phi_min_deg:.0f}°, {phi_max_deg:.0f}°])", flush=True)
-        # Re-wrap as processed trimesh to merge duplicate vertices from slicing
-        raw = trimesh.Trimesh(verts_np, faces_np, process=True)
-
-        # For solid meshes, cap the open boundaries left by the phi cut.
-        # The cut creates clean boundary edges along each cut plane; filling
-        # those holes produces flat cap faces that make the cross-section
-        # look like slicing through solid material.
-        if solid:
-            try:
-                raw = _cap_boundary_loops(raw)
-                print(f"    [SOLID] Boundaries capped → {len(raw.faces):,} faces",
-                      flush=True)
-            except Exception as exc:
-                print(f"    [SOLID] Boundary cap failed ({exc})", flush=True)
-
     verts = raw.vertices.tolist()   # list of [x, y, z]
     faces = raw.faces.tolist()      # list of [i, j, k]
 
@@ -895,6 +872,24 @@ def _load_mesh(
 
     obj = bpy.data.objects.new(name, me)
     bpy.data.scenes[0].collection.objects.link(obj)
+
+    # Phi-sector cutaway using bmesh bisect — definitively creates new vertices
+    # at the exact intersection of mesh edges with each cut plane, then deletes
+    # faces inside the sector.  This avoids the LEFT+RIGHT numpy combination
+    # which caused massive vertex duplication → degenerate faces → Solidify
+    # wild rim polygons on the open holes.
+    if phi_min_deg is not None and phi_max_deg is not None:
+        _apply_phi_cutaway_bmesh(obj, phi_min_deg, phi_max_deg)
+
+        # For solid meshes, cap the open boundary loops left by the bisect cut.
+        if solid:
+            try:
+                _cap_boundary_loops_bmesh(obj)
+                print(f"    [SOLID] Boundaries capped → "
+                      f"{len(obj.data.polygons):,} faces", flush=True)
+            except Exception as exc:
+                print(f"    [SOLID] Boundary cap failed ({exc})", flush=True)
+
     return obj
 
 
@@ -1006,6 +1001,27 @@ def _add_bevel(obj, width_mm: float = 0.2):
 # ---------------------------------------------------------------------------
 # Phi-cutaway Geometry Node group
 # ---------------------------------------------------------------------------
+
+def _cap_boundary_loops_bmesh(obj):
+    """
+    Fill open boundary loops on a bpy object using bmesh triangle_fill.
+
+    After a phi-sector bisect cut, the mesh has open boundary edges along each
+    cut plane.  This fills those loops with triangles so the cross-section
+    appears solid.
+    """
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.edges.ensure_lookup_table()
+    boundary_edges = [e for e in bm.edges if e.is_boundary]
+    if boundary_edges:
+        bmesh.ops.triangle_fill(bm, use_beauty=True, use_dissolve=True,
+                                edges=boundary_edges)
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+
 
 def _apply_phi_cutaway_bmesh(obj, phi_min_deg: float, phi_max_deg: float):
     """
