@@ -282,10 +282,10 @@ def _max_meshes_for_name(name: str) -> int:
     trk_keys = ("tracker", "trk", "tpc", "silicon", "strip", "stave",
                 "module", "disk", "petal", "ring", "endcap")
     if any(k in n for k in cal_keys):
-        return 8    # calorimeters: 8 layer samples is plenty for visualisation
+        return 200  # calorimeters: keep many layers for uniform appearance
     if any(k in n for k in trk_keys):
-        return 15   # trackers: show more to convey repetitive geometry
-    return 20
+        return 100  # trackers: show enough to convey repetitive geometry
+    return 50
 
 
 def _decimate_trimesh(mesh: "trimesh.Trimesh",
@@ -768,38 +768,23 @@ def _load_mesh(
     solid: bool = False,
 ):
     """
-    Read a mesh file with trimesh, merge duplicate vertices and remove
-    degenerate faces, optionally apply a phi-sector cutaway, then create
-    a bpy Mesh object.
+    Read a GLTF file and create one Blender object per sub-mesh (GLTF primitive).
 
-    If *phi_min_deg* and *phi_max_deg* are both provided, the sector
-    [phi_min, phi_max] is sliced away using pure-numpy plane slicing
-    (``_phi_cut_np``) *before* the Blender mesh is created.  This is
-    vastly faster than the old bmesh bisect approach because:
-      - numpy vectorises vertex classification and bulk face filtering
-      - only straddling faces need a Python-level split loop
-      - the resulting bpy mesh is already cut and smaller
+    Creating one object per sub-mesh matches how Blender's native GLTF importer
+    works and prevents the visual artifacts caused by concatenation:
+      - Weld modifier cannot bridge between separate objects, so adjacent module
+        staircase surfaces stay independent.
+      - The Boolean phi cutter operates on each module mesh individually,
+        producing clean cut faces with correct cross-section geometry.
 
-    GLTF scene-graph node transforms are applied during loading so that
-    mesh vertices end up in GDML world-space coordinates.  This is essential
-    for correct phi computations on off-axis sub-detectors.
+    GLTF scene-graph node transforms are applied so vertices end up in GDML
+    world-space coordinates before the Blender object is created.
 
-    Returns the new bpy Object.
+    Returns a list of bpy Objects (one per retained sub-mesh).
     """
-    # Load without force="mesh": GLTF files return a trimesh.Scene so that
-    # _filter_world_volumes can inspect each sub-mesh individually before
-    # concatenating.  Using force="mesh" caused trimesh to concatenate all
-    # sub-meshes (including the GDML world-volume box) before we could filter.
     raw = trimesh.load(str(filepath), process=False)
 
     if isinstance(raw, trimesh.Scene):
-        # Apply scene-graph node transforms so mesh vertices end up in GDML
-        # world-space coordinates rather than each actor's local frame.
-        # VTK's GLTF exporter stores each actor's polydata in its own local
-        # space and encodes the world position as a separate node transform;
-        # without applying that transform, off-axis placements (staves, crystals
-        # at large radii) would have all centroids near the local origin and
-        # yield a wrong phi for the GN cutaway modifier.
         sub_meshes = []
         try:
             for node_name in raw.graph.nodes_geometry:
@@ -814,93 +799,64 @@ def _load_mesh(
                   f"falling back to local-frame geometry", flush=True)
             sub_meshes = []
         if not sub_meshes:
-            # Fallback: use geometry values without scene-graph transforms
             all_geoms = list(raw.geometry.values())
             sub_meshes = [m for m in all_geoms if isinstance(m, trimesh.Trimesh)]
         n_skipped = sum(1 for g in raw.geometry.values()
                         if not isinstance(g, trimesh.Trimesh))
         if n_skipped:
-            print(f"    [LOAD] Skipped {n_skipped} non-triangle geometry object(s) "
-                  f"(Path3D / camera / curve nodes)", flush=True)
+            print(f"    [LOAD] Skipped {n_skipped} non-triangle geometry object(s)",
+                  flush=True)
         if not sub_meshes:
             raise ValueError(f"No triangle meshes found in {filepath}")
         sub_meshes = _filter_world_volumes(sub_meshes)
-        # Name-aware layer budget: calorimeters → 8, trackers → 15, else 20
         sub_meshes = _thin_repeated_layers(sub_meshes,
                                            max_meshes=_max_meshes_for_name(name))
+    else:
+        # Single-mesh file (non-GLTF or flat GLTF)
+        sub_meshes = [raw]
 
-        # Decimate each sub-mesh individually BEFORE concatenating.
-        # Decimating the combined mesh lets QEM create triangles that span
-        # across sub-mesh boundaries (e.g. between adjacent calorimeter layers),
-        # which the phi Boolean cut then exposes as erratic cross-layer fins.
-        # Per-mesh decimation keeps each layer's geometry self-contained.
-        n = max(1, len(sub_meshes))
-        per_mesh_budget = max(300, 30_000 // n)
-        sub_meshes = [_decimate_trimesh(m, max_faces=per_mesh_budget)
-                      for m in sub_meshes]
-
-        raw = trimesh.util.concatenate(sub_meshes)
-
-    # process=True: the initial trimesh.load used process=False, so individual
-    # sub-meshes may have degenerate faces that need cleaning.  Cross-sub-mesh
-    # vertex merging is acceptable here because per-mesh decimation has already
-    # broken up the original coincident boundary vertices between adjacent layers.
-    raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
-
-    # Solid fill — replace the shell mesh with its convex hull so that
-    # the interior is completely filled.  When the phi-cutaway slices
-    # through a solid mesh the cross-section is a filled polygon instead
-    # of two thin walls with empty space between them.
+    # For solid fill: collapse all sub-meshes to one convex-hull object
     if solid:
+        combined = trimesh.util.concatenate(sub_meshes) if len(sub_meshes) > 1 \
+                   else sub_meshes[0]
+        combined = trimesh.Trimesh(combined.vertices, combined.faces, process=True)
+        combined = _decimate_trimesh(combined, max_faces=30_000)
         try:
-            raw = raw.convex_hull
-            print(f"    [SOLID] Convex hull: {len(raw.faces):,} faces", flush=True)
+            combined = combined.convex_hull
+            print(f"    [SOLID] Convex hull: {len(combined.faces):,} faces",
+                  flush=True)
         except Exception as exc:
             print(f"    [SOLID] Convex hull failed ({exc}); keeping shell",
                   flush=True)
+        sub_meshes = [combined]
 
-    verts = raw.vertices.tolist()   # list of [x, y, z]
-    faces = raw.faces.tolist()      # list of [i, j, k]
+    # Create one Blender object per sub-mesh.
+    # Each sub-mesh is cleaned individually (process=True) and decimated to a
+    # per-mesh face budget so total geometry stays manageable.
+    n = max(1, len(sub_meshes))
+    per_mesh_budget = max(500, 30_000 // n)
+    objects = []
+    for i, m in enumerate(sub_meshes):
+        m = trimesh.Trimesh(m.vertices, m.faces, process=True)
+        m = _decimate_trimesh(m, max_faces=per_mesh_budget)
+        obj_name = name if n == 1 else f"{name}.{i:03d}"
+        me = bpy.data.meshes.new(obj_name)
+        me.from_pydata(m.vertices.tolist(), [], m.faces.tolist())
+        me.update()
+        try:
+            me.shade_smooth()
+        except AttributeError:
+            pass
+        me.update()
+        me.validate(verbose=False, clean_customdata=True)
+        obj = bpy.data.objects.new(obj_name, me)
+        bpy.data.scenes[0].collection.objects.link(obj)
+        objects.append(obj)
 
-    me = bpy.data.meshes.new(name)
-    me.from_pydata(verts, [], faces)
-    me.update()
-    # Shade smooth — mesh.shade_smooth() is the Blender 4.1+ API.
-    # In Blender 5.0 the per-face 'use_smooth' flag was removed from the
-    # internal mesh representation; foreach_set("use_smooth", …) writes to a
-    # legacy shim and can corrupt the CustomData layer table in a way that
-    # causes save_as_mainfile to crash with SIGSEGV.  Use shade_smooth() when
-    # available, otherwise skip smooth shading rather than risk corruption.
-    try:
-        me.shade_smooth()
-    except AttributeError:
-        pass   # Blender < 4.1 fallback: flat shading acceptable for vis
-    me.update()
-    # Clean any degenerate / out-of-range mesh data before handing the mesh
-    # to Blender's modifier stack and serialiser.
-    me.validate(verbose=False, clean_customdata=True)
-
-    obj = bpy.data.objects.new(name, me)
-    bpy.data.scenes[0].collection.objects.link(obj)
-
-    # Phi-sector cutaway using bmesh bisect — definitively creates new vertices
-    # at the exact intersection of mesh edges with each cut plane, then deletes
-    # faces inside the sector.  This avoids the LEFT+RIGHT numpy combination
-    # which caused massive vertex duplication → degenerate faces → Solidify
-    # wild rim polygons on the open holes.
-    if phi_min_deg is not None and phi_max_deg is not None:
-        _apply_phi_cutaway_bmesh(obj, phi_min_deg, phi_max_deg)
-
-        # For solid meshes, cap the open boundary loops left by the bisect cut.
-        if solid:
-            try:
-                _cap_boundary_loops_bmesh(obj)
-                print(f"    [SOLID] Boundaries capped → "
-                      f"{len(obj.data.polygons):,} faces", flush=True)
-            except Exception as exc:
-                print(f"    [SOLID] Boundary cap failed ({exc})", flush=True)
-
-    return obj
+    print(f"    [LOAD] {len(objects)} object(s), "
+          f"total {sum(len(o.data.polygons) for o in objects):,} faces",
+          flush=True)
+    return objects
 
 
 # ---------------------------------------------------------------------------
@@ -2523,37 +2479,26 @@ def create_blender_scene(
         # appears as solid material (Boolean handles the cut cleanly on manifold).
         _is_nozzle = "Nozzle" in name
         try:
-            obj = _load_mesh(mesh_path, name,
-                             phi_min_deg=None,
-                             phi_max_deg=None,
-                             solid=_is_nozzle)
+            objs = _load_mesh(mesh_path, name,
+                              phi_min_deg=None,
+                              phi_max_deg=None,
+                              solid=_is_nozzle)
         except Exception as exc:
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
 
-        # Material — try to infer from the sub-detector name, else cycle palette
+        # One material per GLTF file; shared across all its sub-mesh objects.
         mat = _material_for_detector(name, mat_cycle)
-        obj.data.materials.append(mat)
+        for obj in objs:
+            obj.data.materials.append(mat)
+            # Weld only — no Solidify (see earlier comments).
+            _add_weld(obj, threshold=weld_threshold)
+            # Rotate beam axis: Z_gdml → X_blender.
+            obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
+            _link_to_collection(obj, col_detector)
 
-        # Weld only — Solidify is intentionally omitted.  Solidify on an
-        # open shell creates rim faces that span the phi-cut opening and
-        # produce wild polygons; the Boolean DIFFERENCE below handles the
-        # clean cutaway without needing a thickened shell.
-        _add_weld(obj, threshold=weld_threshold)
-
-        # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
-        # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
-        # line horizontal along the Blender X axis.
-        # Objects are kept at native GDML mm scale (1 BU = 1 mm).
-        obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
-
-        # Move into the Detector collection (object was linked to root scene
-        # collection inside _load_mesh; re-link it to the named collection).
-        _link_to_collection(obj, col_detector)
-
-        loaded_objects.append(obj)
-        print(f"    → {len(obj.data.vertices)} verts, {len(obj.data.polygons)} faces"
-              f"  material: {mat.name}")
+        loaded_objects.extend(objs)
+        print(f"    → {len(objs)} object(s), material: {mat.name}")
 
     if not loaded_objects:
         raise RuntimeError("No mesh files could be loaded.")
