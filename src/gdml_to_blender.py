@@ -2493,27 +2493,27 @@ def create_blender_scene(
           f"{[m.name for m in materials]}", flush=True)
 
     # ---- Load each mesh ----
-    # Phi cutaway is applied at the numpy/trimesh level DURING loading
-    # (before the Blender mesh is created).  This is vastly faster than
-    # the old bmesh bisect approach and produces clean cut edges.
-    _phi_min_load = phi_min if not no_phi_cut else None
-    _phi_max_load = phi_max if not no_phi_cut else None
+    # Meshes are loaded INTACT (no phi cut at load time).  The phi cutaway is
+    # applied later via a Boolean DIFFERENCE modifier (wedge cutter) that runs
+    # AFTER the Solidify modifier in the stack.  This ordering is critical:
+    #   Weld → Solidify (intact closed mesh → solid shell) → Boolean DIFFERENCE
+    # If the phi cut were applied at load time, Solidify would see open boundary
+    # edges at the cut planes and span them with giant rim faces → wild polygons.
     if not no_phi_cut:
-        print(f"  [PHI] Phi cutaway [{phi_min:.1f}°, {phi_max:.1f}°] applied at numpy "
-              f"level during mesh loading (fast, clean intersection edges).",
-              flush=True)
+        print(f"  [PHI] Phi cutaway [{phi_min:.1f}°, {phi_max:.1f}°] will be applied "
+              f"via Boolean DIFFERENCE modifier after Solidify.", flush=True)
 
     loaded_objects: list = []
     for mesh_path in mesh_files:
         name = mesh_path.stem
         print(f"  Loading {mesh_path.name} ...")
-        # Nozzles are filled to a solid convex hull before the phi cut
-        # so the cutaway cross-section appears as solid material.
+        # Nozzles are filled to a solid convex hull so the cutaway cross-section
+        # appears as solid material (Boolean handles the cut cleanly on manifold).
         _is_nozzle = "Nozzle" in name
         try:
             obj = _load_mesh(mesh_path, name,
-                             phi_min_deg=_phi_min_load,
-                             phi_max_deg=_phi_max_load,
+                             phi_min_deg=None,
+                             phi_max_deg=None,
                              solid=_is_nozzle)
         except Exception as exc:
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
@@ -2573,11 +2573,12 @@ def create_blender_scene(
     ortho_trans = max(y_max, z_max) * 2.2
     ortho_side  = max(x_max, y_max) * 2.2
 
-    # ---- Phi-cutaway (secondary Boolean modifier) ----
-    # The primary phi cutaway was already applied at the numpy/trimesh level
-    # during _load_mesh (fast, clean intersection edges baked into the mesh).
-    # Here we add an OPTIONAL Boolean DIFFERENCE modifier (disabled by default)
-    # for users who want a non-destructive alternative on manifold meshes.
+    # ---- Phi-cutaway (Boolean DIFFERENCE modifier) ----
+    # Meshes are loaded intact.  The phi cut is done here by a Boolean DIFFERENCE
+    # modifier (wedge cutter) that sits AFTER Solidify in the modifier stack:
+    #   Weld → Solidify → Boolean DIFFERENCE → Bevel
+    # Solidify sees the intact closed mesh and produces a proper solid shell.
+    # Boolean then cuts the solid — clean intersection vertices, no open edges.
     wedge_obj = None
     ctrl_obj  = None
     if not no_phi_cut:
@@ -2603,11 +2604,13 @@ def create_blender_scene(
                         break
                     except TypeError:
                         pass
-                mod.show_viewport = False
-                mod.show_render = False
-            print(f"  [PHI] Boolean DIFFERENCE modifier added to "
-                  f"{len(loaded_objects)} objects (disabled by default).",
-                  flush=True)
+                # Enabled — Boolean runs AFTER Solidify so it cuts a closed
+                # manifold solid rather than an open shell.  This guarantees
+                # clean cut edges with no wild rim faces from Solidify.
+                mod.show_viewport = True
+                mod.show_render = True
+            print(f"  [PHI] Boolean DIFFERENCE modifier added and ENABLED on "
+                  f"{len(loaded_objects)} objects.", flush=True)
         except Exception as exc:
             print(f"  [PHI] Boolean wedge creation failed: {exc}",
                   flush=True)
