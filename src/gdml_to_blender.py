@@ -1575,20 +1575,22 @@ def _create_phi_wedge_cutter(
 
     This manifold solid is used as the operand for a Boolean DIFFERENCE modifier
     on detector objects.  DIFFERENCE subtracts the wedge from the detector,
-    removing the sector and revealing the interior — matching the behavior of
-    the GN phi-cutaway modifier which deletes faces inside the same range.
+    removing the sector and revealing the interior.
 
-    Geometry convention (mesh local / GDML coordinates, before Ry+90° rotation):
-        phi = atan2(-X_local, Y_local) in degrees
-        phi=0°  → +Y_local (after rotation: +Y_blender = physics-up)
-        phi=90° → −X_local (after rotation: +Z_blender = horiz-transverse)
+    The wedge is built directly in Blender WORLD coordinates (NOT in GDML local
+    coordinates) so that NO rotation needs to be applied to it.  Detector objects
+    have Ry(+90°) applied, which means their world-space phi is:
+        phi = atan2(Z_world, Y_world)
+        phi=0°  → +Y_world direction
+        phi=90° → +Z_world direction
 
-    The wedge is built directly as a closed, manifold solid so that Blender's
-    Boolean modifier works correctly.  It is shown as wireframe in the viewport
-    and excluded from renders.
+    The wedge geometry matches this exactly:
+        center axis along ±X_world (beam direction)
+        arc: y = r·cos(ang), z = r·sin(ang)  in Y_world-Z_world plane
+        → world phi = atan2(z, y) = ang  ✓
 
-    Note: the wedge is created in GDML local coordinates and should be given
-    the same rotation as the detector objects (Ry+90°) by the caller.
+    The wedge is a closed, manifold solid (required for Blender Boolean).
+    It is hidden in the viewport and renders.
     """
     import bmesh as _bm
 
@@ -1602,17 +1604,17 @@ def _create_phi_wedge_cutter(
     me = bpy.data.meshes.new("PhiWedge")
     bm = _bm.new()
 
-    # Centre vertices on the ±X caps (beam axis)
+    # Centre vertices on the ±X_world caps (beam axis in world space)
     vc_pos = bm.verts.new((+half_d, 0.0, 0.0))
     vc_neg = bm.verts.new((-half_d, 0.0, 0.0))
 
-    # Arc vertices at ±X from phi_min to phi_max (N_ARC+1 vertices inclusive)
-    # phi=0 → +Y, phi=90° → +Z
+    # Arc vertices at ±X_world from phi_min to phi_max (N_ARC+1 vertices inclusive)
+    # World-space phi = atan2(Z_world, Y_world): phi=0 → +Y_world, phi=90° → +Z_world
     vp, vn = [], []
     for i in range(N_ARC + 1):
         ang = phi_min_r + i * (phi_max_r - phi_min_r) / N_ARC
-        y   = r * math.cos(ang)
-        z   = r * math.sin(ang)
+        y   = r * math.cos(ang)   # Y_world component
+        z   = r * math.sin(ang)   # Z_world component
         vp.append(bm.verts.new((+half_d, y, z)))
         vn.append(bm.verts.new((-half_d, y, z)))
 
@@ -2592,7 +2594,14 @@ def create_blender_scene(
                 depth=x_max * 2.5,
                 collection=col_cutters,
             )
-            wedge_obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
+            # No rotation on the wedge — it is built directly in world-space
+            # coordinates: center axis along X_world (beam), arc in Y_world-Z_world.
+            # Detector objects have Ry(+90°) applied, which transforms their GDML
+            # vertices so that phi = atan2(Z_world, Y_world).  The wedge arc uses
+            # y=r*cos(ang), z=r*sin(ang) in local space, which without any rotation
+            # gives world-space phi = atan2(Z,Y) = ang.  Applying Ry(+90°) to the
+            # wedge would rotate the arc into the X_world-Y_world plane, covering
+            # the wrong angular sector entirely.
 
             for obj in loaded_objects:
                 mod = obj.modifiers.new("PhiBoolean", "BOOLEAN")
