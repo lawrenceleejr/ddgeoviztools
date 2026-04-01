@@ -768,19 +768,17 @@ def _load_mesh(
     solid: bool = False,
 ):
     """
-    Read a GLTF file and create one Blender object per sub-mesh (GLTF primitive).
+    Read a GLTF file, concatenate sub-meshes, and return one bpy Object.
 
-    Creating one object per sub-mesh matches how Blender's native GLTF importer
-    works and prevents the visual artifacts caused by concatenation:
-      - Weld modifier cannot bridge between separate objects, so adjacent module
-        staircase surfaces stay independent.
-      - The Boolean phi cutter operates on each module mesh individually,
-        producing clean cut faces with correct cross-section geometry.
+    Sub-meshes are thinned, individually cleaned and decimated, then
+    concatenated WITHOUT a Weld modifier — the Weld was the culprit that
+    bridged adjacent module staircase surfaces and produced non-uniform
+    layer appearances at the phi cut cross-section.
 
     GLTF scene-graph node transforms are applied so vertices end up in GDML
     world-space coordinates before the Blender object is created.
 
-    Returns a list of bpy Objects (one per retained sub-mesh).
+    Returns the new bpy Object.
     """
     raw = trimesh.load(str(filepath), process=False)
 
@@ -811,52 +809,42 @@ def _load_mesh(
         sub_meshes = _filter_world_volumes(sub_meshes)
         sub_meshes = _thin_repeated_layers(sub_meshes,
                                            max_meshes=_max_meshes_for_name(name))
+        # Clean and decimate each sub-mesh individually so QEM never creates
+        # triangles that span across sub-mesh boundaries.
+        n = max(1, len(sub_meshes))
+        per_mesh_budget = max(500, 30_000 // n)
+        sub_meshes = [_decimate_trimesh(
+                          trimesh.Trimesh(m.vertices, m.faces, process=True),
+                          max_faces=per_mesh_budget)
+                      for m in sub_meshes]
+        raw = trimesh.util.concatenate(sub_meshes)
     else:
-        # Single-mesh file (non-GLTF or flat GLTF)
-        sub_meshes = [raw]
+        raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
 
-    # For solid fill: collapse all sub-meshes to one convex-hull object
+    raw = _decimate_trimesh(raw, max_faces=100_000)
+
     if solid:
-        combined = trimesh.util.concatenate(sub_meshes) if len(sub_meshes) > 1 \
-                   else sub_meshes[0]
-        combined = trimesh.Trimesh(combined.vertices, combined.faces, process=True)
-        combined = _decimate_trimesh(combined, max_faces=30_000)
         try:
-            combined = combined.convex_hull
-            print(f"    [SOLID] Convex hull: {len(combined.faces):,} faces",
-                  flush=True)
+            raw = raw.convex_hull
+            print(f"    [SOLID] Convex hull: {len(raw.faces):,} faces", flush=True)
         except Exception as exc:
             print(f"    [SOLID] Convex hull failed ({exc}); keeping shell",
                   flush=True)
-        sub_meshes = [combined]
 
-    # Create one Blender object per sub-mesh.
-    # Each sub-mesh is cleaned individually (process=True) and decimated to a
-    # per-mesh face budget so total geometry stays manageable.
-    n = max(1, len(sub_meshes))
-    per_mesh_budget = max(500, 30_000 // n)
-    objects = []
-    for i, m in enumerate(sub_meshes):
-        m = trimesh.Trimesh(m.vertices, m.faces, process=True)
-        m = _decimate_trimesh(m, max_faces=per_mesh_budget)
-        obj_name = name if n == 1 else f"{name}.{i:03d}"
-        me = bpy.data.meshes.new(obj_name)
-        me.from_pydata(m.vertices.tolist(), [], m.faces.tolist())
-        me.update()
-        try:
-            me.shade_smooth()
-        except AttributeError:
-            pass
-        me.update()
-        me.validate(verbose=False, clean_customdata=True)
-        obj = bpy.data.objects.new(obj_name, me)
-        bpy.data.scenes[0].collection.objects.link(obj)
-        objects.append(obj)
+    me = bpy.data.meshes.new(name)
+    me.from_pydata(raw.vertices.tolist(), [], raw.faces.tolist())
+    me.update()
+    try:
+        me.shade_smooth()
+    except AttributeError:
+        pass
+    me.update()
+    me.validate(verbose=False, clean_customdata=True)
 
-    print(f"    [LOAD] {len(objects)} object(s), "
-          f"total {sum(len(o.data.polygons) for o in objects):,} faces",
-          flush=True)
-    return objects
+    obj = bpy.data.objects.new(name, me)
+    bpy.data.scenes[0].collection.objects.link(obj)
+    print(f"    [LOAD] {len(obj.data.polygons):,} faces", flush=True)
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -2479,26 +2467,22 @@ def create_blender_scene(
         # appears as solid material (Boolean handles the cut cleanly on manifold).
         _is_nozzle = "Nozzle" in name
         try:
-            objs = _load_mesh(mesh_path, name,
-                              phi_min_deg=None,
-                              phi_max_deg=None,
-                              solid=_is_nozzle)
+            obj = _load_mesh(mesh_path, name,
+                             phi_min_deg=None,
+                             phi_max_deg=None,
+                             solid=_is_nozzle)
         except Exception as exc:
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
 
-        # One material per GLTF file; shared across all its sub-mesh objects.
         mat = _material_for_detector(name, mat_cycle)
-        for obj in objs:
-            obj.data.materials.append(mat)
-            # Weld only — no Solidify (see earlier comments).
-            _add_weld(obj, threshold=weld_threshold)
-            # Rotate beam axis: Z_gdml → X_blender.
-            obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
-            _link_to_collection(obj, col_detector)
-
-        loaded_objects.extend(objs)
-        print(f"    → {len(objs)} object(s), material: {mat.name}")
+        obj.data.materials.append(mat)
+        # No Weld modifier — Weld bridged adjacent module staircase surfaces
+        # and produced non-uniform layer appearance at the phi cut cross-section.
+        obj.rotation_euler = (0.0, math.radians(90.0), 0.0)
+        _link_to_collection(obj, col_detector)
+        loaded_objects.append(obj)
+        print(f"    → material: {mat.name}")
 
     if not loaded_objects:
         raise RuntimeError("No mesh files could be loaded.")
