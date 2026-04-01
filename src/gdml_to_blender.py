@@ -828,20 +828,24 @@ def _load_mesh(
         # Name-aware layer budget: calorimeters → 8, trackers → 15, else 20
         sub_meshes = _thin_repeated_layers(sub_meshes,
                                            max_meshes=_max_meshes_for_name(name))
+
+        # Decimate each sub-mesh individually BEFORE concatenating.
+        # Decimating the combined mesh lets QEM create triangles that span
+        # across sub-mesh boundaries (e.g. between adjacent calorimeter layers),
+        # which the phi Boolean cut then exposes as erratic cross-layer fins.
+        # Per-mesh decimation keeps each layer's geometry self-contained.
+        n = max(1, len(sub_meshes))
+        per_mesh_budget = max(300, 30_000 // n)
+        sub_meshes = [_decimate_trimesh(m, max_faces=per_mesh_budget)
+                      for m in sub_meshes]
+
         raw = trimesh.util.concatenate(sub_meshes)
 
-    # Re-wrap WITHOUT process=True so that vertices from different sub-meshes
-    # are NOT merged.  Adjacent calorimeter layers share boundary vertices at
-    # identical 3D positions; merging them cross-connects faces across layer
-    # boundaries, and the Boolean phi cut then reveals the broken topology as
-    # erratic fins at the cross-section.  Each sub-mesh is already internally
-    # clean (loaded with process=True individually by trimesh), so we only
-    # need to avoid the cross-sub-mesh vertex merge here.
-    raw = trimesh.Trimesh(raw.vertices, raw.faces, process=False)
-
-    # Quadric decimation — keeps face count manageable for Blender's modifier
-    # stack (Weld + Boolean + Bevel) without degrading visual quality.
-    raw = _decimate_trimesh(raw, max_faces=30_000)
+    # process=True: the initial trimesh.load used process=False, so individual
+    # sub-meshes may have degenerate faces that need cleaning.  Cross-sub-mesh
+    # vertex merging is acceptable here because per-mesh decimation has already
+    # broken up the original coincident boundary vertices between adjacent layers.
+    raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
 
     # Solid fill — replace the shell mesh with its convex hull so that
     # the interior is completely filled.  When the phi-cutaway slices
