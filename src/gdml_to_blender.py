@@ -830,8 +830,14 @@ def _load_mesh(
                                            max_meshes=_max_meshes_for_name(name))
         raw = trimesh.util.concatenate(sub_meshes)
 
-    # Always re-wrap as a processed Trimesh (merges duplicate verts, etc.)
-    raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
+    # Re-wrap WITHOUT process=True so that vertices from different sub-meshes
+    # are NOT merged.  Adjacent calorimeter layers share boundary vertices at
+    # identical 3D positions; merging them cross-connects faces across layer
+    # boundaries, and the Boolean phi cut then reveals the broken topology as
+    # erratic fins at the cross-section.  Each sub-mesh is already internally
+    # clean (loaded with process=True individually by trimesh), so we only
+    # need to avoid the cross-sub-mesh vertex merge here.
+    raw = trimesh.Trimesh(raw.vertices, raw.faces, process=False)
 
     # Quadric decimation — keeps face count manageable for Blender's modifier
     # stack (Weld + Boolean + Bevel) without degrading visual quality.
