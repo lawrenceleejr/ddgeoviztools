@@ -2617,6 +2617,12 @@ def create_blender_scene(
                     mod.use_hole_tolerant = True
                 except AttributeError:
                     pass  # Not available in all Blender versions
+                # Self Intersection: needed for detector geometry that has
+                # self-intersecting faces (common in complex GDML exports).
+                try:
+                    mod.use_self = True
+                except AttributeError:
+                    pass  # Not available in all Blender versions
                 mod.show_viewport = True
                 mod.show_render = True
             print(f"  [PHI] Boolean DIFFERENCE modifier added and ENABLED on "
