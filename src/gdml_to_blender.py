@@ -2525,14 +2525,11 @@ def create_blender_scene(
         mat = _material_for_detector(name, mat_cycle)
         obj.data.materials.append(mat)
 
-        # Weld + Solidify here; Boolean + Bevel are added after scene bounds are known
+        # Weld only — Solidify is intentionally omitted.  Solidify on an
+        # open shell creates rim faces that span the phi-cut opening and
+        # produce wild polygons; the Boolean DIFFERENCE below handles the
+        # clean cutaway without needing a thickened shell.
         _add_weld(obj, threshold=weld_threshold)
-        # Skip Solidify for tracking detectors (thin by design) and nozzles
-        # (already filled to solid convex hull during loading).
-        _is_tracker_or_vertex = any(kw in name for kw in ("Vertex", "Tracker"))
-        _skip_solidify = _is_tracker_or_vertex or _is_nozzle
-        if not _skip_solidify:
-            _add_solidify(obj)
 
         # Rotate beam axis: GDML/GLTF convention has Z = beam direction.
         # Rotate +90° around Y so that Z_gdml → X_blender, making the beam
@@ -2607,15 +2604,19 @@ def create_blender_scene(
                 mod = obj.modifiers.new("PhiBoolean", "BOOLEAN")
                 mod.operation = "DIFFERENCE"
                 mod.object = wedge_obj
-                for solver in ("FLOAT", "FAST"):
-                    try:
-                        mod.solver = solver
-                        break
-                    except TypeError:
-                        pass
-                # Enabled — Boolean runs AFTER Solidify so it cuts a closed
-                # manifold solid rather than an open shell.  This guarantees
-                # clean cut edges with no wild rim faces from Solidify.
+                # Exact solver: most robust for complex/non-manifold detector
+                # geometry.  FLOAT/FAST are less precise and produce "Using
+                # fallback" warnings on thin shells.
+                try:
+                    mod.solver = "EXACT"
+                except TypeError:
+                    pass  # Older Blender without Exact solver
+                # Hole Tolerant: required for open-shell (non-manifold) meshes
+                # to get a correct Boolean result without artifacts.
+                try:
+                    mod.use_hole_tolerant = True
+                except AttributeError:
+                    pass  # Not available in all Blender versions
                 mod.show_viewport = True
                 mod.show_render = True
             print(f"  [PHI] Boolean DIFFERENCE modifier added and ENABLED on "
