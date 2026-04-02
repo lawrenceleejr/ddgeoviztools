@@ -291,23 +291,18 @@ def _max_meshes_for_name(name: str) -> int:
 def _decimate_trimesh(mesh: "trimesh.Trimesh",
                       max_faces: int = 30_000) -> "trimesh.Trimesh":
     """
-    Reduce a mesh to at most *max_faces* triangles.
+    Reduce a mesh to at most *max_faces* triangles using QEM decimation.
 
-    Tries in order:
-      1. trimesh.simplify_quadric_decimation (needs fast_simplification)
-      2. Vertex-clustering / voxel remesh (trimesh built-in, no extra deps)
-      3. Uniform face subsampling — no external deps, always works; produces
-         a holey mesh but retains correct spatial extent for visualisation.
+    Falls back to the original mesh if fast_simplification is unavailable.
+    Callers that need a guaranteed face budget when QEM is absent should
+    apply _blender_decimate_obj() on the resulting bpy Object instead.
     """
-    import numpy as _np
-    import trimesh as _trimesh
+    import numpy as _np  # noqa: F401  (kept for symmetry with callers)
 
     if len(mesh.faces) <= max_faces:
         return mesh
+    ratio  = max_faces / len(mesh.faces)
     before = len(mesh.faces)
-    ratio  = max_faces / before
-
-    # --- attempt 1: QEM ---
     try:
         simplified = mesh.simplify_quadric_decimation(int(before * ratio))
         if len(simplified.faces) > 0:
@@ -315,43 +310,55 @@ def _decimate_trimesh(mesh: "trimesh.Trimesh",
                   f"(QEM {ratio:.0%})", flush=True)
             return simplified
     except Exception as exc:
-        print(f"    [DECIM] QEM failed ({exc}), trying voxel remesh", flush=True)
+        print(f"    [DECIM] QEM unavailable ({exc}); "
+              f"will use Blender-level DECIMATE instead", flush=True)
+    return mesh
 
-    # --- attempt 2: voxel remesh (trimesh built-in) ---
+
+# ---------------------------------------------------------------------------
+# Blender-level topology-preserving decimation
+# ---------------------------------------------------------------------------
+
+def _blender_decimate_obj(obj, max_faces: int = 100_000) -> None:
+    """
+    Apply Blender's DECIMATE modifier to *obj* in-place if its polygon count
+    exceeds *max_faces*.
+
+    Unlike trimesh face subsampling, Blender's DECIMATE (collapse) is
+    topology-preserving: it merges edges while keeping the mesh manifold,
+    so no disconnected triangles or holes are introduced.
+
+    The modifier is evaluated via the dependency graph and the result is
+    baked back into the mesh data block so the .blend file stores only the
+    reduced geometry (not the full high-poly original).
+    """
+    n_poly = len(obj.data.polygons)
+    if n_poly <= max_faces:
+        return
+
+    ratio = max_faces / n_poly
+    print(f"    [DECIM] Blender DECIMATE: {n_poly:,} → ~{max_faces:,} faces "
+          f"(ratio={ratio:.3f})", flush=True)
+
+    mod = obj.modifiers.new("_AutoDecimate", "DECIMATE")
+    mod.decimate_type        = "COLLAPSE"
+    mod.ratio                = max(0.001, ratio)
+    mod.use_collapse_triangulate = True
+
     try:
-        # Pick a voxel pitch that should yield ~max_faces triangles.
-        # Surface area ≈ n_faces * avg_face_area; pitch ≈ sqrt(SA/max_faces).
-        sa = mesh.area if mesh.area > 0 else 1.0
-        pitch = max(1.0, _np.sqrt(sa / max_faces))
-        remeshed = _trimesh.remesh.subdivide_to_size(mesh.vertices,
-                                                     mesh.faces,
-                                                     max_edge=pitch)[0]
-        # subdivide_to_size returns (vertices, faces); wrap in Trimesh
-        remeshed = _trimesh.Trimesh(*remeshed if isinstance(remeshed, tuple)
-                                    else (remeshed, mesh.faces), process=False)
-        if len(remeshed.faces) > 0:
-            after = len(remeshed.faces)
-            print(f"    [DECIM] {before:,} → {after:,} faces "
-                  f"(voxel pitch={pitch:.1f})", flush=True)
-            # If remesh made it larger, fall through to subsampling
-            if after <= max_faces * 1.5:
-                return remeshed
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        eval_obj  = obj.evaluated_get(depsgraph)
+        new_mesh  = bpy.data.meshes.new_from_object(eval_obj)
+        old_mesh  = obj.data
+        obj.modifiers.remove(mod)
+        obj.data = new_mesh
+        bpy.data.meshes.remove(old_mesh)
+        print(f"    [DECIM] → {len(obj.data.polygons):,} faces after DECIMATE",
+              flush=True)
     except Exception as exc:
-        print(f"    [DECIM] Voxel remesh failed ({exc}), "
-              f"using face subsampling", flush=True)
-
-    # --- attempt 3: uniform face subsampling (numpy-only, always succeeds) ---
-    # Produces a holey mesh but spatial extent and overall shape are preserved.
-    # For visualisation of repetitive tracker geometry this is acceptable.
-    rng = _np.random.default_rng(seed=42)
-    idx = rng.choice(before, size=max_faces, replace=False)
-    idx.sort()
-    sampled = _trimesh.Trimesh(vertices=mesh.vertices,
-                               faces=mesh.faces[idx],
-                               process=False)
-    print(f"    [DECIM] {before:,} → {len(sampled.faces):,} faces "
-          f"(uniform subsample, holey mesh — QEM unavailable)", flush=True)
-    return sampled
+        # Leave the modifier unapplied; Blender will evaluate it at render time.
+        print(f"    [DECIM] Could not bake DECIMATE modifier ({exc}); "
+              f"modifier left unapplied (will reduce at render)", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -884,6 +891,12 @@ def _load_mesh(
     obj = bpy.data.objects.new(name, me)
     bpy.data.scenes[0].collection.objects.link(obj)
     print(f"    [LOAD] {len(obj.data.polygons):,} faces", flush=True)
+
+    # If trimesh QEM was unavailable (fast_simplification missing) the mesh
+    # may still be over-budget.  Apply Blender's topology-preserving DECIMATE
+    # now so the .blend file stores reduced geometry rather than the full mesh.
+    _blender_decimate_obj(obj, max_faces=100_000)
+
     return obj
 
 
