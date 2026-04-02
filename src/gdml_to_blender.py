@@ -2280,18 +2280,64 @@ def _setup_render_and_compositor(scene):
         print("  [INFO] Freestyle skipped (Blender 5.0+ removed linestyle support).",
               flush=True)
 
-    # Compositor — Glare node for IP glow bloom.
+    # ---------------------------------------------------------------------------
+    # Cycles path-tracing quality: light bounces and caustics
+    # ---------------------------------------------------------------------------
+    try:
+        scene.cycles.max_bounces           = 12
+        scene.cycles.diffuse_bounces       = 4
+        scene.cycles.glossy_bounces        = 4
+        scene.cycles.transmission_bounces  = 8
+        scene.cycles.caustics_reflective   = True
+        scene.cycles.caustics_refractive   = True
+        print("  [RENDER] Cycles bounces: max=12 diff=4 gloss=4 trans=8  caustics=ON",
+              flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] Cycles bounce settings skipped: {exc}", flush=True)
+
+    # ---------------------------------------------------------------------------
+    # Ambient occlusion — enable AO render pass so Cycles bakes it into the
+    # combined output and for use in the compositor.
+    # ---------------------------------------------------------------------------
+    try:
+        vl = scene.view_layers[0]
+        vl.use_pass_ambient_occlusion = True
+        print("  [RENDER] AO render pass enabled", flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] AO pass skipped: {exc}", flush=True)
+
+    # Fast GI approximation gives AO-like indirect lighting at low cost.
+    try:
+        scene.cycles.use_fast_gi = True
+        scene.cycles.ao_bounces_render = 1
+        print("  [RENDER] Cycles fast GI (AO approximation) enabled", flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] Fast GI skipped: {exc}", flush=True)
+
+    # ---------------------------------------------------------------------------
+    # Film — enable grain / noise for photorealistic feel
+    # ---------------------------------------------------------------------------
+    try:
+        scene.cycles.film_exposure = 1.0
+        scene.render.film_grain_noise_strength = 0.02
+        print("  [RENDER] Film grain: 0.02", flush=True)
+    except Exception:
+        pass  # older builds don't have film_grain_noise_strength
+
+    # ---------------------------------------------------------------------------
+    # Compositor — Glare (bloom) + Chromatic Aberration (lens distortion).
     # The compositor API changed substantially in Blender 5.0 (node properties
     # removed, node graph restructured) and a half-built graph causes a process
     # crash on save.  Skip entirely on 5.0+; render settings above are intact.
+    # ---------------------------------------------------------------------------
     if bpy.app.version >= (5, 0, 0):
-        print("  [INFO] Compositor bloom skipped (Blender 5.0+ compositor API changed).",
+        print("  [INFO] Compositor effects skipped (Blender 5.0+ compositor API changed).",
               flush=True)
         return
 
     ctree = _get_compositor_tree(scene)
     if ctree is None:
-        print("  [WARN] Could not access compositor node tree; skipping bloom setup.",
+        print("  [WARN] Could not access compositor node tree; skipping post-FX setup.",
               flush=True)
         return
 
@@ -2299,22 +2345,91 @@ def _setup_render_and_compositor(scene):
     clinks = ctree.links
     cnodes.clear()
 
-    render_layer = cnodes.new("CompositorNodeRLayers")
-    render_layer.location = (-400, 0)
+    # Node layout (left → right):
+    #   RenderLayers → Glare(bloom) → LensDist(CA) → [viewer +] Composite
 
+    render_layer = cnodes.new("CompositorNodeRLayers")
+    render_layer.location = (-600, 0)
+
+    # --- Bloom / glow ---
     glare = cnodes.new("CompositorNodeGlare")
     glare.glare_type = "FOG_GLOW"
     glare.size       = 7
     glare.threshold  = 0.8
     glare.quality    = "HIGH"
-    glare.mix        = 0.0
-    glare.location   = (0, 0)
+    glare.mix        = 0.05   # slight additive glow
+    glare.location   = (-300, 0)
+
+    # --- Chromatic aberration via Lens Distortion node ---
+    # dispersion > 0 splits R/G/B laterally, mimicking real lens CA.
+    try:
+        lens_dist = cnodes.new("CompositorNodeLensDist")
+        lens_dist.use_projector = False   # radial CA, not anamorphic
+        lens_dist.inputs["Distortion"].default_value = 0.0   # no barrel/pincushion
+        lens_dist.inputs["Dispersion"].default_value = 0.04  # subtle CA
+        lens_dist.location = (0, 0)
+        _has_lens_dist = True
+        print("  [RENDER] Chromatic aberration (dispersion=0.04) enabled", flush=True)
+    except Exception as exc:
+        _has_lens_dist = False
+        print(f"  [RENDER] Lens distortion node skipped: {exc}", flush=True)
+
+    # --- Vignette via Ellipse Mask + multiply ---
+    try:
+        ellipse = cnodes.new("CompositorNodeEllipseMask")
+        ellipse.width  = 0.85
+        ellipse.height = 0.85
+        ellipse.location = (0, -250)
+
+        blur_vign = cnodes.new("CompositorNodeBlur")
+        blur_vign.size_x = 80
+        blur_vign.size_y = 80
+        blur_vign.use_relative = False
+        blur_vign.location = (200, -250)
+
+        invert_vign = cnodes.new("CompositorNodeInvert")
+        invert_vign.location = (400, -250)
+
+        mix_vign = cnodes.new("CompositorNodeMixRGB")
+        mix_vign.blend_type = "MULTIPLY"
+        mix_vign.inputs["Fac"].default_value = 0.55  # vignette strength
+        mix_vign.location = (600, 0)
+
+        _has_vignette = True
+    except Exception as exc:
+        _has_vignette = False
+        print(f"  [RENDER] Vignette setup skipped: {exc}", flush=True)
 
     composite = cnodes.new("CompositorNodeComposite")
-    composite.location = (400, 0)
+    composite.location = (900, 0)
 
+    viewer = cnodes.new("CompositorNodeViewer")
+    viewer.location = (900, -200)
+
+    # --- Wire nodes together ---
+    # RenderLayers → Glare
     clinks.new(render_layer.outputs["Image"], glare.inputs["Image"])
-    clinks.new(glare.outputs["Image"],        composite.inputs["Image"])
+
+    if _has_lens_dist:
+        clinks.new(glare.outputs["Image"], lens_dist.inputs["Image"])
+        _last_image = lens_dist.outputs["Image"]
+    else:
+        _last_image = glare.outputs["Image"]
+
+    if _has_vignette:
+        # Vignette mask chain
+        clinks.new(ellipse.outputs["Mask"], blur_vign.inputs["Image"])
+        clinks.new(blur_vign.outputs["Image"], invert_vign.inputs["Color"])
+        # Mix: Image * (1 - softened_ellipse_mask) → darkens edges
+        clinks.new(_last_image, mix_vign.inputs["Image"])
+        clinks.new(invert_vign.outputs["Color"], mix_vign.inputs["Image_001"])
+        _last_image = mix_vign.outputs["Image"]
+
+    clinks.new(_last_image, composite.inputs["Image"])
+    clinks.new(_last_image, viewer.inputs["Image"])
+
+    print("  [RENDER] Compositor: bloom + chromatic aberration + vignette wired",
+          flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2322,23 +2437,44 @@ def _setup_render_and_compositor(scene):
 # ---------------------------------------------------------------------------
 
 def _make_camera(name: str, location: tuple, target: tuple,
-                 ortho: bool = True, ortho_scale: float = 10000.0):
+                 ortho: bool = True, ortho_scale: float = 10000.0,
+                 lens_mm: float = 50.0, dof: bool = False,
+                 f_stop: float = 1.4):
+    """
+    Create a camera.
+
+    Parameters
+    ----------
+    lens_mm   : focal length in mm (perspective only).  Wide = dramatic.
+    dof       : enable depth of field focused on *target* (perspective only).
+    f_stop    : aperture f-stop for DoF.  Lower = more bokeh.
+    """
     cam_data = bpy.data.cameras.new(name)
     cam_data.type = "ORTHO" if ortho else "PERSP"
-    # At native GDML mm scale, the detector can be 5000–12000 mm across.
-    # Default clip_end of 1000 BU (= 1 m) clips the scene.  Set clip range
-    # wide enough to see the entire detector from any camera position.
-    cam_data.clip_start = 1.0       # 1 mm — avoids Z-fighting at close range
-    cam_data.clip_end   = 100000.0  # 100 m — comfortably encloses any detector
+    cam_data.clip_start = 1.0
+    cam_data.clip_end   = 100000.0
     if ortho:
         cam_data.ortho_scale = ortho_scale
     else:
-        cam_data.lens = 50
+        cam_data.lens = lens_mm
+
+    if dof and not ortho:
+        focus_dist = (Vector(location) - Vector(target)).length
+        try:
+            cam_data.dof.use_dof          = True
+            cam_data.dof.focus_distance   = focus_dist
+            cam_data.dof.aperture_fstop   = f_stop
+        except AttributeError:
+            # Blender < 2.90 flat API
+            try:
+                cam_data.dof_distance  = focus_dist
+                cam_data.gpu_dof.fstop = f_stop
+            except AttributeError:
+                pass
 
     cam_obj = bpy.data.objects.new(name, cam_data)
     bpy.data.scenes[0].collection.objects.link(cam_obj)
     cam_obj.location = Vector(location)
-
     direction = (Vector(target) - Vector(location)).normalized()
     cam_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
     return cam_obj
@@ -2589,63 +2725,88 @@ def create_blender_scene(
         _link_to_collection(env_sphere, col_lights)
 
     # ---- Cameras ----
-    print(f"  [SETUP] Creating cameras "
-          f"(r_trans={r_trans:.2f} r_side={r_side:.2f} r_persp={r_persp:.2f}) ...",
-          flush=True)
+    # phi bisector in Blender YZ: phi=0 → +Y, phi=90° → +Z
+    _phi_center_rad = math.radians(45.0) if no_phi_cut \
+                      else math.radians((phi_min + phi_max) / 2.0)
+    _pY = math.cos(_phi_center_rad)   # unit Y component of cut bisector
+    _pZ = math.sin(_phi_center_rad)   # unit Z component of cut bisector
 
-    # Transverse (end-cap): camera on +X axis (beam direction) looking toward origin.
-    #   → sees YZ plane: Y = physics-up (vertical), Z = physics-horizontal-transverse.
-    #   In GDML terms this is the transverse cross-section of the detector.
-    cam_trans = _make_camera(
+    all_cams = []
+
+    # ── Orthographic reference views ──────────────────────────────────────────
+    # Transverse end-cap view: looking along beam (+X) into the YZ cross-section.
+    all_cams.append(_make_camera(
         "Cam_Transverse",
-        location=(r_trans, 0, 0),
-        target=(0, 0, 0),
-        ortho=True,
-        ortho_scale=ortho_trans,
-    )
-
-    # Side / elevation: camera on +Z axis looking down toward origin.
-    #   → sees XY plane: X = beam (horizontal right), Y = physics-up (vertical).
-    #   This gives the classic "side view" with the beam axis running left–right.
-    _make_camera(
+        location=(r_trans, 0, 0), target=(0, 0, 0),
+        ortho=True, ortho_scale=ortho_trans,
+    ))
+    # Side / elevation: looking along +Z across the beam axis.
+    all_cams.append(_make_camera(
         "Cam_Side",
-        location=(0, 0, r_side),
-        target=(0, 0, 0),
-        ortho=True,
-        ortho_scale=ortho_side,
-    )
+        location=(0, 0, r_side), target=(0, 0, 0),
+        ortho=True, ortho_scale=ortho_side,
+    ))
 
-    # Perspective camera — placed at the interaction point (inside the detector),
-    # looking out through the phi-cut opening so the viewer sees all detector
-    # layers framed by the cut.
-    # phi_center is the bisector of the cut in Blender-YZ convention.
-    if no_phi_cut:
-        _phi_center_rad = math.radians(45.0)
-    else:
-        _phi_center_rad = math.radians((phi_min + phi_max) / 2.0)
-
-    # Target: centre of the cut opening at the outer detector radius
-    _cam_target_Y = r * math.cos(_phi_center_rad)
-    _cam_target_Z = r * math.sin(_phi_center_rad)
-    # Location: slightly off-axis along beam so the direction vector is nonzero
-    _cam_loc_X = x_max * 0.05
-    cam_persp = _make_camera(
+    # ── Perspective — IP interior shot (classic detector cross-section) ────────
+    # Ultra-wide 18 mm lens from the interaction point looking out through the
+    # phi cut; exaggerated perspective makes the layers feel enormous.
+    all_cams.append(_make_camera(
         "Cam_Perspective",
-        location=(_cam_loc_X, 0.0, 0.0),
-        target=(0.0, _cam_target_Y, _cam_target_Z),
-        ortho=False,
-    )
+        location=(x_max * 0.06, 0.0, 0.0),
+        target=(0.0, r * 0.55 * _pY, r * 0.55 * _pZ),
+        ortho=False, lens_mm=18.0, dof=True, f_stop=1.4,
+    ))
 
-    # Move cameras into the Cameras collection
-    for cam_name in ("Cam_Transverse", "Cam_Side", "Cam_Perspective"):
-        cam_obj = bpy.data.objects.get(cam_name)
-        if cam_obj:
-            _link_to_collection(cam_obj, col_cameras)
+    # ── Perspective — dramatic 3/4 exterior overview ───────────────────────────
+    # Pulled back and elevated so you see the full barrel depth and the
+    # cut face simultaneously.  35 mm gives a moderately wide cinematic look.
+    all_cams.append(_make_camera(
+        "Cam_Overview",
+        location=( x_max * 0.9,  r * 1.5 * _pY,  r * 1.5 * _pZ),
+        target=(0, 0, 0),
+        ortho=False, lens_mm=35.0, dof=True, f_stop=2.0,
+    ))
 
-    # Set active camera to the perspective view (inside the detector)
+    # ── Perspective — close-up on cut face layers ─────────────────────────────
+    # Tight 85 mm portrait lens hovering just inside the cut opening, aimed at
+    # the origin.  Shallow DoF puts the innermost layers in sharp focus while
+    # the outer layers melt into bokeh discs.
+    all_cams.append(_make_camera(
+        "Cam_CutFace",
+        location=( x_max * 0.25,  r * 0.45 * _pY,  r * 0.45 * _pZ),
+        target=(0, 0, 0),
+        ortho=False, lens_mm=85.0, dof=True, f_stop=1.2,
+    ))
+
+    # ── Perspective — worm's-eye / reactor-core look ──────────────────────────
+    # Ultra-wide 14 mm looking straight up through the barrel from below along
+    # the cut bisector.  Produces an immersive tunnel effect.
+    all_cams.append(_make_camera(
+        "Cam_Tunnel",
+        location=(-x_max * 1.1, -r * 0.08 * _pY, -r * 0.08 * _pZ),
+        target=(0, 0, 0),
+        ortho=False, lens_mm=14.0, dof=True, f_stop=2.8,
+    ))
+
+    # ── Perspective — elevated side-on with the beam axis in frame ─────────────
+    # Standard 50 mm lens from above and to one side; shows beam direction and
+    # the cut together for context.
+    all_cams.append(_make_camera(
+        "Cam_Elevated",
+        location=( x_max * 1.3,  r * 1.1 * _pY,  r * 0.3 * _pZ),
+        target=(0, 0, 0),
+        ortho=False, lens_mm=50.0, dof=True, f_stop=2.8,
+    ))
+
+    for cam_obj in all_cams:
+        _link_to_collection(cam_obj, col_cameras)
+
+    # Active camera: the IP interior wide-angle for the default viewport.
+    cam_persp = bpy.data.objects.get("Cam_Perspective")
     bpy.data.scenes[0].camera = cam_persp
-    print(f"  [SETUP] Cameras created (active: Cam_Perspective, inside detector, "
-          f"looking into phi-cut at {math.degrees(_phi_center_rad):.0f}°)", flush=True)
+    print(f"  [SETUP] {len(all_cams)} cameras created  "
+          f"(active: Cam_Perspective 18 mm wide-angle, IP interior, DoF f/1.4)",
+          flush=True)
 
     # ---- Lighting ----
     print(f"  [SETUP] Creating lights ...", flush=True)
@@ -2704,7 +2865,7 @@ def create_blender_scene(
     ip_obj = _add_point_light(
         "Light_IP_Purple_Glow",
         location=(0, 0, 0),
-        energy=energy_base * 80.0,
+        energy=1.0,
         color_rgb=(0.45, 0.0, 1.0),
         soft_size=r * 0.30,
     )
