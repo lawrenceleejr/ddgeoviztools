@@ -291,18 +291,23 @@ def _max_meshes_for_name(name: str) -> int:
 def _decimate_trimesh(mesh: "trimesh.Trimesh",
                       max_faces: int = 30_000) -> "trimesh.Trimesh":
     """
-    Reduce a mesh to at most *max_faces* triangles using quadric (QEM)
-    decimation.  Falls back to the original mesh if trimesh's simplifier is
-    unavailable or fails.
+    Reduce a mesh to at most *max_faces* triangles.
 
-    QEM preserves sharp features well; a target of 30 K faces is enough for
-    photorealistic rendering of most sub-detector components while cutting
-    Blender load time dramatically on meshes with millions of triangles.
+    Tries in order:
+      1. trimesh.simplify_quadric_decimation (needs fast_simplification)
+      2. Vertex-clustering / voxel remesh (trimesh built-in, no extra deps)
+      3. Uniform face subsampling — no external deps, always works; produces
+         a holey mesh but retains correct spatial extent for visualisation.
     """
+    import numpy as _np
+    import trimesh as _trimesh
+
     if len(mesh.faces) <= max_faces:
         return mesh
-    ratio  = max_faces / len(mesh.faces)
     before = len(mesh.faces)
+    ratio  = max_faces / before
+
+    # --- attempt 1: QEM ---
     try:
         simplified = mesh.simplify_quadric_decimation(int(before * ratio))
         if len(simplified.faces) > 0:
@@ -310,8 +315,43 @@ def _decimate_trimesh(mesh: "trimesh.Trimesh",
                   f"(QEM {ratio:.0%})", flush=True)
             return simplified
     except Exception as exc:
-        print(f"    [DECIM] QEM failed ({exc}), keeping original", flush=True)
-    return mesh
+        print(f"    [DECIM] QEM failed ({exc}), trying voxel remesh", flush=True)
+
+    # --- attempt 2: voxel remesh (trimesh built-in) ---
+    try:
+        # Pick a voxel pitch that should yield ~max_faces triangles.
+        # Surface area ≈ n_faces * avg_face_area; pitch ≈ sqrt(SA/max_faces).
+        sa = mesh.area if mesh.area > 0 else 1.0
+        pitch = max(1.0, _np.sqrt(sa / max_faces))
+        remeshed = _trimesh.remesh.subdivide_to_size(mesh.vertices,
+                                                     mesh.faces,
+                                                     max_edge=pitch)[0]
+        # subdivide_to_size returns (vertices, faces); wrap in Trimesh
+        remeshed = _trimesh.Trimesh(*remeshed if isinstance(remeshed, tuple)
+                                    else (remeshed, mesh.faces), process=False)
+        if len(remeshed.faces) > 0:
+            after = len(remeshed.faces)
+            print(f"    [DECIM] {before:,} → {after:,} faces "
+                  f"(voxel pitch={pitch:.1f})", flush=True)
+            # If remesh made it larger, fall through to subsampling
+            if after <= max_faces * 1.5:
+                return remeshed
+    except Exception as exc:
+        print(f"    [DECIM] Voxel remesh failed ({exc}), "
+              f"using face subsampling", flush=True)
+
+    # --- attempt 3: uniform face subsampling (numpy-only, always succeeds) ---
+    # Produces a holey mesh but spatial extent and overall shape are preserved.
+    # For visualisation of repetitive tracker geometry this is acceptable.
+    rng = _np.random.default_rng(seed=42)
+    idx = rng.choice(before, size=max_faces, replace=False)
+    idx.sort()
+    sampled = _trimesh.Trimesh(vertices=mesh.vertices,
+                               faces=mesh.faces[idx],
+                               process=False)
+    print(f"    [DECIM] {before:,} → {len(sampled.faces):,} faces "
+          f"(uniform subsample, holey mesh — QEM unavailable)", flush=True)
+    return sampled
 
 
 # ---------------------------------------------------------------------------
@@ -2876,7 +2916,7 @@ def create_blender_scene(
             _link_to_collection(light_obj, col_lights)
 
     print(f"  [SETUP] Lights created: key/fill/rim/interior = 50 W @ 2800 K "
-          f"(normalize off), IP purple = {energy_base*80:.0f} W", flush=True)
+          f"(normalize off), IP purple = 1 W", flush=True)
 
     # ---- Volumetric god rays (render-only) ----
     # A large Volume Scatter sphere (hidden from viewport, visible in render)
