@@ -288,126 +288,6 @@ def _max_meshes_for_name(name: str) -> int:
     return 50
 
 
-def _vertex_cluster_decimate(mesh, max_faces: int) -> "trimesh.Trimesh":
-    """
-    Vertex-clustering (voxel-grid) decimation using only numpy.
-
-    Groups nearby vertices into a regular 3-D grid and replaces each cluster
-    with its centroid.  Faces whose two or more vertices collapse to the same
-    cluster are discarded as degenerate.  The result is a valid, connected
-    mesh with no disconnected triangles or holes — safe for Boolean ops.
-
-    This is used when fast_simplification is not installed (no QEM available).
-    """
-    import numpy as _np
-    import trimesh as _trimesh
-
-    verts = _np.asarray(mesh.vertices, dtype=_np.float64)
-    faces = _np.asarray(mesh.faces,    dtype=_np.int64)
-
-    if len(faces) <= max_faces:
-        return mesh
-
-    # Target number of clusters ≈ proportional to face reduction.
-    # faces ~ 2 × vertices (for a manifold mesh), so cluster count ≈
-    # max_faces / 2.  Cube-root gives cells-per-axis.
-    target_verts  = max(8, max_faces // 2)
-    n_per_axis    = max(2, int(_np.ceil(target_verts ** (1.0 / 3.0))))
-
-    bbox_min = verts.min(axis=0)
-    bbox_max = verts.max(axis=0)
-    extent   = bbox_max - bbox_min
-    # Avoid division by zero on flat dimensions
-    cell_size = _np.where(extent > 0, extent / n_per_axis, 1.0)
-
-    # Integer grid coordinates for every vertex
-    gi = _np.floor((verts - bbox_min) / cell_size).astype(_np.int32)
-    gi = _np.clip(gi, 0, n_per_axis - 1)
-
-    # Flatten 3-D grid index to a single integer key
-    keys = (gi[:, 0].astype(_np.int64) * n_per_axis * n_per_axis
-            + gi[:, 1].astype(_np.int64) * n_per_axis
-            + gi[:, 2].astype(_np.int64))
-
-    unique_keys, new_vid = _np.unique(keys, return_inverse=True)
-    n_new = len(unique_keys)
-
-    # Representative vertex = cluster centroid
-    rep_verts = _np.zeros((n_new, 3), dtype=_np.float64)
-    _np.add.at(rep_verts, new_vid, verts)
-    counts = _np.bincount(new_vid, minlength=n_new).astype(_np.float64)
-    rep_verts /= counts[:, _np.newaxis]
-
-    # Remap faces and drop degenerate triangles
-    new_faces = new_vid[faces]
-    v0, v1, v2 = new_faces[:, 0], new_faces[:, 1], new_faces[:, 2]
-    valid     = (v0 != v1) & (v1 != v2) & (v0 != v2)
-    new_faces = new_faces[valid]
-
-    if len(new_faces) == 0:
-        return mesh  # should never happen for reasonable inputs
-
-    result = _trimesh.Trimesh(vertices=rep_verts, faces=new_faces, process=False)
-    print(f"    [DECIM] {len(faces):,} → {len(new_faces):,} faces "
-          f"(vertex cluster, {n_per_axis}³ grid)", flush=True)
-    return result
-
-
-def _decimate_trimesh(mesh: "trimesh.Trimesh",
-                      max_faces: int = 30_000) -> "trimesh.Trimesh":
-    """
-    Reduce a mesh to at most *max_faces* triangles.
-
-    Tries in order:
-      1. QEM via trimesh.simplify_quadric_decimation (needs fast_simplification)
-      2. Vertex-clustering fallback (_vertex_cluster_decimate) — pure numpy,
-         always produces a valid connected mesh with no disconnected triangles.
-    """
-    if len(mesh.faces) <= max_faces:
-        return mesh
-    ratio  = max_faces / len(mesh.faces)
-    before = len(mesh.faces)
-
-    # --- attempt 1: QEM ---
-    try:
-        simplified = mesh.simplify_quadric_decimation(int(before * ratio))
-        if len(simplified.faces) > 0:
-            print(f"    [DECIM] {before:,} → {len(simplified.faces):,} faces "
-                  f"(QEM {ratio:.0%})", flush=True)
-            return simplified
-    except Exception as exc:
-        print(f"    [DECIM] QEM unavailable ({exc}); "
-              f"falling back to vertex clustering", flush=True)
-
-    # --- attempt 2: vertex-clustering (pure numpy) ---
-    return _vertex_cluster_decimate(mesh, max_faces)
-
-
-# ---------------------------------------------------------------------------
-# Blender-level topology-preserving decimation (safety net)
-# ---------------------------------------------------------------------------
-
-def _blender_decimate_obj(obj, max_faces: int = 100_000) -> None:
-    """
-    Add a Blender DECIMATE modifier to *obj* if its polygon count exceeds
-    *max_faces*.
-
-    This is a safety net for cases where trimesh-level decimation was
-    insufficient.  The modifier is left unapplied so Blender evaluates it at
-    render time — it is NOT baked here because headless depsgraph evaluation
-    is unreliable across Blender versions and causes orphaned mesh data.
-    """
-    n_poly = len(obj.data.polygons)
-    if n_poly <= max_faces:
-        return
-
-    ratio = max(0.001, max_faces / n_poly)
-    mod = obj.modifiers.new("_AutoDecimate", "DECIMATE")
-    mod.decimate_type             = "COLLAPSE"
-    mod.ratio                     = ratio
-    mod.use_collapse_triangulate  = True
-    print(f"    [DECIM] Blender DECIMATE modifier added: "
-          f"{n_poly:,} → ~{max_faces:,} faces (ratio={ratio:.3f})", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -905,19 +785,11 @@ def _load_mesh(
         sub_meshes = _filter_world_volumes(sub_meshes)
         sub_meshes = _thin_repeated_layers(sub_meshes,
                                            max_meshes=_max_meshes_for_name(name))
-        # Clean and decimate each sub-mesh individually so QEM never creates
-        # triangles that span across sub-mesh boundaries.
-        n = max(1, len(sub_meshes))
-        per_mesh_budget = max(500, 30_000 // n)
-        sub_meshes = [_decimate_trimesh(
-                          trimesh.Trimesh(m.vertices, m.faces, process=True),
-                          max_faces=per_mesh_budget)
+        sub_meshes = [trimesh.Trimesh(m.vertices, m.faces, process=True)
                       for m in sub_meshes]
         raw = trimesh.util.concatenate(sub_meshes)
     else:
         raw = trimesh.Trimesh(raw.vertices, raw.faces, process=True)
-
-    raw = _decimate_trimesh(raw, max_faces=100_000)
 
     if solid:
         try:
@@ -940,12 +812,6 @@ def _load_mesh(
     obj = bpy.data.objects.new(name, me)
     bpy.data.scenes[0].collection.objects.link(obj)
     print(f"    [LOAD] {len(obj.data.polygons):,} faces", flush=True)
-
-    # If trimesh QEM was unavailable (fast_simplification missing) the mesh
-    # may still be over-budget.  Apply Blender's topology-preserving DECIMATE
-    # now so the .blend file stores reduced geometry rather than the full mesh.
-    _blender_decimate_obj(obj, max_faces=100_000)
-
     return obj
 
 
