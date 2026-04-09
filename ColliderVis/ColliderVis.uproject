@@ -25,7 +25,8 @@
 		},
 		{
 			"Name": "CinematicCamera",
-			"Enabled": true
+			"Enabled": true,
+			"bOptional": true
 		},
 		{
 			"Name": "ProceduralMeshComponent",

@@ -1,26 +1,32 @@
 #include "ColliderVisCineCameraActor.h"
 #include "EventDisplayManager.h"
-#include "CineCameraComponent.h"
+#include "Camera/CameraComponent.h"
 #include "Kismet/GameplayStatics.h"
 
 AColliderVisCineCameraActor::AColliderVisCineCameraActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
-	UCineCameraComponent* CineCam = GetCineCameraComponent();
-	if (CineCam)
+	UCameraComponent* Cam = GetCameraComponent();
+	if (Cam)
 	{
-		// Anamorphic 50mm lens preset
-		CineCam->CurrentFocalLength  = 50.f;
-		CineCam->CurrentAperture     = 1.8f;   // f/1.8 — shallower DoF, more cinematic
+		// 50mm full-frame equivalent field of view (~39.6°)
+		Cam->FieldOfView = 39.6f;
 
-		// Focus tracking — will be updated to event centroid each tick
-		CineCam->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
-		CineCam->FocusSettings.ManualFocusDistance = 500.f;
+		// Depth of field via PostProcessSettings (no CinematicCamera plugin needed)
+		FPostProcessSettings& PP = Cam->PostProcessSettings;
 
-		// Film back: full-frame 35mm
-		CineCam->Filmback.SensorWidth  = 36.f;
-		CineCam->Filmback.SensorHeight = 24.f;
+		// f/1.8 aperture — shallow, cinematic DoF
+		PP.bOverride_DepthOfFieldFstop = true;
+		PP.DepthOfFieldFstop           = 1.8f;
+
+		// Starting focal distance — UpdateFocusToCentroid will animate this each tick
+		PP.bOverride_DepthOfFieldFocalDistance = true;
+		PP.DepthOfFieldFocalDistance           = 500.f;
+
+		// Full-frame 36mm sensor width for physically correct CoC calculations
+		PP.bOverride_DepthOfFieldSensorWidth = true;
+		PP.DepthOfFieldSensorWidth           = 36.f;
 	}
 }
 
@@ -49,15 +55,12 @@ void AColliderVisCineCameraActor::UpdateFocusToCentroid(float DeltaTime, float I
 {
 	if (!EventDisplayManager) return;
 
-	UCineCameraComponent* CineCam = GetCineCameraComponent();
-	if (!CineCam) return;
+	UCameraComponent* Cam = GetCameraComponent();
+	if (!Cam) return;
 
-	const FVector Centroid = EventDisplayManager->GetEventCentroid();
-	const float TargetDist = FVector::Dist(GetActorLocation(), Centroid);
+	const FVector  Centroid    = EventDisplayManager->GetEventCentroid();
+	const float    TargetDist  = FVector::Dist(GetActorLocation(), Centroid);
+	float&         FocalDist   = Cam->PostProcessSettings.DepthOfFieldFocalDistance;
 
-	CineCam->FocusSettings.ManualFocusDistance = FMath::FInterpTo(
-		CineCam->FocusSettings.ManualFocusDistance,
-		TargetDist,
-		DeltaTime,
-		InterpSpeed);
+	FocalDist = FMath::FInterpTo(FocalDist, TargetDist, DeltaTime, InterpSpeed);
 }

@@ -1,17 +1,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "CineCameraActor.h"
+#include "Camera/CameraActor.h"
 #include "ColliderVisCineCameraActor.generated.h"
 
 class AEventDisplayManager;
 
 /**
  * Cinematic camera for Viz/Movie mode.
- * Pre-configured with anamorphic lens presets and auto-focus on the event centroid.
+ * Configures a 50mm full-frame equivalent FOV with f/1.8 shallow DoF via the
+ * camera component's PostProcessSettings (no CinematicCamera plugin required).
+ * Auto-focuses on the event centroid each tick.
  */
 UCLASS(BlueprintType, Blueprintable)
-class COLLIDERVIS_API AColliderVisCineCameraActor : public ACineCameraActor
+class COLLIDERVIS_API AColliderVisCineCameraActor : public ACameraActor
 {
 	GENERATED_BODY()
 
@@ -24,7 +26,7 @@ public:
 
 	/**
 	 * Smoothly animate focus distance toward the current event centroid.
-	 * Call this on a tick or after LoadEvent().
+	 * Called automatically each tick; can also be driven from Blueprint.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "ColliderVis|Camera")
 	void UpdateFocusToCentroid(float DeltaTime, float InterpSpeed = 3.f);
