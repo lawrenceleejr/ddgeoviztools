@@ -19,12 +19,12 @@ void AEventDisplayManager::BeginPlay()
 	Super::BeginPlay();
 }
 
-void AEventDisplayManager::LoadEDM4HEPFile(const FString& Path)
+bool AEventDisplayManager::LoadEDM4HEPFile(const FString& Path)
 {
 	if (!Config)
 	{
 		UE_LOG(LogTemp, Error, TEXT("EventDisplayManager: Config is null — assign DA_EventDisplayConfig"));
-		return;
+		return false;
 	}
 
 	CurrentFilePath = Path;
@@ -40,7 +40,7 @@ void AEventDisplayManager::LoadEDM4HEPFile(const FString& Path)
 	if (!RunPythonConverter(Path, ConvertedOutputDir))
 	{
 		UE_LOG(LogTemp, Error, TEXT("EventDisplayManager: Python conversion failed for '%s'"), *Path);
-		return;
+		return false;
 	}
 
 	// Discover event JSON files
@@ -60,6 +60,8 @@ void AEventDisplayManager::LoadEDM4HEPFile(const FString& Path)
 	{
 		LoadEvent(0);
 	}
+
+	return TotalEvents > 0;
 }
 
 void AEventDisplayManager::LoadNextEvent()

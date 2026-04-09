@@ -46,7 +46,7 @@ public:
 	 * Blocks until conversion is complete.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "ColliderVis|EventDisplay")
-	void LoadEDM4HEPFile(const FString& Path);
+	bool LoadEDM4HEPFile(const FString& Path);
 
 	/** Advance to the next event, wrapping around. */
 	UFUNCTION(BlueprintCallable, Category = "ColliderVis|EventDisplay")
