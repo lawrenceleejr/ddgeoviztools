@@ -52,10 +52,7 @@ void UColliderVisOptionsWidget::BrowseAndLoadFile()
 
 	// Start in the directory of the currently loaded file if possible
 	FString StartDir = FPaths::GetPath(CurrentFilePath);
-	if (StartDir.IsEmpty())
-	{
-		StartDir = FPlatformMisc::GetDefaultPathToUserDocuments();
-	}
+	// Leave StartDir empty if no file is loaded yet — the OS picker will use the last-visited dir
 
 	TArray<FString> Filenames;
 	const bool bOpened = DesktopPlatform->OpenFileDialog(
