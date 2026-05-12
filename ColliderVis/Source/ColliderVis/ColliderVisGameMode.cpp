@@ -121,7 +121,7 @@ void AColliderVisGameMode::SetupAtmosphere()
 	ADirectionalLight* DirLight = World->SpawnActor<ADirectionalLight>();
 	if (DirLight)
 	{
-		UDirectionalLightComponent* DLC = DirLight->GetLightComponent();
+		UDirectionalLightComponent* DLC = Cast<UDirectionalLightComponent>(DirLight->GetLightComponent());
 		DLC->Intensity           = 0.05f;   // was 1.0 — near-zero; void has no sun
 		DLC->bUseTemperature     = true;
 		DLC->Temperature         = 5600.f;
