@@ -2113,6 +2113,19 @@ def _area_light_with_temperature(
     light_data.size   = size
     light_data.shape  = "SQUARE"
 
+    # Disable normalize: with use_normalize=False the energy field is the
+    # radiant exitance of the light surface (W/m²), and total emitted power
+    # scales linearly with light area.  Two consequences:
+    #   1. Irradiance at the subject becomes INDEPENDENT of detector size
+    #      when light size scales proportionally with r — so a single
+    #      W/m² value works across all detector geometries.
+    #   2. Energy values are physically meaningful (compare to sunlight
+    #      ≈ 1000 W/m², studio softbox ≈ 500-2000 W/m²) rather than the
+    #      unitless mega-wattages the normalize=True scaling produced at
+    #      mm scene scale.
+    if hasattr(light_data, "use_normalize"):
+        light_data.use_normalize = False
+
     # Use Blender's built-in colour temperature (real blackbody, not RGB approx).
     # Priority:
     #   1. Native color_mode = 'TEMPERATURE' property (Blender 4.0+)
@@ -2148,6 +2161,13 @@ def _add_point_light(
     """
     light_data        = bpy.data.lights.new(name, type="POINT")
     light_data.energy = energy
+
+    # Disable normalize: for point lights with use_normalize=False the
+    # energy is the radiant intensity (W/sr).  Total emitted power is
+    # energy * 4π — physically meaningful and matches the area-light
+    # convention used in _area_light_with_temperature.
+    if hasattr(light_data, "use_normalize"):
+        light_data.use_normalize = False
 
     if temp_kelvin is not None:
         _set_light_temperature(light_data, name, energy, temp_kelvin)
@@ -2270,9 +2290,16 @@ def _add_god_ray_spot(
     )
     target = (0.0, 0.0, 0.0)   # point at IP
 
-    spot_energy = energy_base * 2000.0   # strong spot to produce visible scattering
+    # With use_normalize=False on the spot, energy is W/sr — intensity per
+    # cone solid angle.  energy_base now stores radiant exitance / intensity
+    # already calibrated for the scene, so we just multiply by a relative
+    # weight rather than the previous 2000× factor (which produced multi-MW
+    # totals at mm scale).
+    spot_energy = energy_base * 4.0          # strong but not overwhelming
     light_data        = bpy.data.lights.new(name, type="SPOT")
     light_data.energy = spot_energy
+    if hasattr(light_data, "use_normalize"):
+        light_data.use_normalize = False
     # Use true blackbody colour temperature for the god-ray spot
     _set_light_temperature(light_data, name, spot_energy, 3500.0)
     light_data.spot_size   = math.radians(35)   # 35° cone — wide enough to fill opening
@@ -2569,14 +2596,13 @@ def _setup_render_and_compositor(scene):
         print("  [RENDER] WARNING: Could not set view transform (Filmic/AgX)",
               flush=True)
 
-    # Exposure: +2.5 EV (≈5.6× brighter than baseline).  Lower than the old
-    # +4 EV because the lighting rig is now ~25% brighter at the key, and the
-    # micro-bevel produces brighter specular highlights — leaving exposure
-    # at +4 would clip the highlights flat.  AgX has soft highlight rolloff,
-    # so a bright scene with +2.5 EV will look richer than +4 EV did with
-    # the old dim rig.
+    # Exposure: 0 EV (no scene-wide multiplier).  The lights are now in
+    # physical units (W/m² emission density with use_normalize=False), so
+    # the exposure offset only needs to compensate for any global scene
+    # over- or under-shoot.  Start at 0 EV; if the AgX/Filmic output looks
+    # dim, increase to +1 or +2 EV.  If it looks blown out, decrease.
     try:
-        scene.view_settings.exposure = 2.5
+        scene.view_settings.exposure = 0.0
     except Exception:
         pass
 
@@ -2736,16 +2762,26 @@ def _make_camera(name: str, location: tuple, target: tuple,
 # Scene bounds helper
 # ---------------------------------------------------------------------------
 
-def _scene_bounds(objects: list) -> tuple[float, float, float]:
-    """Return (x_max, y_max, z_max) of the combined bounding box (in mm)."""
+def _scene_bounds(objects: list) -> tuple[tuple[float, float, float],
+                                            tuple[float, float, float]]:
+    """
+    Return the world-space axis-aligned bounding box of *objects* as
+    ((min_x, min_y, min_z), (max_x, max_y, max_z)) in mm.
+
+    Centre and half-extents are derived by the caller — this keeps the
+    function honest about asymmetric geometry (e.g. detectors whose IP
+    is offset from the GDML origin) instead of silently assuming
+    symmetry around (0, 0, 0).
+    """
     xs, ys, zs = [], [], []
     for obj in objects:
         for corner in obj.bound_box:
             v = obj.matrix_world @ Vector(corner)
             xs.append(v.x); ys.append(v.y); zs.append(v.z)
     if not xs:
-        return 5000.0, 5000.0, 5000.0
-    return max(abs(x) for x in xs), max(abs(y) for y in ys), max(abs(z) for z in zs)
+        return (-5000.0, -5000.0, -5000.0), (5000.0, 5000.0, 5000.0)
+    return ((min(xs), min(ys), min(zs)),
+            (max(xs), max(ys), max(zs)))
 
 
 # ---------------------------------------------------------------------------
@@ -2910,20 +2946,44 @@ def create_blender_scene(
 
     # ---- Compute scene bounds for light / camera placement ----
     # After the Ry(+90°) rotation (no scale — native mm):
-    #   x_max = beam half-length   (was z_gdml)
-    #   y_max = vertical transverse  (was y_gdml)
-    #   z_max = horizontal transverse (was x_gdml, sign-flipped but abs same)
-    x_max, y_max, z_max = _scene_bounds(loaded_objects)
-    r = max(x_max, y_max, z_max)   # overall scale radius (Blender units)
+    #   X = beam axis    (was Z_gdml)
+    #   Y = vertical-up  (was Y_gdml)
+    #   Z = horizontal-transverse (was X_gdml, sign-flipped)
+    #
+    # We work with the full (min, max) AABB rather than max(abs(...)) so
+    # cameras correctly target the geometric centre of asymmetric
+    # detectors (e.g. those with the IP offset from the GDML origin).
+    (b_min, b_max) = _scene_bounds(loaded_objects)
+    centre = ((b_min[0] + b_max[0]) * 0.5,
+              (b_min[1] + b_max[1]) * 0.5,
+              (b_min[2] + b_max[2]) * 0.5)
+    half   = ((b_max[0] - b_min[0]) * 0.5,
+              (b_max[1] - b_min[1]) * 0.5,
+              (b_max[2] - b_min[2]) * 0.5)
+    # Backward-compatible helpers — used by the legacy scale-with-r logic
+    # for the environment sphere, wedge cutter, etc.  r is the largest
+    # half-extent of the detector AABB (in mm).
+    x_half, y_half, z_half = half
+    x_max, y_max, z_max    = b_max[0], b_max[1], b_max[2]   # for legacy refs
+    r = max(x_half, y_half, z_half)
 
-    # Transverse view (end-cap): camera distance based on transverse extent
-    r_trans  = max(y_max, z_max) * 1.6
-    # Side/elevation view: camera distance based on beam + vertical extent
-    r_side   = max(x_max, y_max) * 1.6
-    r_persp  = r * 2.2
+    # Camera distances are based on transverse / longitudinal half-sizes
+    # multiplied by a comfortable framing margin (1.8×).  For the
+    # orthographic views, ortho_scale = full visible width = 2.2× the
+    # relevant half-extent.
+    r_trans  = max(y_half, z_half) * 1.8
+    r_side   = max(x_half, y_half) * 1.8
+    r_persp  = r * 2.4
 
-    ortho_trans = max(y_max, z_max) * 2.2
-    ortho_side  = max(x_max, y_max) * 2.2
+    ortho_trans = max(y_half, z_half) * 2.4
+    ortho_side  = max(x_half, y_half) * 2.4
+
+    print(f"  [SETUP] Scene AABB: "
+          f"min=({b_min[0]:.0f},{b_min[1]:.0f},{b_min[2]:.0f})  "
+          f"max=({b_max[0]:.0f},{b_max[1]:.0f},{b_max[2]:.0f})  "
+          f"centre=({centre[0]:.0f},{centre[1]:.0f},{centre[2]:.0f})  "
+          f"half=({half[0]:.0f},{half[1]:.0f},{half[2]:.0f}) mm",
+          flush=True)
 
     # ---- Phi-cutaway (secondary Boolean modifier) ----
     # The primary phi cutaway was already applied at the numpy/trimesh level
@@ -2975,50 +3035,60 @@ def create_blender_scene(
         _link_to_collection(env_sphere, col_lights)
 
     # ---- Cameras ----
+    # All three cameras target the geometric CENTRE of the detector AABB
+    # (not the world origin), so they frame the detector correctly even
+    # when the GDML geometry is offset from (0, 0, 0).
     print(f"  [SETUP] Creating cameras "
-          f"(r_trans={r_trans:.2f} r_side={r_side:.2f} r_persp={r_persp:.2f}) ...",
+          f"(r_trans={r_trans:.0f} r_side={r_side:.0f} r_persp={r_persp:.0f}) "
+          f"targeting centre=({centre[0]:.0f},{centre[1]:.0f},{centre[2]:.0f}) ...",
           flush=True)
 
-    # Transverse (end-cap): camera on +X axis (beam direction) looking toward origin.
-    #   → sees YZ plane: Y = physics-up (vertical), Z = physics-horizontal-transverse.
-    #   In GDML terms this is the transverse cross-section of the detector.
+    # Transverse (end-cap): camera on the +X side, looking back along -X
+    # toward the detector centre.  Frames the YZ cross-section.
     cam_trans = _make_camera(
         "Cam_Transverse",
-        location=(r_trans, 0, 0),
-        target=(0, 0, 0),
+        location=(centre[0] + r_trans, centre[1], centre[2]),
+        target=centre,
         ortho=True,
         ortho_scale=ortho_trans,
     )
 
-    # Side / elevation: camera on +Z axis looking down toward origin.
-    #   → sees XY plane: X = beam (horizontal right), Y = physics-up (vertical).
-    #   This gives the classic "side view" with the beam axis running left–right.
+    # Side / elevation: camera on the +Z side, looking along -Z toward
+    # the detector centre.  Frames the XY plane (beam horizontal, Y up).
     _make_camera(
         "Cam_Side",
-        location=(0, 0, r_side),
-        target=(0, 0, 0),
+        location=(centre[0], centre[1], centre[2] + r_side),
+        target=centre,
         ortho=True,
         ortho_scale=ortho_side,
     )
 
-    # Perspective camera — placed at the interaction point (inside the detector),
-    # looking out through the phi-cut opening so the viewer sees all detector
-    # layers framed by the cut.
-    # phi_center is the bisector of the cut in Blender-YZ convention.
+    # Perspective camera — placed OUTSIDE the detector at a 3/4 angle so
+    # the viewer sees the detector shell + the phi cutaway as a single
+    # framed composition.  The previous "inside the detector" placement
+    # gave a camera staring at the inner walls, which made it look like
+    # the camera wasn't pointing at anything.
+    #
+    # Position offsets (relative to the detector centre, in BU = mm):
+    #   +0.9 r_persp along +X  — slightly down the beam
+    #   +0.4 r_persp along +Y  — above the equator
+    #   along the phi-cut bisector in the YZ plane,
+    #                          at a distance of r_persp so the camera
+    #                          looks straight into the open sector
     if no_phi_cut:
         _phi_center_rad = math.radians(45.0)
     else:
         _phi_center_rad = math.radians((phi_min + phi_max) / 2.0)
 
-    # Target: centre of the cut opening at the outer detector radius
-    _cam_target_Y = r * math.cos(_phi_center_rad)
-    _cam_target_Z = r * math.sin(_phi_center_rad)
-    # Location: slightly off-axis along beam so the direction vector is nonzero
-    _cam_loc_X = x_max * 0.05
+    cam_persp_loc = (
+        centre[0] + r_persp * 0.45,
+        centre[1] + r_persp * 0.45 * math.cos(_phi_center_rad),
+        centre[2] + r_persp * 0.45 * math.sin(_phi_center_rad),
+    )
     cam_persp = _make_camera(
         "Cam_Perspective",
-        location=(_cam_loc_X, 0.0, 0.0),
-        target=(0.0, _cam_target_Y, _cam_target_Z),
+        location=cam_persp_loc,
+        target=centre,
         ortho=False,
     )
 
@@ -3028,114 +3098,149 @@ def create_blender_scene(
         if cam_obj:
             _link_to_collection(cam_obj, col_cameras)
 
-    # Set active camera to the perspective view (inside the detector)
+    # Set active camera to the perspective view (3/4 external)
     bpy.data.scenes[0].camera = cam_persp
-    print(f"  [SETUP] Cameras created (active: Cam_Perspective, inside detector, "
-          f"looking into phi-cut at {math.degrees(_phi_center_rad):.0f}°)", flush=True)
+    print(f"  [SETUP] Cameras created (active: Cam_Perspective, external 3/4 view "
+          f"into phi-cut at {math.degrees(_phi_center_rad):.0f}°)", flush=True)
 
     # ---- Lighting ----
-    # Five-light cinematic rig tuned for physically-plausible studio lighting:
-    #   1. Key     — warm 3200 K, raked from above-camera-left,  primary modeling
-    #   2. Fill    — cool 6500 K, opposite side, low intensity, lifts shadows
-    #   3. Rim     — warm 4200 K, behind/above, silhouette separation
-    #   4. Kicker  — neutral 5000 K, below/behind, lifts under-side reflections
-    #   5. Interior — warm 3800 K point light inside the phi-cut opening
-    # Plus the purple IP glow accent.  Fill is intentionally weak (1:8 ratio
-    # versus key) so highlights pop and the micro-bevels read on metal.
+    # Five-light cinematic rig with normalize=False on every light.
     #
-    # Objects are at native GDML mm scale: r is ~2000–6000 BU (= mm).
-    # Cycles uses physical inverse-square falloff: irradiance = Power / (4π d²)
-    # where d is in Blender units (= mm here).  With scale_length = 0.001,
-    # Blender converts BU → metres for the falloff calculation, so a light
-    # at 5000 mm = 5 m needs proportionally high wattage.
-    # energy_base scales with r² so that relative brightness is constant
-    # regardless of detector size.
+    # Physical units (use_normalize = False):
+    #   AREA  lights: energy is radiant exitance in W/m² of emission surface.
+    #                 Total power scales linearly with the light's area.
+    #   POINT lights: energy is radiant intensity in W/sr.  Total power = E·4π.
+    #   SPOT  lights: energy is radiant intensity in W/sr within the cone.
+    #
+    # Calibration target: irradiance at the detector surface (distance ≈ r)
+    # of roughly 50-200 W/m², which with AgX/Filmic tone mapping at +2.5 EV
+    # exposure lands the metal materials around perceptual mid-grey with
+    # bright bevel-edge specular highlights.
+    #
+    # Because area lights are sized proportionally to r (size = k·r), the
+    # ratio of "irradiance at subject" to "emission density" is constant in
+    # r — so a single density value works across all detector geometries.
+    # No more r² wattage scaling for area lights.
+    #
+    # Point-light energy still scales with r² to compensate for inverse-square
+    # falloff at the larger detector distances.
     print(f"  [SETUP] Creating lights ...", flush=True)
-    energy_base = r * r * 0.0005   # W · BU⁻²
 
-    # Key light — warm tungsten/golden-hour at 3200 K, raked from upper-camera-left.
-    # The exposure curve and AgX/Filmic gamma will compress this to a warm
-    # white highlight while keeping the colour temperature visible in shadows.
+    # --- Area-light emission densities (W/m²) — independent of r ---
+    # With size ≈ 0.55·r, area ≈ 0.30·r².  Cycles converts to physical units
+    # via scale_length (1 BU = 1 mm), so total power emitted by the key is
+    # roughly  KEY_W_PER_M2 × (0.55·r/1000)² m²  watts.
+    KEY_W_PER_M2     = 4000.0     # warm tungsten panel  →  ~100 W/m² at subject
+    FILL_W_PER_M2    =  200.0     # cool sky source     →  ~12 W/m² at subject (1:8 to key)
+    RIM_W_PER_M2     = 30000.0    # hot back-rim accent →  ~200 W/m² at subject
+    KICKER_W_PER_M2  = 2000.0     # under-glow          →  ~40 W/m² at subject
+
+    # --- Point-light intensities (W/sr) — scale with r² for falloff ---
+    # Target irradiance at distance d (in metres) ≈ E·(1/d²) since E is W/sr.
+    # For d = r mm = r/1000 m, target ≈ 80 W/m² requires E = 80·(r/1000)².
+    INTERIOR_W_PER_SR_FACTOR = 80e-6    # 80 W/m² at distance r
+    IP_GLOW_W_PER_SR_FACTOR  = 40e-6    # 40 W/m² at distance r (subtle accent)
+    point_base = r * r                  # r in mm  →  r²/1e6 = (r metres)²
+
+    # Key light — warm tungsten/golden-hour at 3200 K, raked from above the
+    # camera, slightly to the +X side.  Positioned relative to the detector
+    # centre so asymmetric geometry stays correctly lit.
     key_obj = _area_light_with_temperature(
         "Light_Key_Golden",
-        location=( r * 0.50,  r * 1.10,  r * 0.95),
-        target=(0, 0, 0),
-        size=r * 0.55,                  # tighter than 0.60 → harder shadows = more contrast
-        energy=energy_base * 500.0,     # +25% over old default → brighter primary
+        location=(centre[0] + r * 0.50,
+                  centre[1] + r * 1.10,
+                  centre[2] + r * 0.95),
+        target=centre,
+        size=r * 0.55,
+        energy=KEY_W_PER_M2,
         temp_kelvin=3200.0,
     )
 
-    # Fill light — cool overcast skylight, opposite side from key.  Energy
-    # is deliberately low (8% of key) for a 12:1 key-to-fill ratio, which
-    # gives a chiaroscuro look that emphasises form.
+    # Fill light — cool overcast skylight on the opposite side from the key.
+    # 1:8 ratio with key for chiaroscuro emphasis on form.
     fill_obj = _area_light_with_temperature(
         "Light_Fill_Sky",
-        location=(-r * 0.55,  r * 0.65, -r * 1.05),
-        target=(0, 0, 0),
-        size=r * 0.85,                  # wider source → softer shadow gradient
-        energy=energy_base * 60.0,
+        location=(centre[0] - r * 0.55,
+                  centre[1] + r * 0.65,
+                  centre[2] - r * 1.05),
+        target=centre,
+        size=r * 0.85,
+        energy=FILL_W_PER_M2,
         temp_kelvin=6500.0,
     )
 
-    # Rim light — warm backlight along the −beam direction.  Brighter than
-    # the old default to create a clear silhouette separation from the dark
-    # world background gradient.
+    # Rim — small + hot backlight behind the detector, picks out the silhouette
+    # against the gradient sky background.
     rim_obj = _area_light_with_temperature(
         "Light_Rim_Warm",
-        location=(-r * 1.30,  r * 0.40,  r * 0.30),
-        target=(0, 0, 0),
-        size=r * 0.30,                  # small + hot = crisp specular edge
-        energy=energy_base * 200.0,
+        location=(centre[0] - r * 1.30,
+                  centre[1] + r * 0.40,
+                  centre[2] + r * 0.30),
+        target=centre,
+        size=r * 0.30,
+        energy=RIM_W_PER_M2,
         temp_kelvin=4200.0,
     )
 
-    # Kicker — placed below + behind to lift the underside of the detector
-    # from full shadow.  Neutral temperature (5000 K) so it reads as ambient
-    # bounce rather than a coloured accent.
+    # Kicker — placed below + behind to lift under-side reflections out of
+    # full shadow.  Neutral 5000 K so it reads as ambient bounce.
     kicker_obj = _area_light_with_temperature(
         "Light_Kicker",
-        location=( r * 0.20, -r * 0.90,  r * 0.40),
-        target=(0, 0, 0),
+        location=(centre[0] + r * 0.20,
+                  centre[1] - r * 0.90,
+                  centre[2] + r * 0.40),
+        target=centre,
         size=r * 0.50,
-        energy=energy_base * 90.0,
+        energy=KICKER_W_PER_M2,
         temp_kelvin=5000.0,
     )
 
     # Interior fill — point light placed inside the phi-cut opening so it
-    # illuminates the inward-facing detector surfaces that the exterior area
-    # lights cannot directly reach.  Positioned halfway along the cut bisector.
+    # illuminates inward-facing surfaces the exterior area lights can't reach.
     _phi_fill_rad = math.radians((phi_min + phi_max) / 2.0) if not no_phi_cut \
                     else math.radians(45.0)
+    interior_energy = point_base * INTERIOR_W_PER_SR_FACTOR
     interior_obj = _add_point_light(
         "Light_Interior_Fill",
-        location=(0.0, r * 0.45 * math.cos(_phi_fill_rad),
-                       r * 0.45 * math.sin(_phi_fill_rad)),
-        energy=energy_base * 350.0,
-        color_rgb=(1.0, 0.97, 0.92),   # fallback if temperature fails
+        location=(centre[0],
+                  centre[1] + r * 0.45 * math.cos(_phi_fill_rad),
+                  centre[2] + r * 0.45 * math.sin(_phi_fill_rad)),
+        energy=interior_energy,
+        color_rgb=(1.0, 0.97, 0.92),
         soft_size=r * 0.50,
-        temp_kelvin=3800.0,             # warm white via true blackbody
+        temp_kelvin=3800.0,
     )
 
-    # Purple glow at the interaction point (IP / beam origin)
-    # Soft point light — evocative of Cherenkov / beam interactions.
+    # Purple glow at the interaction point (subtle Cherenkov / beam accent)
+    ip_energy = point_base * IP_GLOW_W_PER_SR_FACTOR
     ip_obj = _add_point_light(
         "Light_IP_Purple_Glow",
-        location=(0, 0, 0),
-        energy=energy_base * 100.0,
+        location=centre,
+        energy=ip_energy,
         color_rgb=(0.45, 0.0, 1.0),
         soft_size=r * 0.30,
     )
 
-    # Move all lights (including environment sphere) into the Lights collection
+    # Move all lights into the Lights collection
     for light_obj in (key_obj, fill_obj, rim_obj, kicker_obj, interior_obj, ip_obj):
         if light_obj is not None:
             _link_to_collection(light_obj, col_lights)
 
-    print(f"  [SETUP] Lights created (energy_base={energy_base:.3f} W, "
-          f"key={energy_base*500:.0f} W, fill={energy_base*60:.0f} W, "
-          f"rim={energy_base*200:.0f} W, kicker={energy_base*90:.0f} W, "
-          f"interior={energy_base*350:.0f} W, IP={energy_base*100:.0f} W)",
-          flush=True)
+    # Effective total wattage for sanity check (assumes area light total =
+    # energy × (size_BU/1000)² when normalize=False, point total = energy·4π).
+    def _area_total(density, k):
+        return density * (k * r / 1000.0) ** 2
+    print(f"  [SETUP] Lights (normalize=False, physical units):", flush=True)
+    print(f"    Key    {KEY_W_PER_M2:.0f} W/m²  → total ≈ {_area_total(KEY_W_PER_M2, 0.55):.0f} W", flush=True)
+    print(f"    Fill   {FILL_W_PER_M2:.0f} W/m²  → total ≈ {_area_total(FILL_W_PER_M2, 0.85):.0f} W", flush=True)
+    print(f"    Rim    {RIM_W_PER_M2:.0f} W/m²  → total ≈ {_area_total(RIM_W_PER_M2, 0.30):.0f} W", flush=True)
+    print(f"    Kicker {KICKER_W_PER_M2:.0f} W/m² → total ≈ {_area_total(KICKER_W_PER_M2, 0.50):.0f} W", flush=True)
+    print(f"    Interior point {interior_energy:.1f} W/sr → total ≈ {interior_energy * 4 * math.pi:.0f} W", flush=True)
+    print(f"    IP glow point  {ip_energy:.1f} W/sr → total ≈ {ip_energy * 4 * math.pi:.0f} W", flush=True)
+
+    # energy_base kept around as the old shim for the god-ray spot below
+    # (uses the point-light intensity scale to compute a strong narrow beam).
+    energy_base = point_base * IP_GLOW_W_PER_SR_FACTOR
 
     # ---- Volumetric god rays (render-only) ----
     # The volumetric scattering MEDIUM lives on the world shader (set up in
