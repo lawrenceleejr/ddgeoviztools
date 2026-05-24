@@ -231,17 +231,25 @@ void AColliderVisGameMode::SetupAtmosphere()
 		UExponentialHeightFogComponent* FC = FogActor->GetComponent();
 
 		// ── Layer 1: uniform indigo mist ──────────────────────────────────
-		FC->FogDensity           = 0.02f;                                // was 0.008
-		FC->FogInscatteringColor = FLinearColor(0.012f, 0.010f, 0.045f);// deep indigo-black
-		FC->FogHeightFalloff    = 0.04f;   // was 0.2 — very low → uniform regardless of height
-		FC->StartDistance       = 150.f;   // was 500 — mist begins 1.5 m from camera
-		FC->FogMaxOpacity       = 1.0f;    // complete fadeout at extreme distance
+		FC->FogDensity              = 0.02f;                              // was 0.008
+		// FogInscatteringColor was renamed to FogInscatteringLuminance in
+		// UE 5.x; the old field is now FogInscatteringColor_DEPRECATED and
+		// no longer assignable from new code.  Display name in the editor
+		// is still "Fog Inscattering Color" so the in-engine UI is unchanged.
+		FC->FogInscatteringLuminance = FLinearColor(0.012f, 0.010f, 0.045f); // deep indigo-black
+		FC->FogHeightFalloff        = 0.04f;   // was 0.2 — very low → uniform regardless of height
+		FC->StartDistance           = 150.f;   // was 500 — mist begins 1.5 m from camera
+		FC->FogMaxOpacity           = 1.0f;    // complete fadeout at extreme distance
 
 		// Volumetric: strong forward scatter → emissive god-ray halos
 		FC->bEnableVolumetricFog                 = true;
 		FC->VolumetricFogScatteringDistribution  = 0.85f;  // was 0.2
 		FC->VolumetricFogExtinctionScale         = 2.0f;   // more absorptive (darker void)
-		FC->VolumetricFogAlbedo                  = FLinearColor(0.08f, 0.08f, 0.15f);
+		// VolumetricFogAlbedo is FColor (8-bit per channel) in UE 5.4, NOT
+		// FLinearColor.  Convert from the intended dark blue-violet linear
+		// values via FLinearColor::ToFColor(true) — true applies the sRGB
+		// curve so the in-engine appearance matches the linear-space intent.
+		FC->VolumetricFogAlbedo                  = FLinearColor(0.08f, 0.08f, 0.15f).ToFColor(true);
 		// Subtle self-luminance of the void — faint bioluminescent blue-teal haze
 		FC->VolumetricFogEmissive                = FLinearColor(0.0008f, 0.0008f, 0.003f);
 

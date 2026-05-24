@@ -1108,7 +1108,14 @@ def _add_solidify(obj, thickness_mm: float = 1.0):
     mod = obj.modifiers.new("Solidify", "SOLIDIFY")
     mod.thickness = thickness_mm
     mod.offset    = -1.0                  # keep outer surface in place
-    mod.use_even_offset   = True          # uniform thickness on sloped faces
+    # Even Thickness (use_even_offset) tries to maintain uniform thickness on
+    # sloped faces by shifting vertices along an averaged normal.  On the
+    # decimated, non-manifold GDML meshes this misbehaves: vertices at the
+    # phi-cut boundary get pushed sideways instead of inward, producing
+    # ragged inner walls and visible self-intersections in the rim faces.
+    # Leaving it off uses the per-face normal directly, which on our meshes
+    # gives cleaner walls and a stable cut cross-section.
+    mod.use_even_offset   = False
     try:
         mod.use_quality_normals = True    # better shading (removed in Blender 5.0)
     except AttributeError:
