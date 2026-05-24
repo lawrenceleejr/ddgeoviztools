@@ -235,7 +235,7 @@ void AColliderVisGameMode::SetupAtmosphere()
 		FC->FogMaxOpacity       = 1.0f;    // complete fadeout at extreme distance
 
 		// Volumetric: strong forward scatter → emissive god-ray halos
-		FC->bVolumetricFog                       = true;
+		FC->bEnableVolumetricFog                 = true;
 		FC->VolumetricFogScatteringDistribution  = 0.85f;  // was 0.2
 		FC->VolumetricFogExtinctionScale         = 2.0f;   // more absorptive (darker void)
 		FC->VolumetricFogAlbedo                  = FLinearColor(0.08f, 0.08f, 0.15f);
@@ -243,9 +243,11 @@ void AColliderVisGameMode::SetupAtmosphere()
 		FC->VolumetricFogEmissive                = FLinearColor(0.0008f, 0.0008f, 0.003f);
 
 		// ── Layer 2: abyss below the detector ─────────────────────────────
-		FC->FogSecondDensity           = 0.06f;                              // thick lower void
-		FC->FogSecondHeightFalloff     = 0.5f;    // falls off with altitude
-		FC->FogSecondHeight            = -500.f;  // 500 cm below origin
-		FC->FogSecondInscatteringColor = FLinearColor(0.0f, 0.0f, 0.012f);  // near-black blue
+		// UE5 stores second-layer fog in a SecondFogData struct (FExponentialHeightFogData);
+		// the struct only carries Density / HeightFalloff / HeightOffset, and the layer
+		// shares the component's FogInscatteringColor — there is no second-layer color.
+		FC->SecondFogData.FogDensity       = 0.06f;   // thick lower void
+		FC->SecondFogData.FogHeightFalloff = 0.5f;    // falls off with altitude
+		FC->SecondFogData.FogHeightOffset  = -500.f;  // 500 cm below origin
 	}
 }
