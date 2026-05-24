@@ -2675,7 +2675,21 @@ def _setup_render_and_compositor(scene):
 # ---------------------------------------------------------------------------
 
 def _make_camera(name: str, location: tuple, target: tuple,
-                 ortho: bool = True, ortho_scale: float = 10000.0):
+                 ortho: bool = True, ortho_scale: float = 10000.0,
+                 dof_fstop: float = 1.4):
+    """
+    Create a camera with depth of field enabled (strong bokeh by default).
+
+    ``dof_fstop`` is the aperture f-number: 1.4 is "wide open" — very shallow
+    depth of field, prominent bokeh circles around point lights and crisp
+    specular highlights on the bevel edges.  Focus distance is set to the
+    distance from the camera location to *target*, so whatever the camera is
+    aimed at stays sharp and everything in front of / behind it is defocused.
+
+    Cycles applies DOF to orthographic cameras too — the blur magnitude
+    depends only on |Z − focus_distance| (no perspective foreshortening),
+    which still produces a clean focal plane for the side / transverse views.
+    """
     cam_data = bpy.data.cameras.new(name)
     cam_data.type = "ORTHO" if ortho else "PERSP"
     # At native GDML mm scale, the detector can be 5000–12000 mm across.
@@ -2694,6 +2708,27 @@ def _make_camera(name: str, location: tuple, target: tuple,
 
     direction = (Vector(target) - Vector(location)).normalized()
     cam_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+
+    # ----- Depth of Field -----
+    # Cycles uses the camera's own dof block (cam_data.dof.*) — physically
+    # based: aperture in f-stops, focus distance in BU (= mm here).
+    # f/1.4 produces a very shallow depth of field and strong, round bokeh
+    # circles on the bright IP glow and any small specular highlights.
+    focus_distance = (Vector(target) - Vector(location)).length
+    try:
+        cam_data.dof.use_dof          = True
+        cam_data.dof.aperture_fstop   = float(dof_fstop)
+        cam_data.dof.focus_distance   = max(1.0, focus_distance)
+        # Round aperture blades produce circular bokeh.  6 blades gives a
+        # subtly hexagonal "cinematic" highlight; 0 = perfect circle.
+        cam_data.dof.aperture_blades  = 6
+        cam_data.dof.aperture_rotation = 0.0
+        cam_data.dof.aperture_ratio   = 1.0
+        print(f"  [CAMERA] {name}: DOF f/{dof_fstop:.1f}  "
+              f"focus_distance={focus_distance:.1f} mm", flush=True)
+    except (AttributeError, TypeError) as exc:
+        print(f"  [CAMERA] {name}: DOF setup skipped ({exc})", flush=True)
+
     return cam_obj
 
 
