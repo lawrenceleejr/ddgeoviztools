@@ -1,0 +1,63 @@
+# ColliderVis — Unreal Engine 5.4 headless Linux build container
+#
+# PURPOSE
+#   Compiles the ColliderVis C++ module inside a reproducible Linux container
+#   so build errors can be diagnosed without a local UE installation.
+#
+# ── BASE IMAGE — one-time setup required ──────────────────────────────────────
+#   Epic's images live on GitHub Container Registry and are gated behind an
+#   Epic / GitHub account link.  Complete these steps once before building:
+#
+#   1. Link your Epic Games account to GitHub:
+#        https://www.epicgames.com/id/linked-accounts
+#
+#   2. Accept the UE source-code licence on GitHub:
+#        https://github.com/EpicGames/UnrealEngine  →  "Join the organization"
+#
+#   3. Create a GitHub PAT with "read:packages" scope, then log in:
+#        docker login ghcr.io -u <your-github-username>
+#        # paste the PAT when prompted for the password
+#
+# ── Quick start ───────────────────────────────────────────────────────────────
+#   Build the image (needs the ghcr.io login above):
+#     docker build -f Dockerfile.ue5build -t collidervis-builder .
+#
+#   Run a C++ compile (project source is volume-mounted at run time):
+#     docker run --rm \
+#       -v "$(pwd)/ColliderVis:/project/ColliderVis" \
+#       collidervis-builder
+#
+#   Or just use the convenience wrapper which does all of the above:
+#     ./scripts/docker_build_ue5.sh
+# ─────────────────────────────────────────────────────────────────────────────
+
+ARG UE_VERSION=5.4
+FROM ghcr.io/epicgames/unreal-engine:${UE_VERSION}-dev-slim
+
+# ── Engine root inside Epic's official Linux images ───────────────────────────
+# Override with --build-arg UE_ROOT=… if your custom image uses a different path.
+ARG UE_ROOT=/home/ue4/UnrealEngine
+ENV UE_ROOT=${UE_ROOT}
+
+# ── Build parameters (override with -e at run time) ───────────────────────────
+ENV BUILD_TARGET=ColliderVis \
+    BUILD_PLATFORM=Linux \
+    BUILD_CONFIG=Development
+
+# Project source is expected to be mounted at /project at run time.
+WORKDIR /project
+
+# ── Default command: compile ColliderVis C++ ──────────────────────────────────
+# Flags:
+#   -waitmutex      Serialise if another UBT instance is running
+#   -NoHotReload    Headless containers have no editor; skip live-coding check
+#   2>&1            Merge stderr into stdout so all output is captured together
+CMD ["bash", "-c", \
+     "\"$UE_ROOT/Engine/Build/BatchFiles/Linux/Build.sh\" \
+         \"$BUILD_TARGET\" \
+         \"$BUILD_PLATFORM\" \
+         \"$BUILD_CONFIG\" \
+         /project/ColliderVis/ColliderVis.uproject \
+         -waitmutex \
+         -NoHotReload \
+         2>&1"]
