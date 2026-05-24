@@ -145,7 +145,10 @@ void AColliderVisGameMode::SetupAtmosphere()
 		const FVector KeyPos(-400.f, 0.f, 1200.f);
 		KeyLight->SetActorLocation(KeyPos);
 		PointAtOrigin(KeyLight, KeyPos);
-		URectLightComponent* KLC = KeyLight->GetRectLightComponent();
+		// ARectLight exposes the URectLightComponent as a public field
+		// (UPROPERTY BlueprintReadOnly) rather than via a getter — there is
+		// no ARectLight::GetRectLightComponent() in UE 5.4.
+		URectLightComponent* KLC = KeyLight->RectLightComponent;
 		KLC->Intensity         = 400.f;    // was 2000 — void is dark; tracks glow
 		KLC->bUseTemperature   = true;
 		KLC->Temperature       = 4600.f;   // slightly cooler for void feel
@@ -161,7 +164,7 @@ void AColliderVisGameMode::SetupAtmosphere()
 		const FVector FillPos(500.f, 300.f, 700.f);
 		FillLight->SetActorLocation(FillPos);
 		PointAtOrigin(FillLight, FillPos);
-		URectLightComponent* FLC = FillLight->GetRectLightComponent();
+		URectLightComponent* FLC = FillLight->RectLightComponent;
 		FLC->Intensity         = 150.f;    // was 800
 		FLC->bUseTemperature   = true;
 		FLC->Temperature       = 5200.f;
@@ -177,7 +180,7 @@ void AColliderVisGameMode::SetupAtmosphere()
 		const FVector RimPos(-300.f, -600.f, 900.f);
 		RimLight->SetActorLocation(RimPos);
 		PointAtOrigin(RimLight, RimPos);
-		URectLightComponent* RLC = RimLight->GetRectLightComponent();
+		URectLightComponent* RLC = RimLight->RectLightComponent;
 		RLC->Intensity         = 250.f;   // was 400 — keep as distinct accent
 		RLC->bUseTemperature   = true;
 		RLC->Temperature       = 6500.f;  // cold blue-white for rim
@@ -193,7 +196,7 @@ void AColliderVisGameMode::SetupAtmosphere()
 		const FVector UnderPos(0.f, 0.f, -1400.f);
 		UnderLight->SetActorLocation(UnderPos);
 		PointAtOrigin(UnderLight, UnderPos);   // points upward toward origin
-		URectLightComponent* ULC = UnderLight->GetRectLightComponent();
+		URectLightComponent* ULC = UnderLight->RectLightComponent;
 		ULC->Intensity         = 120.f;
 		ULC->bUseTemperature   = true;
 		ULC->Temperature       = 8000.f;   // deep cold blue-violet
