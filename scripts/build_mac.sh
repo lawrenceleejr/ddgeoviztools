@@ -5,7 +5,7 @@
 # Usage:
 #   ./scripts/build_mac.sh                      # Shipping build (default)
 #   BUILD_CONFIG=Development ./scripts/build_mac.sh
-#   UE5_ROOT="/path/to/UE_5.4" ./scripts/build_mac.sh
+#   UE5_ROOT="/path/to/UE_5.7" ./scripts/build_mac.sh
 #
 # The output is a self-contained ColliderVis.app bundle in Builds/Mac/.
 # Double-click it to run, or share the .app with collaborators.
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────────────────
-UE5_ROOT="${UE5_ROOT:-/Users/Shared/Epic Games/UE_5.4}"
+UE5_ROOT="${UE5_ROOT:-/Users/Shared/Epic Games/UE_5.7}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/../ColliderVis"
@@ -40,7 +40,7 @@ if [[ ! -f "$UAT" ]]; then
     echo "    $UAT"
     echo ""
     echo "  Set UE5_ROOT to your Unreal Engine 5 installation directory, e.g.:"
-    echo "    UE5_ROOT=\"/Users/Shared/Epic Games/UE_5.4\" ./scripts/build_mac.sh"
+    echo "    UE5_ROOT=\"/Users/Shared/Epic Games/UE_5.7\" ./scripts/build_mac.sh"
     echo ""
     exit 1
 fi

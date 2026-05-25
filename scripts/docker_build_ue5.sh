@@ -6,7 +6,7 @@
 # Usage:
 #   ./scripts/docker_build_ue5.sh               # Development build (default)
 #   BUILD_CONFIG=Shipping ./scripts/docker_build_ue5.sh
-#   UE_VERSION=5.4 ./scripts/docker_build_ue5.sh
+#   UE_VERSION=5.7 ./scripts/docker_build_ue5.sh
 #
 # Prerequisites (one-time):
 #   1. Link your Epic Games account to GitHub:
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-UE_VERSION="${UE_VERSION:-5.4}"
+UE_VERSION="${UE_VERSION:-5.7}"
 BUILD_CONFIG="${BUILD_CONFIG:-Development}"
 IMAGE_TAG="collidervis-builder:${UE_VERSION}"
 

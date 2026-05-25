@@ -5,7 +5,7 @@
 # Usage:
 #   ./scripts/build_linux.sh                    # Shipping build (default)
 #   BUILD_CONFIG=Development ./scripts/build_linux.sh
-#   UE5_ROOT="/path/to/UE_5.4" ./scripts/build_linux.sh
+#   UE5_ROOT="/path/to/UE_5.7" ./scripts/build_linux.sh
 #
 # This script is designed to run either:
 #   • Natively on a Linux machine with Unreal Engine installed from source
