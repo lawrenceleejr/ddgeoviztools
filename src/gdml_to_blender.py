@@ -2291,11 +2291,10 @@ def _add_god_ray_spot(
     target = (0.0, 0.0, 0.0)   # point at IP
 
     # With use_normalize=False on the spot, energy is W/sr — intensity per
-    # cone solid angle.  energy_base now stores radiant exitance / intensity
-    # already calibrated for the scene, so we just multiply by a relative
-    # weight rather than the previous 2000× factor (which produced multi-MW
-    # totals at mm scale).
-    spot_energy = energy_base * 4.0          # strong but not overwhelming
+    # cone solid angle.  energy_base is pre-calibrated upstream
+    # (SPOT_W_PER_SR_FACTOR × r²) to produce a strong god-ray beam at the
+    # current detector scale, so the multiplier is 1.0.
+    spot_energy = energy_base * 1.0
     light_data        = bpy.data.lights.new(name, type="SPOT")
     light_data.energy = spot_energy
     if hasattr(light_data, "use_normalize"):
@@ -3127,20 +3126,41 @@ def create_blender_scene(
     print(f"  [SETUP] Creating lights ...", flush=True)
 
     # --- Area-light emission densities (W/m²) — independent of r ---
-    # With size ≈ 0.55·r, area ≈ 0.30·r².  Cycles converts to physical units
-    # via scale_length (1 BU = 1 mm), so total power emitted by the key is
-    # roughly  KEY_W_PER_M2 × (0.55·r/1000)² m²  watts.
-    KEY_W_PER_M2     = 4000.0     # warm tungsten panel  →  ~100 W/m² at subject
-    FILL_W_PER_M2    =  200.0     # cool sky source     →  ~12 W/m² at subject (1:8 to key)
-    RIM_W_PER_M2     = 30000.0    # hot back-rim accent →  ~200 W/m² at subject
-    KICKER_W_PER_M2  = 2000.0     # under-glow          →  ~40 W/m² at subject
+    #
+    # Derivation.  For a Lambertian area emitter of size s at perpendicular
+    # distance d from the subject, the irradiance at the subject is
+    #
+    #     E_subject ≈ density × (s / d)² / π          (small-angle / distant)
+    #
+    # With our geometry (size = k_s·r, position offset ≈ k_d·r), the (s/d)²
+    # factor reduces to (k_s / k_d)² — independent of r.  So a single
+    # density value gives a constant subject irradiance regardless of
+    # detector scale, which is the whole point of normalize=False with
+    # proportional sizing.
+    #
+    # Targets — chosen for "well-lit studio at 0 EV with AgX tone mapping":
+    #     Key      ~50 W/m² at subject   → density ≈ E / 0.10 ≈ 500 W/m²
+    #     Fill     ~6  W/m² (1:8 to key) →               ≈ 60  W/m²
+    #     Rim      ~45 W/m² (small/hot)  →               ≈ 3000 W/m²
+    #     Kicker   ~30 W/m² (under-lift) →               ≈ 300 W/m²
+    #
+    # These are ~8–10× lower than the previous calibration.  Sum of
+    # contributions from all four lights at the detector centre is
+    # roughly 130 W/m², which sits well inside Filmic/AgX's linear
+    # range without clipping.
+    KEY_W_PER_M2     =  500.0
+    FILL_W_PER_M2    =   60.0
+    RIM_W_PER_M2     = 3000.0
+    KICKER_W_PER_M2  =  300.0
 
     # --- Point-light intensities (W/sr) — scale with r² for falloff ---
-    # Target irradiance at distance d (in metres) ≈ E·(1/d²) since E is W/sr.
-    # For d = r mm = r/1000 m, target ≈ 80 W/m² requires E = 80·(r/1000)².
-    INTERIOR_W_PER_SR_FACTOR = 80e-6    # 80 W/m² at distance r
-    IP_GLOW_W_PER_SR_FACTOR  = 40e-6    # 40 W/m² at distance r (subtle accent)
-    point_base = r * r                  # r in mm  →  r²/1e6 = (r metres)²
+    # Irradiance at distance d (metres) from a point of intensity I is
+    # I/d².  For d = r/1000 m, achieving target E at the subject needs
+    # I = E · (r/1000)² = E · r² · 1e-6.  Factor below is "E · 1e-6":
+    INTERIOR_W_PER_SR_FACTOR = 10.0e-6   # ~10 W/m² at distance r
+    IP_GLOW_W_PER_SR_FACTOR  =  4.0e-6   # ~4 W/m² subtle purple accent
+    SPOT_W_PER_SR_FACTOR     = 50.0e-6   # decoupled — strong god-ray beam
+    point_base = r * r                   # r in mm
 
     # Key light — warm tungsten/golden-hour at 3200 K, raked from above the
     # camera, slightly to the +X side.  Positioned relative to the detector
@@ -3227,7 +3247,7 @@ def create_blender_scene(
             _link_to_collection(light_obj, col_lights)
 
     # Effective total wattage for sanity check (assumes area light total =
-    # energy × (size_BU/1000)² when normalize=False, point total = energy·4π).
+    # density × area_m², point total = intensity × 4π).
     def _area_total(density, k):
         return density * (k * r / 1000.0) ** 2
     print(f"  [SETUP] Lights (normalize=False, physical units):", flush=True)
@@ -3238,9 +3258,9 @@ def create_blender_scene(
     print(f"    Interior point {interior_energy:.1f} W/sr → total ≈ {interior_energy * 4 * math.pi:.0f} W", flush=True)
     print(f"    IP glow point  {ip_energy:.1f} W/sr → total ≈ {ip_energy * 4 * math.pi:.0f} W", flush=True)
 
-    # energy_base kept around as the old shim for the god-ray spot below
-    # (uses the point-light intensity scale to compute a strong narrow beam).
-    energy_base = point_base * IP_GLOW_W_PER_SR_FACTOR
+    # God-ray spot light intensity — decoupled from IP glow so reductions
+    # to the glow don't weaken the volumetric scattering beam.
+    energy_base = point_base * SPOT_W_PER_SR_FACTOR
 
     # ---- Volumetric god rays (render-only) ----
     # The volumetric scattering MEDIUM lives on the world shader (set up in
