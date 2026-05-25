@@ -2854,6 +2854,53 @@ def _make_camera(name: str, location: tuple, target: tuple,
 # Animated hero camera
 # ---------------------------------------------------------------------------
 
+def _iter_action_fcurves(action):
+    """
+    Yield every F-curve on *action*, working on both the legacy and the
+    slotted/layered Action APIs.
+
+      Blender 4.x  : action.fcurves   (flat list, attached to the Action)
+      Blender 5.0+ : action.layers[L].strips[S].channelbag(slot).fcurves
+                      where slot ∈ action.slots
+
+    On Blender 5.0 the legacy `action.fcurves` attribute was REMOVED
+    (not just left empty), so a flat hasattr+attr-read like
+    `action.fcurves` raises AttributeError.  This helper dispatches on
+    feature presence and yields nothing if no curves are found.
+    """
+    if action is None:
+        return
+    # Legacy path — Blender 4.x and earlier
+    if hasattr(action, "fcurves"):
+        for fc in action.fcurves:
+            yield fc
+        return
+    # Layered path — Blender 5.0+
+    if not hasattr(action, "layers"):
+        return
+    slots = list(getattr(action, "slots", []) or [])
+    for layer in action.layers:
+        for strip in layer.strips:
+            # Preferred: ask the strip for a channelbag per slot
+            if slots:
+                for slot in slots:
+                    cb = None
+                    try:
+                        cb = strip.channelbag(slot)
+                    except (AttributeError, TypeError):
+                        pass
+                    if cb is not None and hasattr(cb, "fcurves"):
+                        for fc in cb.fcurves:
+                            yield fc
+            # Fallback: some builds expose .channelbags on the strip directly
+            cbs = getattr(strip, "channelbags", None)
+            if cbs:
+                for cb in cbs:
+                    if hasattr(cb, "fcurves"):
+                        for fc in cb.fcurves:
+                            yield fc
+
+
 def _make_hero_camera(centre, r,
                       frame_start: int = 1,
                       frame_end:   int = 240,
@@ -2924,18 +2971,28 @@ def _make_hero_camera(centre, r,
         cam_obj.keyframe_insert(data_path="location", frame=frame)
         cam_data.dof.keyframe_insert(data_path="focus_distance", frame=frame)
 
-    # Apply BEZIER ease-in/out to every keyframe we just inserted
+    # Apply BEZIER ease-in/out to every keyframe we just inserted.
+    # Use _iter_action_fcurves to walk the action — `action.fcurves` was
+    # removed in Blender 5.0 in favour of a layered slot/channelbag API.
     def _smooth_curves(animated_id):
-        if animated_id.animation_data and animated_id.animation_data.action:
-            for fcurve in animated_id.animation_data.action.fcurves:
-                for kp in fcurve.keyframe_points:
-                    kp.interpolation     = "BEZIER"
-                    kp.easing            = "EASE_IN_OUT"
-                    kp.handle_left_type  = "AUTO_CLAMPED"
-                    kp.handle_right_type = "AUTO_CLAMPED"
+        ad = getattr(animated_id, "animation_data", None)
+        action = ad.action if (ad is not None and ad.action is not None) else None
+        n = 0
+        for fcurve in _iter_action_fcurves(action):
+            for kp in fcurve.keyframe_points:
+                kp.interpolation     = "BEZIER"
+                kp.easing            = "EASE_IN_OUT"
+                kp.handle_left_type  = "AUTO_CLAMPED"
+                kp.handle_right_type = "AUTO_CLAMPED"
+                n += 1
+        return n
 
-    _smooth_curves(cam_obj)
-    _smooth_curves(cam_data)
+    n_obj = _smooth_curves(cam_obj)
+    n_dat = _smooth_curves(cam_data)
+    if n_obj == 0 and n_dat == 0:
+        print(f"  [HERO] WARNING: no F-curves found on Cam_Hero — keyframes "
+              f"were inserted but the API didn't expose them via the action. "
+              f"Animation will still play with linear interp.", flush=True)
 
     print(f"  [HERO] Cam_Hero animated, frames {frame_start}-{frame_end}  "
           f"(orbit 35°→70° yaw, dolly {r*3.0:.0f}→{r*1.1:.0f} mm)", flush=True)
