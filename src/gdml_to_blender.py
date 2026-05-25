@@ -3291,6 +3291,22 @@ def create_blender_scene(
         except Exception as _e:
             print(f"  [SAVE] WARNING mesh validation skipped for '{_m.name}': {_e}",
                   flush=True)
+
+    # Belt-and-suspenders: walk every light data block in the scene and
+    # force use_normalize=False.  The individual creation helpers already
+    # do this, but this final pass catches anything that slipped through
+    # (e.g. a light added via a Blender op, a third-party importer, or a
+    # future code path that forgets to set the flag).  The saved .blend is
+    # guaranteed to have normalize off on every light.
+    _norm_changed = 0
+    for _l in bpy.data.lights:
+        if hasattr(_l, "use_normalize") and _l.use_normalize:
+            _l.use_normalize = False
+            _norm_changed += 1
+    print(f"  [SAVE] Lights: {len(bpy.data.lights)} total, "
+          f"normalize=False on all ({_norm_changed} forced off in final sweep)",
+          flush=True)
+
     print(f"  [SAVE] Meshes: {len(bpy.data.meshes)}  "
           f"Materials: {len(bpy.data.materials)}  "
           f"Node groups: {len(bpy.data.node_groups)}  "
