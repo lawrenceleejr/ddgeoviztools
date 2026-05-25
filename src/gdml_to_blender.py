@@ -2000,6 +2000,40 @@ def _setup_units():
 # Lighting — golden-hour area lights with colour temperature
 # ---------------------------------------------------------------------------
 
+def _disable_light_normalize(light_data, name: str = "") -> bool:
+    """
+    Force the light's "Normalize" toggle off.
+
+    Blender renamed the property between major versions:
+      Blender 3.x / 4.x  : light_data.use_normalize   (bool)
+      Blender 5.0+       : light_data.normalize       (bool)
+
+    A `hasattr` check on only one name silently passes on builds that use
+    the other name — which is the bug the user reported (lights still
+    showed Normalize ON in Blender 5.x after a "fix").  We try both names
+    in sequence and verify the value was actually written.
+
+    Returns True if at least one attribute was successfully set False.
+    """
+    ok = False
+    for attr in ("normalize", "use_normalize"):
+        if hasattr(light_data, attr):
+            try:
+                setattr(light_data, attr, False)
+                # Verify (some properties are read-only on certain types)
+                if getattr(light_data, attr) is False:
+                    ok = True
+            except (AttributeError, TypeError) as exc:
+                if name:
+                    print(f"  [LIGHT] {name}: setting {attr}=False failed: {exc}",
+                          flush=True)
+    if not ok and name:
+        print(f"  [LIGHT] {name}: WARNING — could not disable normalize "
+              f"(neither 'normalize' nor 'use_normalize' is settable)",
+              flush=True)
+    return ok
+
+
 def _kelvin_to_rgb(temp_kelvin: float) -> tuple:
     """
     Approximate sRGB for a blackbody colour temperature (Tanner Helland algo).
@@ -2113,7 +2147,7 @@ def _area_light_with_temperature(
     light_data.size   = size
     light_data.shape  = "SQUARE"
 
-    # Disable normalize: with use_normalize=False the energy field is the
+    # Disable normalize: with normalize=False the energy field is the
     # radiant exitance of the light surface (W/m²), and total emitted power
     # scales linearly with light area.  Two consequences:
     #   1. Irradiance at the subject becomes INDEPENDENT of detector size
@@ -2123,8 +2157,13 @@ def _area_light_with_temperature(
     #      ≈ 1000 W/m², studio softbox ≈ 500-2000 W/m²) rather than the
     #      unitless mega-wattages the normalize=True scaling produced at
     #      mm scene scale.
-    if hasattr(light_data, "use_normalize"):
-        light_data.use_normalize = False
+    #
+    # Property name varies by Blender version:
+    #   Blender 3.x / 4.x : use_normalize
+    #   Blender 5.0+      : normalize
+    # _disable_light_normalize tries both so the toggle is actually off
+    # in the saved file regardless of which Blender opens it.
+    _disable_light_normalize(light_data, name)
 
     # Use Blender's built-in colour temperature (real blackbody, not RGB approx).
     # Priority:
@@ -2162,12 +2201,11 @@ def _add_point_light(
     light_data        = bpy.data.lights.new(name, type="POINT")
     light_data.energy = energy
 
-    # Disable normalize: for point lights with use_normalize=False the
+    # Disable normalize: for point lights with normalize=False the
     # energy is the radiant intensity (W/sr).  Total emitted power is
     # energy * 4π — physically meaningful and matches the area-light
     # convention used in _area_light_with_temperature.
-    if hasattr(light_data, "use_normalize"):
-        light_data.use_normalize = False
+    _disable_light_normalize(light_data, name)
 
     if temp_kelvin is not None:
         _set_light_temperature(light_data, name, energy, temp_kelvin)
@@ -2297,8 +2335,7 @@ def _add_god_ray_spot(
     spot_energy = energy_base * 1.0
     light_data        = bpy.data.lights.new(name, type="SPOT")
     light_data.energy = spot_energy
-    if hasattr(light_data, "use_normalize"):
-        light_data.use_normalize = False
+    _disable_light_normalize(light_data, name)
     # Use true blackbody colour temperature for the god-ray spot
     _set_light_temperature(light_data, name, spot_energy, 3500.0)
     light_data.spot_size   = math.radians(35)   # 35° cone — wide enough to fill opening
@@ -3313,18 +3350,32 @@ def create_blender_scene(
                   flush=True)
 
     # Belt-and-suspenders: walk every light data block in the scene and
-    # force use_normalize=False.  The individual creation helpers already
-    # do this, but this final pass catches anything that slipped through
+    # force its normalize toggle off.  The per-helper calls already do
+    # this, but this final pass catches anything that slipped through
     # (e.g. a light added via a Blender op, a third-party importer, or a
-    # future code path that forgets to set the flag).  The saved .blend is
-    # guaranteed to have normalize off on every light.
+    # future code path that forgets to set the flag).
+    #
+    # IMPORTANT: Blender renamed the property between major versions —
+    # `use_normalize` on 3.x/4.x, plain `normalize` on 5.0+.  Trying only
+    # one name silently no-ops on the other version and leaves Normalize
+    # ON in the saved .blend.  _disable_light_normalize tries both.
     _norm_changed = 0
     for _l in bpy.data.lights:
-        if hasattr(_l, "use_normalize") and _l.use_normalize:
-            _l.use_normalize = False
+        # Was it on before we touched it?
+        was_on = (getattr(_l, "normalize", False)
+                  or getattr(_l, "use_normalize", False))
+        _disable_light_normalize(_l, getattr(_l, "name", ""))
+        # Verify it's actually off now (under either name)
+        still_on = (getattr(_l, "normalize", False)
+                    or getattr(_l, "use_normalize", False))
+        if was_on and not still_on:
             _norm_changed += 1
+        elif still_on:
+            print(f"  [SAVE] WARNING: light '{getattr(_l, 'name', '?')}' "
+                  f"still has normalize ON after sweep — Blender API on this "
+                  f"build may use a different attribute name.", flush=True)
     print(f"  [SAVE] Lights: {len(bpy.data.lights)} total, "
-          f"normalize=False on all ({_norm_changed} forced off in final sweep)",
+          f"{_norm_changed} forced normalize=False in final sweep",
           flush=True)
 
     print(f"  [SAVE] Meshes: {len(bpy.data.meshes)}  "
