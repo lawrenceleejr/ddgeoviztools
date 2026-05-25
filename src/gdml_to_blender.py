@@ -2069,26 +2069,30 @@ def _set_light_temperature(light_data, name: str, energy: float,
     Configure *light_data* to render with *temp_kelvin* colour temperature
     using Blender's native blackbody — not an RGB approximation.
 
+    Property name varies by Blender version:
+      Blender 5.0+    : light_data.use_temperature
+      Blender 4.4-4.x : light_data.use_color_temperature
+    Both versions store the Kelvin value on `light_data.temperature`.
+
     Tries, in order:
-      1. light_data.use_color_temperature + light_data.temperature  (Blender 4.4+)
+      1. Either native boolean (use_temperature / use_color_temperature) +
+         the shared `temperature` float
       2. ShaderNodeBlackbody in the light's node tree  (Blender 3.x / 4.x)
       3. _kelvin_to_rgb RGB fallback (last resort)
     """
-    # --- Attempt 1: native use_color_temperature (Blender 4.4+) ---
-    # Blender 4.4 introduced a dedicated color-temperature property on lights.
-    # When enabled, the light colour is computed from a true Planck blackbody
-    # spectrum rather than a user-supplied RGB.
-    if hasattr(light_data, "use_color_temperature"):
-        try:
-            light_data.use_color_temperature = True
-            light_data.temperature = float(temp_kelvin)
-            print(f"  [LIGHT] {name}  {energy:.0f} W  "
-                  f"{temp_kelvin:.0f} K  (native use_color_temperature)",
-                  flush=True)
-            return
-        except Exception as exc:
-            print(f"  [LIGHT] {name}  use_color_temperature failed: {exc}",
-                  flush=True)
+    # --- Attempt 1: native temperature toggle (5.0+ or 4.4+) ---
+    for attr in ("use_temperature", "use_color_temperature"):
+        if hasattr(light_data, attr):
+            try:
+                setattr(light_data, attr, True)
+                light_data.temperature = float(temp_kelvin)
+                if getattr(light_data, attr) is True:
+                    print(f"  [LIGHT] {name}  {energy:.1f}  "
+                          f"{temp_kelvin:.0f} K  (native {attr})",
+                          flush=True)
+                    return
+            except Exception as exc:
+                print(f"  [LIGHT] {name}  {attr} failed: {exc}", flush=True)
 
     # --- Attempt 2: ShaderNodeBlackbody in node tree (Blender 3.x / 4.x) ---
     # On Blender 5.0+ ShaderNodeBlackbody in light node trees can crash
@@ -2359,12 +2363,16 @@ def _add_god_ray_spot(
     direction = (Vector(target) - Vector(loc)).normalized()
     light_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
-    # Render-only: hidden from viewport so it doesn't clutter editing
-    light_obj.hide_viewport = True
+    # Visible in both viewport AND render.  The previous version hid it
+    # from the viewport, which made it appear greyed out in the outliner
+    # and impossible to position interactively.  Cycles still treats it
+    # as a normal spot light; the volumetric scattering it drives is what
+    # produces the visible "god ray" effect during rendering.
+    light_obj.hide_viewport = False
     light_obj.hide_render   = False
 
     print(f"  [GODRAYS] Spot light '{name}'  phi={phi_center_deg:.1f}°  "
-          f"energy={spot_energy:.0f} W  (render-only)", flush=True)
+          f"energy={spot_energy:.1f} W/sr  (viewport-visible)", flush=True)
     return light_obj
 
 
@@ -2372,7 +2380,7 @@ def _add_god_ray_spot(
 # World shader — dark space background + volumetric mist
 # ---------------------------------------------------------------------------
 
-def _setup_world():
+def _setup_world(volume_density: float = 5e-5):
     """
     Configure the world shader for realistic detector visualisation.
 
@@ -2462,15 +2470,21 @@ def _setup_world():
     # is still flagged as crash-prone in some headless builds.  We wire it
     # to the World's Volume socket so the scatter is global — no mesh, no
     # viewport visibility, no save-time mesh issues.
+    # Density rule of thumb (per Blender unit = per mm here):
+    #   1e-6   : optical depth ≈ 0.01 over 10 m  →  invisible
+    #   1e-5   : OD ≈ 0.1                         →  faint haze
+    #   5e-5   : OD ≈ 0.5                         →  clearly visible god rays (default)
+    #   1e-4   : OD ≈ 1                           →  strong fog
+    #   5e-4+  : OD >> 1                          →  heavy mist, can fog out the detector
+    print(f"  [WORLD] Volume scatter density: {volume_density:.1e} per mm "
+          f"(≈ {volume_density * 1000:.3f} per m)", flush=True)
+
     if bpy.app.version >= (5, 0, 0):
         # Try Volume Scatter; if the node can't be created (older 5.x without
         # the symbol) we fall back to background-only.
         try:
             vol = nodes.new("ShaderNodeVolumeScatter")
-            # Density tuned for native mm-scale scenes (detectors ~5-12 m).
-            # 5e-6 per mm = 5e-3 per metre — visually subtle but enough to
-            # produce visible god rays from the key + god-ray spot lights.
-            vol.inputs["Density"].default_value    = 5e-6
+            vol.inputs["Density"].default_value    = float(volume_density)
             # Anisotropy 0.6 = forward-biased scattering; produces visible
             # crepuscular rays in the direction of light propagation.
             vol.inputs["Anisotropy"].default_value = 0.6
@@ -2489,7 +2503,7 @@ def _setup_world():
         # Blender 4.x: ShaderNodeVolumePrincipled is stable in the world tree
         try:
             vol = nodes.new("ShaderNodeVolumePrincipled")
-            vol.inputs["Density"].default_value    = 5e-6
+            vol.inputs["Density"].default_value    = float(volume_density)
             vol.inputs["Anisotropy"].default_value = 0.6
             for key in ("Scatter Color", "Scattering Color"):
                 if key in vol.inputs:
@@ -2557,6 +2571,48 @@ def _setup_render_and_compositor(scene):
     scene.render.resolution_x          = 3840
     scene.render.resolution_y          = 2160
     scene.render.resolution_percentage = 100
+
+    # Motion blur — on by default.  The hero camera animation depends on
+    # this for the cinematic streak.  Cycles uses a 0.5 frame shutter
+    # (≈ 180° equivalent) which matches typical film camera behaviour.
+    try:
+        scene.render.use_motion_blur     = True
+        scene.render.motion_blur_shutter = 0.5
+        for attr_name, val in (("motion_blur_position", "CENTER"),
+                               ("rolling_shutter_type", "NONE")):
+            try:
+                setattr(scene.cycles, attr_name, val)
+            except (AttributeError, TypeError):
+                pass
+        print("  [RENDER] Motion blur: ON (shutter=0.5, centred)", flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] Motion blur setup failed: {exc}", flush=True)
+
+    # Tile size — 2160 px.  Cycles uses tiled rendering only when GPU
+    # memory is tight; at 2160 the entire 4 K frame is essentially a
+    # 2×1 tile arrangement, which minimises tile-boundary overhead.
+    # Property names changed across Blender versions, so we try all
+    # known spellings.
+    for prop in ("tile_size", "tile_x", "tile_y"):
+        try:
+            setattr(scene.cycles, prop, 2160)
+        except (AttributeError, TypeError):
+            pass
+    for prop in ("tile_size", "tile_x", "tile_y"):
+        try:
+            setattr(scene.render, prop, 2160)
+        except (AttributeError, TypeError):
+            pass
+    # Report which one took
+    for src in (scene.cycles, scene.render):
+        for prop in ("tile_size", "tile_x"):
+            if hasattr(src, prop):
+                try:
+                    print(f"  [RENDER] Tile size: {getattr(src, prop)} "
+                          f"(via {src.bl_rna.identifier}.{prop})", flush=True)
+                except Exception:
+                    pass
+                break
 
     # Cycles samples and denoising.
     # In Blender 5.0+, setting use_denoising=True or denoiser="OPENIMAGEDENOISE"
@@ -2795,6 +2851,98 @@ def _make_camera(name: str, location: tuple, target: tuple,
 
 
 # ---------------------------------------------------------------------------
+# Animated hero camera
+# ---------------------------------------------------------------------------
+
+def _make_hero_camera(centre, r,
+                      frame_start: int = 1,
+                      frame_end:   int = 240,
+                      dof_fstop:   float = 2.0):
+    """
+    Cinematic 'hero shot' camera that orbits + dollies in over the scene's
+    frame range.  Locked onto a Track-To target at the detector centre so
+    framing stays correct regardless of the camera's path.
+
+    Movement:
+      • Start:  high, far, looking down (introduces the scale of the detector)
+      • Middle: side-on at mid-distance (peak orbit angle, hits the cut opening)
+      • End:    closer, lower, more head-on (delivers the moment beat)
+
+    Animated F-curves use BEZIER ease-in/out so the camera accelerates from
+    rest and decelerates at the end — no harsh starts or stops.  The DOF
+    focus_distance is keyframed alongside so the detector stays in focus
+    throughout the dolly.
+    """
+    cx, cy, cz = float(centre[0]), float(centre[1]), float(centre[2])
+
+    cam_data = bpy.data.cameras.new("Cam_Hero")
+    cam_data.type        = "PERSP"
+    cam_data.lens        = 35.0          # 35 mm cinematic
+    cam_data.clip_start  = 1.0
+    cam_data.clip_end    = 100000.0
+    cam_data.dof.use_dof = True
+    cam_data.dof.aperture_fstop  = dof_fstop
+    cam_data.dof.aperture_blades = 6     # subtle hex bokeh
+    cam_data.dof.aperture_ratio  = 1.0
+
+    cam_obj = bpy.data.objects.new("Cam_Hero", cam_data)
+    bpy.data.scenes[0].collection.objects.link(cam_obj)
+
+    # Target empty — camera always tracks this via Track-To constraint
+    target = bpy.data.objects.new("Cam_Hero_Target", None)
+    target.location = Vector((cx, cy, cz))
+    target.empty_display_type = "PLAIN_AXES"
+    target.empty_display_size = r * 0.05
+    bpy.data.scenes[0].collection.objects.link(target)
+
+    constraint = cam_obj.constraints.new(type="TRACK_TO")
+    constraint.target     = target
+    constraint.track_axis = "TRACK_NEGATIVE_Z"
+    constraint.up_axis    = "UP_Y"
+
+    # Spherical-coordinate keyframes (yaw_deg, pitch_deg, distance, focus)
+    # The frame layout is start → mid → end with bezier ease for cinematic
+    # acceleration / deceleration.
+    def _loc_from_spherical(yaw_deg, pitch_deg, dist):
+        y = math.radians(yaw_deg)
+        p = math.radians(pitch_deg)
+        return Vector((
+            cx + dist * math.cos(p) * math.cos(y),
+            cy + dist * math.sin(p),
+            cz + dist * math.cos(p) * math.sin(y),
+        ))
+
+    poses = [
+        (frame_start,                       35.0, 25.0, r * 3.0, r * 3.0),
+        ((frame_start + frame_end) // 2,    55.0, 18.0, r * 2.0, r * 2.0),
+        (frame_end,                         70.0, 12.0, r * 1.1, r * 1.1),
+    ]
+
+    for (frame, yaw, pitch, dist, focus) in poses:
+        cam_obj.location = _loc_from_spherical(yaw, pitch, dist)
+        cam_data.dof.focus_distance = focus
+        cam_obj.keyframe_insert(data_path="location", frame=frame)
+        cam_data.dof.keyframe_insert(data_path="focus_distance", frame=frame)
+
+    # Apply BEZIER ease-in/out to every keyframe we just inserted
+    def _smooth_curves(animated_id):
+        if animated_id.animation_data and animated_id.animation_data.action:
+            for fcurve in animated_id.animation_data.action.fcurves:
+                for kp in fcurve.keyframe_points:
+                    kp.interpolation     = "BEZIER"
+                    kp.easing            = "EASE_IN_OUT"
+                    kp.handle_left_type  = "AUTO_CLAMPED"
+                    kp.handle_right_type = "AUTO_CLAMPED"
+
+    _smooth_curves(cam_obj)
+    _smooth_curves(cam_data)
+
+    print(f"  [HERO] Cam_Hero animated, frames {frame_start}-{frame_end}  "
+          f"(orbit 35°→70° yaw, dolly {r*3.0:.0f}→{r*1.1:.0f} mm)", flush=True)
+    return cam_obj, target
+
+
+# ---------------------------------------------------------------------------
 # Scene bounds helper
 # ---------------------------------------------------------------------------
 
@@ -2825,16 +2973,17 @@ def _scene_bounds(objects: list) -> tuple[tuple[float, float, float],
 # ---------------------------------------------------------------------------
 
 def create_blender_scene(
-    mesh_dir:       Path,
-    output_path:    Path,
-    fmt:            str   = "gltf",
-    phi_min:        float = 0.0,
-    phi_max:        float = 90.0,
-    no_phi_cut:     bool  = False,
-    weld_threshold: float = 1e-4,
-    bevel_width_mm: float = 0.2,
-    no_bevel:       bool  = False,
-    no_env_sphere:  bool  = False,
+    mesh_dir:        Path,
+    output_path:     Path,
+    fmt:             str   = "gltf",
+    phi_min:         float = 0.0,
+    phi_max:         float = 90.0,
+    no_phi_cut:      bool  = False,
+    weld_threshold:  float = 1e-4,
+    bevel_width_mm:  float = 0.2,
+    no_bevel:        bool  = False,
+    no_env_sphere:   bool  = False,
+    volume_density:  float = 5e-5,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
@@ -2854,6 +3003,8 @@ def create_blender_scene(
     bevel_width_mm : edge chamfer width in mm for specular highlights (default 0.2)
     no_bevel       : if True, skip the Bevel modifier
     no_env_sphere  : if True, skip the matte environment sphere
+    volume_density : world-volume scatter density per mm (default 5e-5).
+                     1e-5 = faint haze, 5e-5 = visible god rays, 1e-4 = strong fog.
     """
     mesh_dir    = Path(mesh_dir)
     output_path = Path(output_path)
@@ -2907,7 +3058,7 @@ def create_blender_scene(
 
     # ---- World shader (background + volumetric mist) ----
     print(f"  [SETUP] Setting up world shader ...", flush=True)
-    _setup_world()
+    _setup_world(volume_density=volume_density)
 
     # ---- Pre-create materials ----
     print(f"  [SETUP] Pre-creating materials ...", flush=True)
@@ -3067,7 +3218,7 @@ def create_blender_scene(
 
     # ---- Environment sphere ----
     if not no_env_sphere:
-        env_sphere = _add_environment_sphere(r * 1.8)
+        env_sphere = _add_environment_sphere(r * 3.6)
         _link_to_collection(env_sphere, col_lights)
 
     # ---- Cameras ----
@@ -3091,13 +3242,19 @@ def create_blender_scene(
 
     # Side / elevation: camera on the +Z side, looking along -Z toward
     # the detector centre.  Frames the XY plane (beam horizontal, Y up).
-    _make_camera(
+    # Vertical shift +0.15 pushes the framed detector down slightly in
+    # the image, leaving headroom above for labels / overlays.
+    cam_side = _make_camera(
         "Cam_Side",
         location=(centre[0], centre[1], centre[2] + r_side),
         target=centre,
         ortho=True,
         ortho_scale=ortho_side,
     )
+    try:
+        cam_side.data.shift_y = 0.15
+    except (AttributeError, TypeError):
+        pass
 
     # Perspective camera — placed OUTSIDE the detector at a 3/4 angle so
     # the viewer sees the detector shell + the phi cutaway as a single
@@ -3128,16 +3285,36 @@ def create_blender_scene(
         ortho=False,
     )
 
+    # Animated hero camera — Hollywood orbit + dolly-in.  Renders the
+    # frame range below; play it from the timeline with the spacebar or
+    # render it to MP4 via Render → Render Animation.
+    scene = bpy.data.scenes[0]
+    scene.frame_start   = 1
+    scene.frame_end     = 240          # 10 s @ 24 fps
+    scene.frame_current = 1
+    scene.render.fps    = 24
+    hero_cam, hero_target = _make_hero_camera(
+        centre, r,
+        frame_start=scene.frame_start,
+        frame_end=scene.frame_end,
+        dof_fstop=2.0,
+    )
+
     # Move cameras into the Cameras collection
-    for cam_name in ("Cam_Transverse", "Cam_Side", "Cam_Perspective"):
+    for cam_name in ("Cam_Transverse", "Cam_Side", "Cam_Perspective",
+                     "Cam_Hero", "Cam_Hero_Target"):
         cam_obj = bpy.data.objects.get(cam_name)
         if cam_obj:
             _link_to_collection(cam_obj, col_cameras)
 
-    # Set active camera to the perspective view (3/4 external)
-    bpy.data.scenes[0].camera = cam_persp
-    print(f"  [SETUP] Cameras created (active: Cam_Perspective, external 3/4 view "
-          f"into phi-cut at {math.degrees(_phi_center_rad):.0f}°)", flush=True)
+    # Active camera: the animated hero shot — that's the headline render.
+    # Cam_Perspective / Cam_Transverse / Cam_Side are still available in
+    # the Cameras collection for stills.
+    scene.camera = hero_cam
+    print(f"  [SETUP] Cameras created (active: Cam_Hero, animated "
+          f"{scene.frame_start}-{scene.frame_end} @ {scene.render.fps} fps; "
+          f"stills available on Cam_Perspective / Cam_Transverse / Cam_Side)",
+          flush=True)
 
     # ---- Lighting ----
     # Five-light cinematic rig with normalize=False on every light.

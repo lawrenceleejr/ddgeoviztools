@@ -359,6 +359,7 @@ def cmd_blender_scene(args: argparse.Namespace) -> int:
         "bevel_width_mm": args.bevel_width,
         "no_bevel":       args.no_bevel,
         "no_env_sphere":  args.no_env_sphere,
+        "volume_density": args.volume_density,
     })
 
     cmd = [blender_exe, "--background", "--python", str(script), "--", kwargs]
@@ -628,6 +629,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Disable the matte environment sphere that surrounds the detector "
             "and acts as a soft-light dome."
+        ),
+    )
+    p_bl.add_argument(
+        "--volume-density", type=float, default=5e-5, metavar="DENSITY",
+        dest="volume_density",
+        help=(
+            "World-volume scatter density per mm (default: 5e-5). "
+            "Controls visibility of god rays / atmospheric haze. "
+            "Try 1e-5 for faint haze, 5e-5 for visible god rays, "
+            "1e-4 for strong fog. Set to 0 to disable volumetric scattering."
         ),
     )
     p_bl.set_defaults(func=cmd_blender_scene)
