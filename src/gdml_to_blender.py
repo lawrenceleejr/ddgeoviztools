@@ -142,17 +142,20 @@ def _make_material(name: str, color_rgb: tuple, metallic: float, roughness: floa
         if key in bsdf.inputs:
             bsdf.inputs[key].default_value = 0.4
             break
-    # Anisotropic brushed-metal look: elongated highlights mimic machined surfaces.
-    # Only apply to metallic materials (metallic > 0.3).
-    if metallic > 0.3:
-        for key in ("Anisotropic", "Anisotropy"):
-            if key in bsdf.inputs:
-                bsdf.inputs[key].default_value = 0.35
-                break
-        for key in ("Anisotropic Rotation", "Anisotropy Rotation"):
-            if key in bsdf.inputs:
-                bsdf.inputs[key].default_value = 0.0
-                break
+    # Anisotropy: disabled (= 0).  Previously set to 0.35 to mimic a
+    # brushed-metal look on metallic materials, but anisotropic BRDFs use
+    # the per-face tangent direction — on faceted geometry (decimated cones,
+    # convex-hull-filled nozzles) each triangle has a slightly different
+    # tangent, which produces a different highlight streak on each face.
+    # The eye reads the difference as visible stripes on what should be a
+    # smooth surface.  Leaving anisotropy off restores uniform highlights.
+    # If a brushed-metal effect is wanted in the future, do it via a
+    # tangent-map texture so the direction is controlled, not derived from
+    # arbitrary triangulation.
+    for key in ("Anisotropic", "Anisotropy"):
+        if key in bsdf.inputs:
+            bsdf.inputs[key].default_value = 0.0
+            break
     return mat
 
 
@@ -1056,16 +1059,23 @@ def _load_mesh(
     me = bpy.data.meshes.new(name)
     me.from_pydata(verts, [], faces)
     me.update()
-    # Shade smooth — mesh.shade_smooth() is the Blender 4.1+ API.
-    # In Blender 5.0 the per-face 'use_smooth' flag was removed from the
-    # internal mesh representation; foreach_set("use_smooth", …) writes to a
-    # legacy shim and can corrupt the CustomData layer table in a way that
-    # causes save_as_mainfile to crash with SIGSEGV.  Use shade_smooth() when
-    # available, otherwise skip smooth shading rather than risk corruption.
-    try:
-        me.shade_smooth()
-    except AttributeError:
-        pass   # Blender < 4.1 fallback: flat shading acceptable for vis
+    # Shading mode:
+    #   • SHELL meshes (solid=False) — shade smooth.  These are thin shells
+    #     representing curved detector surfaces (tracker layers, calorimeter
+    #     barrels) where smooth shading hides the underlying triangulation.
+    #   • SOLID meshes (solid=True)  — flat shade.  These are convex-hull-filled
+    #     nozzles whose mesh now contains both the curved outer wall AND the
+    #     flat cap polygons from `_cap_boundary_loops`.  Shading them smooth
+    #     interpolates normals ACROSS the cap-to-wall edge — producing visible
+    #     stripes / radial bands where the smooth gradient transitions
+    #     through what should be a hard manufactured edge.  Flat shading is
+    #     the correct look for a machined nozzle anyway: the cap reads as
+    #     "the metal was cut here", not as a smooth curve.
+    if not solid:
+        try:
+            me.shade_smooth()
+        except AttributeError:
+            pass   # Blender < 4.1 fallback: flat shading is fine for vis
     me.update()
     # Clean any degenerate / out-of-range mesh data before handing the mesh
     # to Blender's modifier stack and serialiser.
@@ -3152,6 +3162,12 @@ def create_blender_scene(
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
 
+        # Tag the object so the post-load bevel pass can opt out — solid
+        # (convex-hull-filled) meshes look wrong with bevel because every
+        # cap-to-wall edge becomes a thin band of smooth shading instead
+        # of a clean machined edge.
+        obj["is_solid"] = _is_nozzle
+
         # Material — try to infer from the sub-detector name, else cycle palette
         mat = _material_for_detector(name, mat_cycle)
         obj.data.materials.append(mat)
@@ -3270,9 +3286,22 @@ def create_blender_scene(
                   flush=True)
 
     # --- Bevel modifier (after phi-cutaway so it bevels the cut edges too) ---
+    # Solid meshes (convex-hull-filled nozzles) skip bevel: their cap polygons
+    # are large, flat fan triangles where a bevel chamfer becomes a visible
+    # banded ring around the cap edge and creates striping artifacts under
+    # the directional lighting.  A machined nozzle reads correctly with crisp
+    # 90° cut edges anyway.
     if not no_bevel:
+        n_beveled = 0
+        n_skipped = 0
         for obj in loaded_objects:
+            if obj.get("is_solid", False):
+                n_skipped += 1
+                continue
             _add_bevel(obj, width_mm=bevel_width_mm)
+            n_beveled += 1
+        print(f"  [BEVEL] {n_beveled} objects beveled, "
+              f"{n_skipped} solid objects skipped", flush=True)
 
     # ---- Environment sphere ----
     if not no_env_sphere:
