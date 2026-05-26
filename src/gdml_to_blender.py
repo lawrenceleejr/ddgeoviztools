@@ -2380,7 +2380,7 @@ def _add_god_ray_spot(
 # World shader — dark space background + volumetric mist
 # ---------------------------------------------------------------------------
 
-def _setup_world(volume_density: float = 5e-5):
+def _setup_world(volume_density: float = 2.5e-5):
     """
     Configure the world shader for realistic detector visualisation.
 
@@ -3040,7 +3040,7 @@ def create_blender_scene(
     bevel_width_mm:  float = 0.2,
     no_bevel:        bool  = False,
     no_env_sphere:   bool  = False,
-    volume_density:  float = 5e-5,
+    volume_density:  float = 2.5e-5,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
@@ -3060,8 +3060,9 @@ def create_blender_scene(
     bevel_width_mm : edge chamfer width in mm for specular highlights (default 0.2)
     no_bevel       : if True, skip the Bevel modifier
     no_env_sphere  : if True, skip the matte environment sphere
-    volume_density : world-volume scatter density per mm (default 5e-5).
-                     1e-5 = faint haze, 5e-5 = visible god rays, 1e-4 = strong fog.
+    volume_density : world-volume scatter density per mm (default 2.5e-5).
+                     1e-5 = faint haze, 2.5e-5 = subtle god rays, 5e-5 = visible
+                     god rays, 1e-4 = strong fog.
     """
     mesh_dir    = Path(mesh_dir)
     output_path = Path(output_path)
@@ -3419,18 +3420,23 @@ def create_blender_scene(
     # contributions from all four lights at the detector centre is
     # roughly 130 W/m², which sits well inside Filmic/AgX's linear
     # range without clipping.
-    KEY_W_PER_M2     =  500.0
-    FILL_W_PER_M2    =   60.0
-    RIM_W_PER_M2     = 3000.0
-    KICKER_W_PER_M2  =  300.0
+    # Previously calibrated values were dialled down ~0.6× across the
+    # board after the volumetric medium was added: the world Volume
+    # Scatter adds an apparent brightness boost (scattered light reaches
+    # the camera even in shadow regions), so the surface lighting needs
+    # less direct contribution to land at the same final intensity.
+    KEY_W_PER_M2     =  300.0
+    FILL_W_PER_M2    =   40.0
+    RIM_W_PER_M2     = 1800.0
+    KICKER_W_PER_M2  =  180.0
 
     # --- Point-light intensities (W/sr) — scale with r² for falloff ---
     # Irradiance at distance d (metres) from a point of intensity I is
     # I/d².  For d = r/1000 m, achieving target E at the subject needs
     # I = E · (r/1000)² = E · r² · 1e-6.  Factor below is "E · 1e-6":
-    INTERIOR_W_PER_SR_FACTOR = 10.0e-6   # ~10 W/m² at distance r
-    IP_GLOW_W_PER_SR_FACTOR  =  4.0e-6   # ~4 W/m² subtle purple accent
-    SPOT_W_PER_SR_FACTOR     = 50.0e-6   # decoupled — strong god-ray beam
+    INTERIOR_W_PER_SR_FACTOR = 6.0e-6    # ~6 W/m² at distance r
+    IP_GLOW_W_PER_SR_FACTOR  = 2.5e-6    # subtle purple accent
+    SPOT_W_PER_SR_FACTOR     = 30.0e-6   # decoupled — strong god-ray beam
     point_base = r * r                   # r in mm
 
     # Key light — warm tungsten/golden-hour at 3200 K, raked from above the

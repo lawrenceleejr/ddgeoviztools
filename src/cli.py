@@ -632,13 +632,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_bl.add_argument(
-        "--volume-density", type=float, default=5e-5, metavar="DENSITY",
+        "--volume-density", type=float, default=2.5e-5, metavar="DENSITY",
         dest="volume_density",
         help=(
-            "World-volume scatter density per mm (default: 5e-5). "
+            "World-volume scatter density per mm (default: 2.5e-5). "
             "Controls visibility of god rays / atmospheric haze. "
-            "Try 1e-5 for faint haze, 5e-5 for visible god rays, "
-            "1e-4 for strong fog. Set to 0 to disable volumetric scattering."
+            "Try 1e-5 for faint haze, 2.5e-5 for subtle god rays, "
+            "5e-5 for visible god rays, 1e-4 for strong fog. "
+            "Set to 0 to disable volumetric scattering."
         ),
     )
     p_bl.set_defaults(func=cmd_blender_scene)
