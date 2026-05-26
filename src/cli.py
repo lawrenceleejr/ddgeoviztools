@@ -632,10 +632,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_bl.add_argument(
-        "--volume-density", type=float, default=2.5e-5, metavar="DENSITY",
+        "--volume-density", type=float, default=2.5e-6, metavar="DENSITY",
         dest="volume_density",
         help=(
-            "World-volume scatter density per mm (default: 2.5e-5). "
+            "World-volume scatter density per mm (default: 2.5e-6 — "
+            "barely-there atmospheric depth). "
             "Controls visibility of god rays / atmospheric haze. "
             "Try 1e-5 for faint haze, 2.5e-5 for subtle god rays, "
             "5e-5 for visible god rays, 1e-4 for strong fog. "

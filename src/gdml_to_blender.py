@@ -2390,7 +2390,7 @@ def _add_god_ray_spot(
 # World shader — dark space background + volumetric mist
 # ---------------------------------------------------------------------------
 
-def _setup_world(volume_density: float = 2.5e-5):
+def _setup_world(volume_density: float = 2.5e-6):
     """
     Configure the world shader for realistic detector visualisation.
 
@@ -2481,9 +2481,10 @@ def _setup_world(volume_density: float = 2.5e-5):
     # to the World's Volume socket so the scatter is global — no mesh, no
     # viewport visibility, no save-time mesh issues.
     # Density rule of thumb (per Blender unit = per mm here):
-    #   1e-6   : optical depth ≈ 0.01 over 10 m  →  invisible
+    #   2.5e-6 : optical depth ≈ 0.025 over 10 m →  barely-there atmospheric depth (default)
     #   1e-5   : OD ≈ 0.1                         →  faint haze
-    #   5e-5   : OD ≈ 0.5                         →  clearly visible god rays (default)
+    #   2.5e-5 : OD ≈ 0.25                        →  subtle god rays
+    #   5e-5   : OD ≈ 0.5                         →  clearly visible god rays
     #   1e-4   : OD ≈ 1                           →  strong fog
     #   5e-4+  : OD >> 1                          →  heavy mist, can fog out the detector
     print(f"  [WORLD] Volume scatter density: {volume_density:.1e} per mm "
@@ -3050,7 +3051,7 @@ def create_blender_scene(
     bevel_width_mm:  float = 0.2,
     no_bevel:        bool  = False,
     no_env_sphere:   bool  = False,
-    volume_density:  float = 2.5e-5,
+    volume_density:  float = 2.5e-6,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
@@ -3070,9 +3071,10 @@ def create_blender_scene(
     bevel_width_mm : edge chamfer width in mm for specular highlights (default 0.2)
     no_bevel       : if True, skip the Bevel modifier
     no_env_sphere  : if True, skip the matte environment sphere
-    volume_density : world-volume scatter density per mm (default 2.5e-5).
-                     1e-5 = faint haze, 2.5e-5 = subtle god rays, 5e-5 = visible
-                     god rays, 1e-4 = strong fog.
+    volume_density : world-volume scatter density per mm (default 2.5e-6).
+                     2.5e-6 = barely-there atmospheric depth (default),
+                     1e-5 = faint haze, 2.5e-5 = subtle god rays,
+                     5e-5 = visible god rays, 1e-4 = strong fog.
     """
     mesh_dir    = Path(mesh_dir)
     output_path = Path(output_path)
