@@ -38,7 +38,11 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
-	virtual void OnLanded(const FHitResult& Hit) override;
+	// In UE 5.x the C++ virtual hook is `Landed`; `OnLanded` is the
+	// Blueprint display name only.  Older versions of this project
+	// used `OnLanded`, which never actually overrode anything (silent
+	// no-op on Blender — error on UE 5.7).
+	virtual void Landed(const FHitResult& Hit) override;
 
 private:
 	// ---- Components ----

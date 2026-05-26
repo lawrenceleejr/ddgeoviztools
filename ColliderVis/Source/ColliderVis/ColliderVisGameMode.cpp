@@ -6,10 +6,14 @@
 #include "Engine/RectLight.h"
 #include "Engine/SkyLight.h"
 #include "Engine/ExponentialHeightFog.h"
-#include "Engine/SkyAtmosphere.h"
+// UE 5.7 merged the ASkyAtmosphere actor declaration into the component
+// header (`Components/SkyAtmosphereComponent.h`); the standalone
+// `Engine/SkyAtmosphere.h` was removed.  Include the component header
+// instead — it brings in both the actor and the component class.
 #include "Components/DirectionalLightComponent.h"
 #include "Components/RectLightComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
 
 AColliderVisGameMode::AColliderVisGameMode()
