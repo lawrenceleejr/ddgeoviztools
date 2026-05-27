@@ -3456,18 +3456,18 @@ def create_blender_scene(
     # Scatter adds an apparent brightness boost (scattered light reaches
     # the camera even in shadow regions), so the surface lighting needs
     # less direct contribution to land at the same final intensity.
-    KEY_W_PER_M2     =  300.0
-    FILL_W_PER_M2    =   40.0
-    RIM_W_PER_M2     = 1800.0
-    KICKER_W_PER_M2  =  180.0
+    KEY_W_PER_M2     =  150.0
+    FILL_W_PER_M2    =   20.0
+    RIM_W_PER_M2     =  900.0
+    KICKER_W_PER_M2  =   90.0
 
     # --- Point-light intensities (W/sr) — scale with r² for falloff ---
     # Irradiance at distance d (metres) from a point of intensity I is
     # I/d².  For d = r/1000 m, achieving target E at the subject needs
     # I = E · (r/1000)² = E · r² · 1e-6.  Factor below is "E · 1e-6":
-    INTERIOR_W_PER_SR_FACTOR = 6.0e-6    # ~6 W/m² at distance r
-    IP_GLOW_W_PER_SR_FACTOR  = 2.5e-6    # subtle purple accent
-    SPOT_W_PER_SR_FACTOR     = 30.0e-6   # decoupled — strong god-ray beam
+    INTERIOR_W_PER_SR_FACTOR = 3.0e-6    # ~3 W/m² at distance r
+    IP_GLOW_W_PER_SR_FACTOR  = 1.25e-6   # subtle purple accent
+    SPOT_W_PER_SR_FACTOR     = 15.0e-6   # decoupled — strong god-ray beam
     point_base = r * r                   # r in mm
 
     # Key light — warm tungsten/golden-hour at 3200 K, raked from above the
