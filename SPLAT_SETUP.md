@@ -55,6 +55,34 @@ splat_views/
 | `--margin` | 1.15 | Framing slack around the detector's bounding sphere. |
 | `--hemisphere` | off | Only orbit the upper half (+Y). Default is a **full sphere** for complete coverage. |
 | `--hide-volume` | off | **Recommended on.** Strips the world Volume Scatter (atmospheric fog) — volumetrics reconstruct badly as Gaussians. |
+| `--interior-views` | 0 | **Use this to see into the centre.** Adds N extra cameras *inside* the phi-cutaway opening, aimed radially inward at the core. Try **80–150**. |
+| `--interior-radius` | 0.55 | Interior camera distance from the beam axis, as a fraction of the detector bounding radius. Smaller = deeper inside. |
+| `--cut-phi-min` / `--cut-phi-max` | auto | Edges of the removed cutaway sector (degrees). Auto-read from the scene's `PhiCutawayControl`; override if the bake used a different sector. |
+
+### Seeing into the centre (cutaway interior)
+
+The exterior orbit looks at the detector from outside. To capture the **inner
+detectors revealed by the phi-cutaway** so you can stand inside and look out,
+add interior views:
+
+```bash
+./run.sh render-views /data/test.blend \
+    --output-dir /data/splat_views/ \
+    --num-views 300 \
+    --interior-views 120 \
+    --hide-volume
+```
+
+These cameras sit *inside the open wedge* (the removed sector) and look
+radially inward at each beam cross-section, so their sightlines pass through
+the opening to the core. The opening direction is taken from the scene's
+`PhiCutawayControl` automatically; if your bake used a different sector, pass
+`--cut-phi-min` / `--cut-phi-max`. Move the cameras deeper toward the beampipe
+with a smaller `--interior-radius` (e.g. `0.35`).
+
+> The cutaway in `test.blend` is **baked into the meshes**, so the opening is
+> fixed at render time. To open a *different* sector, rebuild the `.blend` with
+> `blender-scene --phi-cut/--phi-min` first, then render.
 
 > **Speed:** in Docker this is CPU Cycles. For a real run, do it on your Mac
 > with a normal Blender install — it'll use the Metal GPU and is much faster:

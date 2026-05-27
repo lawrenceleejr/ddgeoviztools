@@ -55,8 +55,8 @@ def _render_visible_meshes(scene) -> list:
     ]
 
 
-def _bounding_sphere(objects: list) -> tuple[Vector, float]:
-    """World-space (centre, radius) enclosing every vertex bound-box corner."""
+def _scene_bounds(objects: list) -> tuple[Vector, float, Vector, Vector]:
+    """World-space (centre, bounding-sphere radius, aabb-min, aabb-max)."""
     mins = [float("inf")] * 3
     maxs = [float("-inf")] * 3
     found = False
@@ -68,12 +68,42 @@ def _bounding_sphere(objects: list) -> tuple[Vector, float]:
                 mins[i] = min(mins[i], v[i])
                 maxs[i] = max(maxs[i], v[i])
     if not found:
-        return Vector((0.0, 0.0, 0.0)), 5000.0
+        return (Vector((0.0, 0.0, 0.0)), 5000.0,
+                Vector((-5000.0,) * 3), Vector((5000.0,) * 3))
     centre = Vector(((mins[0] + maxs[0]) * 0.5,
                      (mins[1] + maxs[1]) * 0.5,
                      (mins[2] + maxs[2]) * 0.5))
     radius = 0.5 * math.sqrt(sum((maxs[i] - mins[i]) ** 2 for i in range(3)))
-    return centre, radius
+    return centre, radius, Vector(mins), Vector(maxs)
+
+
+def _read_cut_sector(scene, cli_min, cli_max) -> tuple[float, float]:
+    """
+    Opening sector [phi_min, phi_max] (degrees) that the cutaway removed.
+
+    Explicit CLI values win.  Otherwise read the PhiCutawayControl empty's
+    custom properties (set by the blender-scene builder).  Final fallback is
+    the documented default sector [0, 90].
+    """
+    if cli_min is not None and cli_max is not None:
+        return float(cli_min), float(cli_max)
+    ctrl = bpy.data.objects.get("PhiCutawayControl")
+    if ctrl is not None and "phi_min" in ctrl.keys() and "phi_max" in ctrl.keys():
+        return float(ctrl["phi_min"]), float(ctrl["phi_max"])
+    return (0.0 if cli_min is None else float(cli_min),
+            90.0 if cli_max is None else float(cli_max))
+
+
+def _phi_world_dir(phi_deg: float) -> Vector:
+    """
+    Transverse (beam-perpendicular) world direction for cut angle *phi*.
+
+    Scene convention (see gdml_to_blender / README): beam = world X, up =
+    world Y, and phi=0 -> +Y, phi=90 -> +Z, so the direction lies in the
+    Y-Z plane: (0, cos phi, sin phi).
+    """
+    p = math.radians(phi_deg)
+    return Vector((0.0, math.cos(p), math.sin(p)))
 
 
 # ---------------------------------------------------------------------------
@@ -125,9 +155,50 @@ def _make_camera(scene, fov_deg: float):
     return cam_obj
 
 
-def _aim(cam_obj, location: Vector, target: Vector) -> None:
+def _aim(cam_obj, location: Vector, target: Vector, up: str = "Y") -> None:
     cam_obj.location = location
-    cam_obj.rotation_euler = (target - location).to_track_quat("-Z", "Y").to_euler()
+    cam_obj.rotation_euler = (target - location).to_track_quat("-Z", up).to_euler()
+
+
+def _exterior_poses(centre: Vector, distance: float, num_views: int,
+                    hemisphere: bool) -> list:
+    """(location, target, up) tuples on the orbit sphere, all aimed at centre."""
+    return [(centre + d.normalized() * distance, centre, "Y")
+            for d in _fibonacci_directions(num_views, hemisphere)]
+
+
+def _interior_poses(centre: Vector, radius: float, aabb_min: Vector,
+                    aabb_max: Vector, phi_min: float, phi_max: float,
+                    num_views: int, radius_frac: float) -> list:
+    """
+    Cameras that sit *inside* the open cutaway wedge and look radially inward
+    at the core, so the splat captures the revealed inner detectors.
+
+    Each camera is placed at a transverse angle within [phi_min, phi_max]
+    (inset from the cut planes so it stays clear of solid geometry) and swept
+    along the beam (world X), aiming at the on-axis point at its own beam
+    offset — i.e. looking straight in at that cross-section.  Up = beam (X) so
+    the inward-looking views don't gimbal when the sightline nears world Y.
+    """
+    if num_views <= 0 or phi_max <= phi_min:
+        return []
+    beam = Vector((1.0, 0.0, 0.0))
+    half_len = 0.5 * (aabb_max.x - aabb_min.x)
+    cam_radius = radius * radius_frac
+    span = phi_max - phi_min
+    inset = 0.15 * span                     # keep cameras off the cut planes
+    lo, hi = phi_min + inset, phi_max - inset
+    poses = []
+    for i in range(num_views):
+        # azimuth: golden-ratio walk across the (inset) opening
+        phi = lo + ((i * 0.618033988749895) % 1.0) * (hi - lo)
+        # beam sweep: even pass from -0.4L to +0.4L of detector length
+        t = (i + 0.5) / num_views
+        x_off = (t * 2.0 - 1.0) * 0.4 * half_len
+        target = centre + beam * x_off
+        location = target + _phi_world_dir(phi) * cam_radius
+        poses.append((location, target, "X"))
+    return poses
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +263,10 @@ def render_views(
     margin: float = 1.15,
     hemisphere: bool = False,
     hide_volume: bool = False,
+    interior_views: int = 0,
+    interior_radius: float = 0.55,
+    cut_phi_min: float | None = None,
+    cut_phi_max: float | None = None,
 ) -> Path:
     scene = bpy.context.scene
     w = h = int(resolution)
@@ -200,7 +275,7 @@ def render_views(
     if not meshes:
         raise RuntimeError("No render-visible mesh objects found in the scene.")
     bpy.context.view_layer.update()
-    centre, radius = _bounding_sphere(meshes)
+    centre, radius, aabb_min, aabb_max = _scene_bounds(meshes)
     if radius <= 0.0:
         raise RuntimeError("Degenerate scene bounds (radius <= 0).")
 
@@ -212,23 +287,30 @@ def render_views(
     cam_obj = _make_camera(scene, fov_deg)
     angle_x = cam_obj.data.angle_x
     distance = _frame_distance(radius, angle_x, w, h, margin)
-    directions = _fibonacci_directions(num_views, hemisphere)
 
     # Intrinsics (square pixels, horizontal sensor fit → fl_x == fl_y).
     fl = (w * 0.5) / math.tan(angle_x * 0.5)
 
+    poses = _exterior_poses(centre, distance, num_views, hemisphere)
+    if interior_views > 0:
+        phi_min, phi_max = _read_cut_sector(scene, cut_phi_min, cut_phi_max)
+        poses += _interior_poses(centre, radius, aabb_min, aabb_max,
+                                 phi_min, phi_max, interior_views, interior_radius)
+        print(f"[render-views] interior: {interior_views} views through cut "
+              f"sector [{phi_min:.0f}°, {phi_max:.0f}°] at "
+              f"{interior_radius:.2f}×radius", flush=True)
+
     images_dir = output_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[render-views] {len(directions)} views | {w}x{h} | {samples} spp "
+    print(f"[render-views] {len(poses)} views | {w}x{h} | {samples} spp "
           f"| device={device}", flush=True)
     print(f"[render-views] centre={tuple(round(c, 1) for c in centre)} "
           f"radius={radius:.1f} distance={distance:.1f}", flush=True)
 
     frames = []
-    for i, d in enumerate(directions):
-        location = centre + d.normalized() * distance
-        _aim(cam_obj, location, centre)
+    for i, (location, target, up) in enumerate(poses):
+        _aim(cam_obj, location, target, up)
         bpy.context.view_layer.update()
 
         rel_path = f"images/frame_{i:05d}.png"
@@ -239,7 +321,7 @@ def render_views(
             "file_path": rel_path,
             "transform_matrix": [list(row) for row in cam_obj.matrix_world],
         })
-        print(f"[render-views] {i + 1}/{len(directions)} -> {rel_path}", flush=True)
+        print(f"[render-views] {i + 1}/{len(poses)} -> {rel_path}", flush=True)
 
     transforms = {
         "camera_model": "OPENCV",

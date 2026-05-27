@@ -344,6 +344,10 @@ def cmd_render_views(args: argparse.Namespace) -> int:
         "margin":      args.margin,
         "hemisphere":  args.hemisphere,
         "hide_volume": args.hide_volume,
+        "interior_views":  args.interior_views,
+        "interior_radius": args.interior_radius,
+        "cut_phi_min":     args.cut_phi_min,
+        "cut_phi_max":     args.cut_phi_max,
     })
 
     # Blender opens the .blend named on the command line, then runs our script
@@ -760,6 +764,38 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Strip the world Volume Scatter (atmospheric fog) before rendering. "
             "Volumetrics reconstruct poorly as Gaussian splats; recommended on."
+        ),
+    )
+    p_rv.add_argument(
+        "--interior-views", type=int, default=0, metavar="N", dest="interior_views",
+        help=(
+            "Add N extra cameras INSIDE the phi-cutaway opening, looking "
+            "radially inward at the core, so the splat captures the revealed "
+            "inner detectors (default: 0 = exterior only). Try 80-150."
+        ),
+    )
+    p_rv.add_argument(
+        "--interior-radius", type=float, default=0.55, metavar="FRAC",
+        dest="interior_radius",
+        help=(
+            "Interior camera distance from the beam axis as a fraction of the "
+            "detector bounding radius (default: 0.55). Smaller = deeper inside."
+        ),
+    )
+    p_rv.add_argument(
+        "--cut-phi-min", type=float, default=None, metavar="DEGREES",
+        dest="cut_phi_min",
+        help=(
+            "Lower edge of the removed cutaway sector (degrees). Default: "
+            "auto-read from the scene's PhiCutawayControl, else 0."
+        ),
+    )
+    p_rv.add_argument(
+        "--cut-phi-max", type=float, default=None, metavar="DEGREES",
+        dest="cut_phi_max",
+        help=(
+            "Upper edge of the removed cutaway sector (degrees). Default: "
+            "auto-read from the scene's PhiCutawayControl, else 90."
         ),
     )
     p_rv.set_defaults(func=cmd_render_views)
