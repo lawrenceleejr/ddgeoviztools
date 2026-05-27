@@ -8,6 +8,9 @@ CLI tools for working with ddsim/DD4hep GDML detector geometries:
 4. **Blender-scene** — build a ready-to-use `.blend` file from the converted
    meshes, with physics-inspired materials, a phi-cutaway, and standard HEP
    camera views.
+5. **Render-views** — render an orbit of posed Cycles views from a `.blend`
+   for Gaussian-splat training (photoreal 6DoF walk-around on Meta Quest via
+   WebXR — no manual game-engine setup). See [SPLAT_SETUP.md](SPLAT_SETUP.md).
 
 Everything runs inside a Docker container — no local Python environment or
 library installation required.

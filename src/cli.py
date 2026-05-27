@@ -9,6 +9,7 @@ Subcommands
   convert        Convert a GDML file to OBJ, GLTF, or VTP.
   split-convert  Split then convert each sub-detector in one step.
   blender-scene  Build a Blender .blend scene from converted mesh files.
+  render-views   Render posed Cycles orbit views from a .blend for Gaussian splatting.
 """
 from __future__ import annotations
 
@@ -309,6 +310,66 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
         for name, msg in errors:
             print(f"  {name}: {msg}", file=sys.stderr, flush=True)
         return 1
+    return 0
+
+
+def cmd_render_views(args: argparse.Namespace) -> int:
+    blend_file = Path(args.blend_file)
+    output_dir = Path(args.output_dir)
+
+    if not blend_file.exists():
+        print(f"Error: blend file not found: {blend_file}", file=sys.stderr, flush=True)
+        return 1
+
+    blender_exe = shutil.which("blender")
+    if blender_exe is None:
+        print(
+            "Error: 'blender' not found in PATH. "
+            "Make sure Blender is installed in the container.",
+            file=sys.stderr, flush=True,
+        )
+        return 1
+
+    print(f"Rendering orbit views from {blend_file}", flush=True)
+    print(f"  views={args.num_views}  resolution={args.resolution}  "
+          f"samples={args.samples}  output={output_dir}/", flush=True)
+
+    script = Path(__file__).parent / "render_views.py"
+    kwargs = json.dumps({
+        "output_dir":  str(output_dir.resolve()),
+        "num_views":   args.num_views,
+        "resolution":  args.resolution,
+        "samples":     args.samples,
+        "fov_deg":     args.fov,
+        "margin":      args.margin,
+        "hemisphere":  args.hemisphere,
+        "hide_volume": args.hide_volume,
+    })
+
+    # Blender opens the .blend named on the command line, then runs our script
+    # against the already-loaded scene.  JSON args follow the '--' separator.
+    cmd = [blender_exe, "--background", str(blend_file.resolve()),
+           "--python", str(script), "--", kwargs]
+    print(f"  Launching: blender --background {blend_file.name} "
+          f"--python {script.name} ...", flush=True)
+    result = subprocess.run(cmd)
+
+    transforms = (output_dir / "transforms.json").resolve()
+    if result.returncode != 0:
+        print(f"\nError: Blender exited with code {result.returncode}.",
+              file=sys.stderr, flush=True)
+        return result.returncode
+    if not transforms.exists():
+        print(
+            f"\nError: Blender exited but did not write {transforms}.\n"
+            "Check the Blender output above for Python errors.",
+            file=sys.stderr, flush=True,
+        )
+        return 1
+
+    print(f"\nDone — posed views in {output_dir}/", flush=True)
+    print("  Next: train a Gaussian splat with Brush, then view in WebXR:", flush=True)
+    print(f"    brush {output_dir}/", flush=True)
     return 0
 
 
@@ -644,6 +705,64 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_bl.set_defaults(func=cmd_blender_scene)
+
+    # ---- render-views ----
+    p_rv = sub.add_parser(
+        "render-views",
+        help="Render an orbit of posed Cycles views from a .blend for Gaussian splatting.",
+    )
+    p_rv.add_argument(
+        "blend_file",
+        help="Input .blend scene (e.g. /data/test.blend). Rendered as-is with Cycles.",
+    )
+    p_rv.add_argument(
+        "--output-dir", required=True, metavar="DIR",
+        help=(
+            "Output directory. Writes <DIR>/images/frame_*.png and "
+            "<DIR>/transforms.json (nerfstudio/NeRF poses, ready for Brush)."
+        ),
+    )
+    p_rv.add_argument(
+        "--num-views", type=int, default=150, metavar="N", dest="num_views",
+        help=(
+            "Number of camera viewpoints on the orbit sphere (default: 150). "
+            "Thin/fine geometry benefits from 300-500+."
+        ),
+    )
+    p_rv.add_argument(
+        "--resolution", type=int, default=1280, metavar="PX",
+        help="Square render resolution per view in pixels (default: 1280).",
+    )
+    p_rv.add_argument(
+        "--samples", type=int, default=128, metavar="N",
+        help="Cycles samples per view (default: 128).",
+    )
+    p_rv.add_argument(
+        "--fov", type=float, default=50.0, metavar="DEGREES",
+        help="Horizontal camera field of view in degrees (default: 50).",
+    )
+    p_rv.add_argument(
+        "--margin", type=float, default=1.15, metavar="FACTOR",
+        help=(
+            "Framing margin: orbit distance is scaled so the detector's "
+            "bounding sphere fits with this much slack (default: 1.15)."
+        ),
+    )
+    p_rv.add_argument(
+        "--hemisphere", action="store_true",
+        help=(
+            "Only place cameras on the upper hemisphere (+Y), never straight "
+            "below. Default: full sphere for complete 360 coverage."
+        ),
+    )
+    p_rv.add_argument(
+        "--hide-volume", action="store_true", dest="hide_volume",
+        help=(
+            "Strip the world Volume Scatter (atmospheric fog) before rendering. "
+            "Volumetrics reconstruct poorly as Gaussian splats; recommended on."
+        ),
+    )
+    p_rv.set_defaults(func=cmd_render_views)
 
     return parser
 

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ColliderVis — Splat Viewer (WebXR)</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    #msg {
+      position: fixed; inset: 0; display: flex; align-items: center;
+      justify-content: center; color: #9ab; font-family: system-ui, sans-serif;
+      font-size: 1.1rem; text-align: center; padding: 2rem; pointer-events: none;
+    }
+  </style>
+  <!--
+    Zero-install Gaussian-splat viewer for Meta Quest (and desktop).
+
+    1. Put a trained splat next to this file (detector.ksplat, .ply, or .splat),
+       or pass one with ?src=URL.
+    2. Serve over HTTPS (WebXR requires a secure context). GitHub Pages works,
+       or any static https host. Open the URL in the Quest browser.
+    3. Tap "Enter VR" to walk around the detector in 6DoF.
+
+    .ksplat (the library's packed format) loads fastest on Quest. Convert a
+    Brush .ply to .ksplat once with the library's CLI — see SPLAT_SETUP.md.
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="msg">Loading splat…</div>
+  <script type="module">
+    import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
+
+    const params = new URLSearchParams(location.search);
+    const src = params.get('src') || './detector.ksplat';
+    const msg = document.getElementById('msg');
+
+    const viewer = new GaussianSplats3D.Viewer({
+      // Scene up axis = +Y (Blender world up used by the render-views orbit).
+      cameraUp: [0, 1, 0],
+      // Start a little back and above the detector centre.
+      initialCameraPosition: [0, 2, 8],
+      initialCameraLookAt: [0, 0, 0],
+      webXRMode: GaussianSplats3D.WebXRMode.VR,
+      sharedMemoryForWorkers: false,   // works without COOP/COEP headers
+    });
+
+    viewer.addSplatScene(src, { showLoadingUI: true })
+      .then(() => {
+        msg.style.display = 'none';
+        viewer.start();
+      })
+      .catch((err) => {
+        msg.textContent =
+          'Could not load splat: ' + src + '\n\n' + (err && err.message ? err.message : err);
+        console.error(err);
+      });
+  </script>
+</body>
+</html>
