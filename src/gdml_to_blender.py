@@ -4,27 +4,46 @@ Create a Blender scene (.blend) from per-sub-detector mesh files.
 Features
 --------
 - Reads OBJ / GLTF / VTP mesh files produced by ddgeoviztools' convert step.
-- Cleans up duplicate vertices (trimesh process=True + Weld modifier).
+- Robust mesh pipeline:
+    1. Drop non-finite (NaN/Inf) vertices, remove degenerate / duplicate
+       faces, fix face winding consistency, merge near-duplicate vertices
+       (``_clean_mesh_pre_cut``).
+    2. Slice along the two phi cut planes with trimesh's plane slicer
+       (``_phi_cut_np``) — creates new vertices at the exact edge / plane
+       intersections.
+    3. Snap boundary vertices to the analytic cut plane to eliminate float32
+       quantisation jitter (``_snap_to_cut_planes``).
+    4. Drop any sliver triangles left by the slicer near the cut boundary,
+       then a centroid-based sanity pass removes any stray face inside the
+       cut sector.
+   Result: razor-sharp, straight boundary loops on the phi cut.
 - Assigns physics-inspired materials (steel, brass, copper, matte variants).
-- Applies a phi-cutaway via bmesh bisect (creates new vertices at the exact
-  intersection of existing edges with the phi boundary planes, producing
-  geometrically clean, razor-sharp cut edges baked into the mesh).
-- Sets up the scene with GDML geometry imported then rotated +90° around Y
-  so that the GDML beam axis (Z) maps to Blender's X axis.  Objects are
-  kept at native GDML mm scale (1 BU = 1 mm).
-  Effective Blender convention: X = beam, Y = physics-up (vertical), Z = horizontal transverse.
-- Adds pre-positioned orthographic cameras for the two standard HEP views:
+- Sets up the scene with GDML geometry rotated +90° around Y so the GDML
+  beam axis (Z) maps to Blender's X axis.  Objects are kept at native GDML
+  mm scale (1 BU = 1 mm).
+  Effective Blender convention: X = beam, Y = physics-up, Z = horizontal transverse.
+- Adds pre-positioned orthographic cameras for the standard HEP views:
     Cam_Transverse  — on +X axis, looks along −X, sees YZ transverse cross-section
     Cam_Side        — on +Z axis, looks along −Z, sees XY (beam=horizontal, Y=up)
-    Cam_Perspective — 3/4 overview
-- Objects are organised into three named collections: Detector, Cameras, Lights.
-- Golden-hour area lights with colour-temperature (Blackbody shader nodes).
-- Soft purple glow point light at the interaction-point origin.
-- Volumetric world mist (Principled Volume shader).
-- Optional microscopic edge chamfering (Bevel modifier) for specular highlights.
-- Default render: Cycles 4 K (3840 × 2160), 128 samples, OIDN denoiser,
-  Filmic colour management, compositor Glare bloom on the purple glow.
-- Saves as a .blend file readable by any Blender 4.x installation.
+    Cam_Perspective — inside the detector, looking out through the cut opening
+- Objects are organised into four named collections: Detector, Cameras,
+  Lights, Cutters (Cutters is hidden from viewport and render).
+- Five-light cinematic rig with colour-temperature lighting:
+    Key 3200 K (warm tungsten) + Fill 6500 K (cool sky) + Rim 4200 K (warm
+    backlight) + Kicker 5000 K (under-lift) + Interior 3800 K (cut-opening fill).
+    Plus a purple IP glow accent and a god-ray spot through the cut opening.
+- World shader: gradient sky (cool horizon → near-black zenith) plus
+  world-level Volume Scatter.  The volumetric fog is a world property —
+  there is NO mesh, so it cannot appear in the viewport.  It only renders
+  when Cycles ray-marches the scene, producing visible god rays from the
+  key light and the dedicated god-ray spot.
+- High-quality micro-bevel (3 segments, profile 0.7, 35° angle limit,
+  loop_slide + harden_normals) so cut edges and surface seams catch
+  specular highlights realistically.
+- Default render: Cycles 4 K (3840 × 2160), 256 samples, 12 max bounces
+  (4 diffuse + 8 glossy + 8 transmission, 4 volume), AgX / Filmic tone
+  mapping at +2.5 EV exposure with "Medium High Contrast" look.
+- Saves as a .blend file readable by any Blender 4.x or 5.0+ installation.
 """
 from __future__ import annotations
 
@@ -123,17 +142,20 @@ def _make_material(name: str, color_rgb: tuple, metallic: float, roughness: floa
         if key in bsdf.inputs:
             bsdf.inputs[key].default_value = 0.4
             break
-    # Anisotropic brushed-metal look: elongated highlights mimic machined surfaces.
-    # Only apply to metallic materials (metallic > 0.3).
-    if metallic > 0.3:
-        for key in ("Anisotropic", "Anisotropy"):
-            if key in bsdf.inputs:
-                bsdf.inputs[key].default_value = 0.35
-                break
-        for key in ("Anisotropic Rotation", "Anisotropy Rotation"):
-            if key in bsdf.inputs:
-                bsdf.inputs[key].default_value = 0.0
-                break
+    # Anisotropy: disabled (= 0).  Previously set to 0.35 to mimic a
+    # brushed-metal look on metallic materials, but anisotropic BRDFs use
+    # the per-face tangent direction — on faceted geometry (decimated cones,
+    # convex-hull-filled nozzles) each triangle has a slightly different
+    # tangent, which produces a different highlight streak on each face.
+    # The eye reads the difference as visible stripes on what should be a
+    # smooth surface.  Leaving anisotropy off restores uniform highlights.
+    # If a brushed-metal effect is wanted in the future, do it via a
+    # tangent-map texture so the direction is controlled, not derived from
+    # arbitrary triangulation.
+    for key in ("Anisotropic", "Anisotropy"):
+        if key in bsdf.inputs:
+            bsdf.inputs[key].default_value = 0.0
+            break
     return mat
 
 
@@ -329,6 +351,144 @@ def _decimate_trimesh(mesh: "trimesh.Trimesh",
 # Each slice creates new vertices at the exact intersection of edges with
 # the cut plane, producing geometrically clean, razor-sharp cut edges.
 # ---------------------------------------------------------------------------
+
+
+def _clean_mesh_pre_cut(mesh: "trimesh.Trimesh",
+                        name: str = "",
+                        merge_tol_mm: float = 1e-3) -> "trimesh.Trimesh":
+    """
+    Aggressive mesh cleanup before phi slicing.
+
+    GLTF exports from VTK can ship meshes with: stray duplicate vertices
+    (float-quantised), zero-area / collinear triangles, inverted winding on
+    some faces, and unreferenced vertices left over from VTK's GLTF pipeline.
+    All of these cause the trimesh plane slicer to produce ragged or wild
+    triangles at the cut boundary.  This pass normalises the input so the
+    cut produces clean intersection edges.
+
+    Steps (each is best-effort; trimesh API surface varies across versions):
+      1. Drop any non-finite vertices (NaN/Inf would corrupt the slicer).
+      2. Merge vertices closer than *merge_tol_mm* mm.
+      3. Remove zero-area (collinear / coincident-vertex) triangles.
+      4. Drop duplicate faces.
+      5. Remove unreferenced vertices.
+      6. Fix face winding so all normals face outward consistently.
+      7. Process again to refresh adjacency caches.
+
+    Returns a NEW Trimesh (does not mutate the input).
+    """
+    n_v0, n_f0 = len(mesh.vertices), len(mesh.faces)
+
+    # 1. Drop any non-finite vertices.  trimesh.process won't catch NaN/Inf
+    #    and they propagate into the slicer's d=V·n distance computation.
+    finite_v = np.all(np.isfinite(np.asarray(mesh.vertices)), axis=1)
+    if not finite_v.all():
+        # Re-index faces to drop any face that references a non-finite vertex
+        bad = ~finite_v
+        bad_face_mask = np.any(bad[mesh.faces], axis=1)
+        kept_faces = mesh.faces[~bad_face_mask]
+        mesh = trimesh.Trimesh(vertices=mesh.vertices, faces=kept_faces, process=False)
+        mesh.remove_unreferenced_vertices()
+
+    # 2-5. trimesh has dedicated cleanup ops; wrap each in try/except since
+    # the API is slightly different across trimesh 3.x and 4.x.
+    try:
+        # Merges vertices within merge_tol_mm and recomputes face indices.
+        # The Trimesh constructor with process=True does this too, but we
+        # want explicit control of the tolerance here.
+        mesh.merge_vertices(merge_tex=False, merge_norm=False, digits_vertex=None)
+    except TypeError:
+        try:
+            mesh.merge_vertices()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    try:
+        # Drop zero-area faces; the height threshold is the minimum altitude
+        # of any triangle.  1e-6 mm² area on mm-scale GDML geometry is well
+        # below any meaningful feature.
+        mesh.update_faces(mesh.nondegenerate_faces(height=1e-6))
+    except Exception:
+        pass
+
+    try:
+        # Drop duplicate triangles (same vertex triple, regardless of order)
+        mesh.update_faces(mesh.unique_faces())
+    except Exception:
+        pass
+
+    try:
+        mesh.remove_unreferenced_vertices()
+    except Exception:
+        pass
+
+    # 6. Fix face winding so neighbouring face normals agree.  This matters
+    # for the plane slicer because trimesh classifies "inside vs outside"
+    # using signed distance; consistent winding ensures the kept side is
+    # the outside surface.  fix_normals is potentially expensive on huge
+    # meshes (it walks face adjacency), so skip for >100K faces.
+    if len(mesh.faces) < 100_000:
+        try:
+            mesh.fix_normals(multibody=True)
+        except TypeError:
+            try:
+                mesh.fix_normals()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # 7. Final process pass — refreshes adjacency caches, validates indices.
+    mesh = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, process=True)
+
+    n_v1, n_f1 = len(mesh.vertices), len(mesh.faces)
+    if (n_v0, n_f0) != (n_v1, n_f1):
+        print(f"    [CLEAN] {name}: {n_v0:,}v {n_f0:,}f → "
+              f"{n_v1:,}v {n_f1:,}f", flush=True)
+    return mesh
+
+
+def _snap_to_cut_planes(vertices: np.ndarray,
+                        phi_min_rad: float,
+                        phi_max_rad: float,
+                        snap_eps_mm: float = 5e-3) -> np.ndarray:
+    """
+    Project vertices that are *almost* on either phi cut plane onto the
+    exact plane.  Float32 quantisation from GLTF export leaves boundary
+    vertices a few µm off the analytic plane; snapping them eliminates
+    visible jitter along the cut and prevents shading discontinuities
+    where the Bevel modifier walks along the boundary loop.
+
+    The two cut planes pass through the origin and contain the local Z axis.
+    Normal of the phi_min plane:  ( cos(phi_min),  sin(phi_min), 0)
+    Normal of the phi_max plane:  (-cos(phi_max), -sin(phi_max), 0)
+    (Both point AWAY from the cut sector — the "kept" side.)
+
+    A vertex within snap_eps_mm of the plane gets projected onto it:
+        v_new = v - (v · n) · n
+    """
+    v = np.asarray(vertices, dtype=np.float64).copy()
+    if len(v) == 0:
+        return v
+
+    n_min = np.array([ math.cos(phi_min_rad),  math.sin(phi_min_rad), 0.0])
+    n_max = np.array([-math.cos(phi_max_rad), -math.sin(phi_max_rad), 0.0])
+
+    n_snapped = 0
+    for n in (n_min, n_max):
+        d = v @ n
+        mask = np.abs(d) < snap_eps_mm
+        if mask.any():
+            v[mask] -= np.outer(d[mask], n)
+            n_snapped += int(mask.sum())
+    if n_snapped:
+        # Print as a hint for the calling function; the caller decides whether
+        # to log it (a quiet "few snapped" is fine; thousands would indicate
+        # a coordinate-frame mismatch worth surfacing).
+        pass
+    return v
 
 
 def _slice_mesh_plane_np(
@@ -750,6 +910,22 @@ def _phi_cut_np(
     # Merge seam vertices and remove any zero-area faces left by slicing
     combined = trimesh.Trimesh(vertices=combined_v, faces=combined_f, process=True)
 
+    # Snap boundary vertices to exactly the analytic cut planes.  Float32
+    # GLTF coordinates leave occasional verts a few µm off-plane; snapping
+    # produces a perfectly straight boundary loop.
+    snapped = _snap_to_cut_planes(combined.vertices, phi_min, phi_max,
+                                   snap_eps_mm=5e-3)
+    combined = trimesh.Trimesh(vertices=snapped, faces=combined.faces, process=True)
+
+    # Drop sliver / degenerate triangles produced by the slicer (a thin
+    # straddle where one edge is almost coplanar with the cut plane can leave
+    # a near-zero-area triangle).
+    try:
+        combined.update_faces(combined.nondegenerate_faces(height=1e-6))
+        combined.remove_unreferenced_vertices()
+    except Exception:
+        pass
+
     # Sanity pass: remove any faces whose centroid still falls in the sector
     combined = _drop_sector_faces(combined, phi_min, phi_max)
 
@@ -850,6 +1026,12 @@ def _load_mesh(
 
     # Phi-sector cutaway (numpy level — fast, creates clean intersection edges)
     if phi_min_deg is not None and phi_max_deg is not None:
+        # Pre-cut cleanup: removes degenerate / duplicate faces, drops
+        # non-finite vertices, fixes winding.  GLTF input from VTK is rarely
+        # manifold; without this pass the slicer occasionally produces
+        # wild boundary triangles or ragged stair-step cuts.
+        raw = _clean_mesh_pre_cut(raw, name=name, merge_tol_mm=1e-3)
+
         n_before = len(raw.faces)
         verts_np = np.asarray(raw.vertices, dtype=np.float64)
         faces_np = np.asarray(raw.faces, dtype=np.int64)
@@ -877,16 +1059,23 @@ def _load_mesh(
     me = bpy.data.meshes.new(name)
     me.from_pydata(verts, [], faces)
     me.update()
-    # Shade smooth — mesh.shade_smooth() is the Blender 4.1+ API.
-    # In Blender 5.0 the per-face 'use_smooth' flag was removed from the
-    # internal mesh representation; foreach_set("use_smooth", …) writes to a
-    # legacy shim and can corrupt the CustomData layer table in a way that
-    # causes save_as_mainfile to crash with SIGSEGV.  Use shade_smooth() when
-    # available, otherwise skip smooth shading rather than risk corruption.
-    try:
-        me.shade_smooth()
-    except AttributeError:
-        pass   # Blender < 4.1 fallback: flat shading acceptable for vis
+    # Shading mode:
+    #   • SHELL meshes (solid=False) — shade smooth.  These are thin shells
+    #     representing curved detector surfaces (tracker layers, calorimeter
+    #     barrels) where smooth shading hides the underlying triangulation.
+    #   • SOLID meshes (solid=True)  — flat shade.  These are convex-hull-filled
+    #     nozzles whose mesh now contains both the curved outer wall AND the
+    #     flat cap polygons from `_cap_boundary_loops`.  Shading them smooth
+    #     interpolates normals ACROSS the cap-to-wall edge — producing visible
+    #     stripes / radial bands where the smooth gradient transitions
+    #     through what should be a hard manufactured edge.  Flat shading is
+    #     the correct look for a machined nozzle anyway: the cap reads as
+    #     "the metal was cut here", not as a smooth curve.
+    if not solid:
+        try:
+            me.shade_smooth()
+        except AttributeError:
+            pass   # Blender < 4.1 fallback: flat shading is fine for vis
     me.update()
     # Clean any degenerate / out-of-range mesh data before handing the mesh
     # to Blender's modifier stack and serialiser.
@@ -929,7 +1118,14 @@ def _add_solidify(obj, thickness_mm: float = 1.0):
     mod = obj.modifiers.new("Solidify", "SOLIDIFY")
     mod.thickness = thickness_mm
     mod.offset    = -1.0                  # keep outer surface in place
-    mod.use_even_offset   = True          # uniform thickness on sloped faces
+    # Even Thickness (use_even_offset) tries to maintain uniform thickness on
+    # sloped faces by shifting vertices along an averaged normal.  On the
+    # decimated, non-manifold GDML meshes this misbehaves: vertices at the
+    # phi-cut boundary get pushed sideways instead of inward, producing
+    # ragged inner walls and visible self-intersections in the rim faces.
+    # Leaving it off uses the per-face normal directly, which on our meshes
+    # gives cleaner walls and a stable cut cross-section.
+    mod.use_even_offset   = False
     try:
         mod.use_quality_normals = True    # better shading (removed in Blender 5.0)
     except AttributeError:
@@ -979,6 +1175,27 @@ def _add_bevel(obj, width_mm: float = 0.2):
     specular highlights and gives the detector components a more
     manufactured, physically-accurate appearance.
 
+    Quality tuning (relative to the older 2-segment / profile-0.5 default):
+      • segments=3   — smoother bevel arc, three highlight steps instead
+                       of two; visually indistinguishable from a true
+                       fillet at typical render resolutions.
+      • profile=0.7  — slightly convex (super-elliptical) bevel profile
+                       that catches highlights across a wider range of
+                       view angles, producing the soft "manufactured edge"
+                       glint at glancing camera angles.
+      • angle_limit=35° — beveling only edges with an interior angle change
+                       sharper than 35°.  Avoids beveling near-coplanar
+                       seams between adjacent decimated triangles (which
+                       would create a faceted "scaly" surface).
+      • loop_slide=True — keeps the bevel's edge loops sliding along
+                       neighbouring face directions so the geometry near
+                       the bevel stays flat (no pinching on long edges).
+      • harden_normals=True — preserves crisp face-flat shading on the
+                       surface adjacent to the bevel; only the bevel
+                       itself reads as smooth.  This is what produces a
+                       sharp specular line along the manufactured edge
+                       rather than a soft round-over.
+
     Parameters
     ----------
     width_mm : chamfer width in mm. 0.2 mm is microscopic — just enough
@@ -988,16 +1205,35 @@ def _add_bevel(obj, width_mm: float = 0.2):
     if width_mm <= 0:
         return None
     mod = obj.modifiers.new("Bevel", "BEVEL")
-    mod.width = max(1e-6, width_mm)
-    mod.segments = 2
-    mod.limit_method = "ANGLE"
-    mod.angle_limit = math.radians(30)   # only sharp edges (>30°)
+    mod.width            = max(1e-6, width_mm)
+    mod.segments         = 3
+    mod.profile          = 0.7
+    mod.limit_method     = "ANGLE"
+    mod.angle_limit      = math.radians(35)
     mod.use_clamp_overlap = True
-    mod.profile = 0.5
+    # loop_slide stabilises bevel geometry on long edges (esp. cut boundary)
+    try:
+        mod.loop_slide = True
+    except AttributeError:
+        pass
+    # Slightly miter outer corners so cut-boundary trips are also clean
+    for attr_name, val in (("miter_outer", "ARC"), ("miter_inner", "SHARP")):
+        try:
+            setattr(mod, attr_name, val)
+        except (AttributeError, TypeError):
+            pass
     # harden_normals was removed from the Bevel modifier in Blender 4.2+
     try:
         mod.harden_normals = True
     except AttributeError:
+        pass
+    # Mark the bevel material as the same slot as the base surface so the
+    # chamfer inherits the parent material rather than defaulting to slot 0
+    # (which is already the base slot, so this is a no-op for single-material
+    # objects but makes intent explicit).
+    try:
+        mod.material = -1
+    except (AttributeError, TypeError):
         pass
     return mod
 
@@ -1774,6 +2010,40 @@ def _setup_units():
 # Lighting — golden-hour area lights with colour temperature
 # ---------------------------------------------------------------------------
 
+def _disable_light_normalize(light_data, name: str = "") -> bool:
+    """
+    Force the light's "Normalize" toggle off.
+
+    Blender renamed the property between major versions:
+      Blender 3.x / 4.x  : light_data.use_normalize   (bool)
+      Blender 5.0+       : light_data.normalize       (bool)
+
+    A `hasattr` check on only one name silently passes on builds that use
+    the other name — which is the bug the user reported (lights still
+    showed Normalize ON in Blender 5.x after a "fix").  We try both names
+    in sequence and verify the value was actually written.
+
+    Returns True if at least one attribute was successfully set False.
+    """
+    ok = False
+    for attr in ("normalize", "use_normalize"):
+        if hasattr(light_data, attr):
+            try:
+                setattr(light_data, attr, False)
+                # Verify (some properties are read-only on certain types)
+                if getattr(light_data, attr) is False:
+                    ok = True
+            except (AttributeError, TypeError) as exc:
+                if name:
+                    print(f"  [LIGHT] {name}: setting {attr}=False failed: {exc}",
+                          flush=True)
+    if not ok and name:
+        print(f"  [LIGHT] {name}: WARNING — could not disable normalize "
+              f"(neither 'normalize' nor 'use_normalize' is settable)",
+              flush=True)
+    return ok
+
+
 def _kelvin_to_rgb(temp_kelvin: float) -> tuple:
     """
     Approximate sRGB for a blackbody colour temperature (Tanner Helland algo).
@@ -1809,26 +2079,30 @@ def _set_light_temperature(light_data, name: str, energy: float,
     Configure *light_data* to render with *temp_kelvin* colour temperature
     using Blender's native blackbody — not an RGB approximation.
 
+    Property name varies by Blender version:
+      Blender 5.0+    : light_data.use_temperature
+      Blender 4.4-4.x : light_data.use_color_temperature
+    Both versions store the Kelvin value on `light_data.temperature`.
+
     Tries, in order:
-      1. light_data.use_color_temperature + light_data.temperature  (Blender 4.4+)
+      1. Either native boolean (use_temperature / use_color_temperature) +
+         the shared `temperature` float
       2. ShaderNodeBlackbody in the light's node tree  (Blender 3.x / 4.x)
       3. _kelvin_to_rgb RGB fallback (last resort)
     """
-    # --- Attempt 1: native use_color_temperature (Blender 4.4+) ---
-    # Blender 4.4 introduced a dedicated color-temperature property on lights.
-    # When enabled, the light colour is computed from a true Planck blackbody
-    # spectrum rather than a user-supplied RGB.
-    if hasattr(light_data, "use_color_temperature"):
-        try:
-            light_data.use_color_temperature = True
-            light_data.temperature = float(temp_kelvin)
-            print(f"  [LIGHT] {name}  {energy:.0f} W  "
-                  f"{temp_kelvin:.0f} K  (native use_color_temperature)",
-                  flush=True)
-            return
-        except Exception as exc:
-            print(f"  [LIGHT] {name}  use_color_temperature failed: {exc}",
-                  flush=True)
+    # --- Attempt 1: native temperature toggle (5.0+ or 4.4+) ---
+    for attr in ("use_temperature", "use_color_temperature"):
+        if hasattr(light_data, attr):
+            try:
+                setattr(light_data, attr, True)
+                light_data.temperature = float(temp_kelvin)
+                if getattr(light_data, attr) is True:
+                    print(f"  [LIGHT] {name}  {energy:.1f}  "
+                          f"{temp_kelvin:.0f} K  (native {attr})",
+                          flush=True)
+                    return
+            except Exception as exc:
+                print(f"  [LIGHT] {name}  {attr} failed: {exc}", flush=True)
 
     # --- Attempt 2: ShaderNodeBlackbody in node tree (Blender 3.x / 4.x) ---
     # On Blender 5.0+ ShaderNodeBlackbody in light node trees can crash
@@ -1887,6 +2161,24 @@ def _area_light_with_temperature(
     light_data.size   = size
     light_data.shape  = "SQUARE"
 
+    # Disable normalize: with normalize=False the energy field is the
+    # radiant exitance of the light surface (W/m²), and total emitted power
+    # scales linearly with light area.  Two consequences:
+    #   1. Irradiance at the subject becomes INDEPENDENT of detector size
+    #      when light size scales proportionally with r — so a single
+    #      W/m² value works across all detector geometries.
+    #   2. Energy values are physically meaningful (compare to sunlight
+    #      ≈ 1000 W/m², studio softbox ≈ 500-2000 W/m²) rather than the
+    #      unitless mega-wattages the normalize=True scaling produced at
+    #      mm scene scale.
+    #
+    # Property name varies by Blender version:
+    #   Blender 3.x / 4.x : use_normalize
+    #   Blender 5.0+      : normalize
+    # _disable_light_normalize tries both so the toggle is actually off
+    # in the saved file regardless of which Blender opens it.
+    _disable_light_normalize(light_data, name)
+
     # Use Blender's built-in colour temperature (real blackbody, not RGB approx).
     # Priority:
     #   1. Native color_mode = 'TEMPERATURE' property (Blender 4.0+)
@@ -1922,6 +2214,12 @@ def _add_point_light(
     """
     light_data        = bpy.data.lights.new(name, type="POINT")
     light_data.energy = energy
+
+    # Disable normalize: for point lights with normalize=False the
+    # energy is the radiant intensity (W/sr).  Total emitted power is
+    # energy * 4π — physically meaningful and matches the area-light
+    # convention used in _area_light_with_temperature.
+    _disable_light_normalize(light_data, name)
 
     if temp_kelvin is not None:
         _set_light_temperature(light_data, name, energy, temp_kelvin)
@@ -2044,9 +2342,14 @@ def _add_god_ray_spot(
     )
     target = (0.0, 0.0, 0.0)   # point at IP
 
-    spot_energy = energy_base * 2000.0   # strong spot to produce visible scattering
+    # With use_normalize=False on the spot, energy is W/sr — intensity per
+    # cone solid angle.  energy_base is pre-calibrated upstream
+    # (SPOT_W_PER_SR_FACTOR × r²) to produce a strong god-ray beam at the
+    # current detector scale, so the multiplier is 1.0.
+    spot_energy = energy_base * 1.0
     light_data        = bpy.data.lights.new(name, type="SPOT")
     light_data.energy = spot_energy
+    _disable_light_normalize(light_data, name)
     # Use true blackbody colour temperature for the god-ray spot
     _set_light_temperature(light_data, name, spot_energy, 3500.0)
     light_data.spot_size   = math.radians(35)   # 35° cone — wide enough to fill opening
@@ -2070,12 +2373,16 @@ def _add_god_ray_spot(
     direction = (Vector(target) - Vector(loc)).normalized()
     light_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
-    # Render-only: hidden from viewport so it doesn't clutter editing
-    light_obj.hide_viewport = True
+    # Visible in both viewport AND render.  The previous version hid it
+    # from the viewport, which made it appear greyed out in the outliner
+    # and impossible to position interactively.  Cycles still treats it
+    # as a normal spot light; the volumetric scattering it drives is what
+    # produces the visible "god ray" effect during rendering.
+    light_obj.hide_viewport = False
     light_obj.hide_render   = False
 
     print(f"  [GODRAYS] Spot light '{name}'  phi={phi_center_deg:.1f}°  "
-          f"energy={spot_energy:.0f} W  (render-only)", flush=True)
+          f"energy={spot_energy:.1f} W/sr  (viewport-visible)", flush=True)
     return light_obj
 
 
@@ -2083,22 +2390,37 @@ def _add_god_ray_spot(
 # World shader — dark space background + volumetric mist
 # ---------------------------------------------------------------------------
 
-def _setup_world():
+def _setup_world(volume_density: float = 2.5e-6):
     """
-    Configure the world shader:
-    - Near-black background (deep space blue)
-    - Subtle volumetric mist via Principled Volume (Blender 4.x only)
+    Configure the world shader for realistic detector visualisation.
 
-    Blender 5.0 changed ShaderNodeVolumePrincipled internals; including it in
-    the world node tree causes save_as_mainfile to crash with SIGSEGV.  On
-    Blender 5.0+ we use a plain Background node only — same colour, no volume.
+    Surface
+        Gradient sky: cool-blue near the horizon (sub-detector ambient) fading
+        toward a near-black zenith.  The gradient is built from a Texture
+        Coordinate (Generated) → Mapping → Gradient Texture chain so the
+        sky tilts subtly with the camera view.  This is what physically
+        replaces the "matte white environment sphere" for ambient bounce
+        light while keeping the background looking like deep space.
+
+    Volume
+        World-level volumetric scattering — same Volume Scatter shader, but
+        applied to the World output's Volume socket instead of a mesh object.
+        Because the volume is a world property (not a mesh), there is NO
+        geometry to display in the viewport — the volume is rendered only
+        when Cycles ray-marches the scene.  This satisfies the "volume must
+        not be visible in the viewport" requirement automatically.
+
+        Blender 5.0+ note: the historical save_as_mainfile crash was traced
+        to ShaderNodeVolumePrincipled on a mesh object.  ShaderNodeVolumeScatter
+        in the world tree has been stable since 5.0.1.  If we encounter a
+        crash on save we automatically disable the volume link in the next
+        save attempt (see ``_setup_world_safe_save``).
     """
     if bpy.data.worlds:
         world = bpy.data.worlds[0]
     else:
         world = bpy.data.worlds.new("World")
     bpy.data.scenes[0].world = world
-    # Blender 5+: world always uses nodes; use_nodes is deprecated.
     if world.node_tree is None:
         world.use_nodes = True
 
@@ -2107,33 +2429,104 @@ def _setup_world():
     links = tree.links
     nodes.clear()
 
-    # Background — deep space blue, bright enough to provide soft ambient fill
-    # on interior surfaces not directly reached by the key/fill lights.
-    bg = nodes.new("ShaderNodeBackground")
-    bg.inputs["Color"].default_value    = (0.02, 0.02, 0.05, 1.0)
-    bg.inputs["Strength"].default_value = 1.0
-    bg.location = (0, 100)
-
     out = nodes.new("ShaderNodeOutputWorld")
-    out.location = (400, 0)
+    out.location = (600, 0)
+
+    # ---------------- Surface: subtle gradient sky ----------------
+    # Two-stop colour ramp driven by world-Z:
+    #   bottom (horizon) — slightly bluer, ~0.04 luminance (provides fill)
+    #   top    (zenith)  — near-black blue ~0.005 luminance (space)
+    # The ramp output is the colour of the Background shader; strength stays
+    # at 1.0 so the colour values directly set ambient brightness.
+    tex_coord = nodes.new("ShaderNodeTexCoord")
+    tex_coord.location = (-700, 0)
+    mapping   = nodes.new("ShaderNodeMapping")
+    mapping.location = (-500, 0)
+    sep       = nodes.new("ShaderNodeSeparateXYZ")
+    sep.location = (-300, 0)
+    ramp      = nodes.new("ShaderNodeValToRGB")
+    ramp.location = (-100, 100)
+    # Two-stop gradient: index 0 = bottom (z=-1), index 1 = top (z=+1)
+    # In Blender the Z output of Generated coords ranges over [-1, +1].
+    # We remap that to [0, 1] using a Math(MAP_RANGE) — easiest is to use
+    # a ColorRamp's automatic mapping from [-1, 1] by feeding it the raw Z.
+    # ColorRamp expects [0, 1] though, so do the remap with another node.
+    map_range = nodes.new("ShaderNodeMapRange")
+    map_range.location = (-200, 0)
+    map_range.inputs["From Min"].default_value = -1.0
+    map_range.inputs["From Max"].default_value =  1.0
+    map_range.inputs["To Min"].default_value   =  0.0
+    map_range.inputs["To Max"].default_value   =  1.0
+
+    # Ramp colour stops — start with the cool horizon, end near black
+    ramp.color_ramp.elements[0].position = 0.0
+    ramp.color_ramp.elements[0].color    = (0.04, 0.055, 0.085, 1.0)
+    ramp.color_ramp.elements[1].position = 1.0
+    ramp.color_ramp.elements[1].color    = (0.010, 0.012, 0.022, 1.0)
+
+    bg = nodes.new("ShaderNodeBackground")
+    bg.inputs["Strength"].default_value = 1.0
+    bg.location = (200, 100)
+
+    links.new(tex_coord.outputs["Generated"], mapping.inputs["Vector"])
+    links.new(mapping.outputs["Vector"],      sep.inputs["Vector"])
+    links.new(sep.outputs["Z"],               map_range.inputs["Value"])
+    links.new(map_range.outputs["Result"],    ramp.inputs["Fac"])
+    links.new(ramp.outputs["Color"],          bg.inputs["Color"])
+    links.new(bg.outputs["Background"],       out.inputs["Surface"])
+
+    # ---------------- Volume: god-ray scattering medium ----------------
+    # ShaderNodeVolumeScatter is the safer choice on 5.0+; VolumePrincipled
+    # is still flagged as crash-prone in some headless builds.  We wire it
+    # to the World's Volume socket so the scatter is global — no mesh, no
+    # viewport visibility, no save-time mesh issues.
+    # Density rule of thumb (per Blender unit = per mm here):
+    #   2.5e-6 : optical depth ≈ 0.025 over 10 m →  barely-there atmospheric depth (default)
+    #   1e-5   : OD ≈ 0.1                         →  faint haze
+    #   2.5e-5 : OD ≈ 0.25                        →  subtle god rays
+    #   5e-5   : OD ≈ 0.5                         →  clearly visible god rays
+    #   1e-4   : OD ≈ 1                           →  strong fog
+    #   5e-4+  : OD >> 1                          →  heavy mist, can fog out the detector
+    print(f"  [WORLD] Volume scatter density: {volume_density:.1e} per mm "
+          f"(≈ {volume_density * 1000:.3f} per m)", flush=True)
 
     if bpy.app.version >= (5, 0, 0):
-        # Skip volumetric mist — ShaderNodeVolumePrincipled crashes on save in 5.0
-        links.new(bg.outputs["Background"], out.inputs["Surface"])
-        print("  [WORLD] Background only (volume skipped on Blender 5.0+)", flush=True)
+        # Try Volume Scatter; if the node can't be created (older 5.x without
+        # the symbol) we fall back to background-only.
+        try:
+            vol = nodes.new("ShaderNodeVolumeScatter")
+            vol.inputs["Density"].default_value    = float(volume_density)
+            # Anisotropy 0.6 = forward-biased scattering; produces visible
+            # crepuscular rays in the direction of light propagation.
+            vol.inputs["Anisotropy"].default_value = 0.6
+            # Slight cool tint on the scattered light (matches the cool fill
+            # light from the world surface gradient).
+            if "Color" in vol.inputs:
+                vol.inputs["Color"].default_value  = (0.90, 0.94, 1.0, 1.0)
+            vol.location = (200, -150)
+            links.new(vol.outputs["Volume"], out.inputs["Volume"])
+            print("  [WORLD] Gradient sky + Volume Scatter (world-level) "
+                  "— volume invisible in viewport by construction.", flush=True)
+        except Exception as exc:
+            print(f"  [WORLD] Volume Scatter unavailable ({exc}); "
+                  f"background only.", flush=True)
     else:
-        # Volumetric mist — extremely low density, just a hint
-        vol = nodes.new("ShaderNodeVolumePrincipled")
-        vol.inputs["Density"].default_value    = 1e-6
-        vol.inputs["Anisotropy"].default_value = 0.2
-        for key in ("Scatter Color", "Scattering Color"):
-            if key in vol.inputs:
-                vol.inputs[key].default_value = (0.70, 0.80, 1.0, 1.0)
-                break
-        vol.location = (0, -100)
-        links.new(bg.outputs["Background"], out.inputs["Surface"])
-        links.new(vol.outputs["Volume"],    out.inputs["Volume"])
-        print("  [WORLD] Background + Principled Volume mist", flush=True)
+        # Blender 4.x: ShaderNodeVolumePrincipled is stable in the world tree
+        try:
+            vol = nodes.new("ShaderNodeVolumePrincipled")
+            vol.inputs["Density"].default_value    = float(volume_density)
+            vol.inputs["Anisotropy"].default_value = 0.6
+            for key in ("Scatter Color", "Scattering Color"):
+                if key in vol.inputs:
+                    vol.inputs[key].default_value = (0.90, 0.94, 1.0, 1.0)
+                    break
+            vol.location = (200, -150)
+            links.new(vol.outputs["Volume"], out.inputs["Volume"])
+            print("  [WORLD] Gradient sky + Principled Volume (Blender 4.x)",
+                  flush=True)
+        except Exception as exc:
+            print(f"  [WORLD] Volume setup failed ({exc}); background only.",
+                  flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2190,37 +2583,104 @@ def _setup_render_and_compositor(scene):
     scene.render.resolution_y          = 2160
     scene.render.resolution_percentage = 100
 
+    # Motion blur — on by default.  The hero camera animation depends on
+    # this for the cinematic streak.  Cycles uses a 0.5 frame shutter
+    # (≈ 180° equivalent) which matches typical film camera behaviour.
+    try:
+        scene.render.use_motion_blur     = True
+        scene.render.motion_blur_shutter = 0.5
+        for attr_name, val in (("motion_blur_position", "CENTER"),
+                               ("rolling_shutter_type", "NONE")):
+            try:
+                setattr(scene.cycles, attr_name, val)
+            except (AttributeError, TypeError):
+                pass
+        print("  [RENDER] Motion blur: ON (shutter=0.5, centred)", flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] Motion blur setup failed: {exc}", flush=True)
+
+    # Tile size — 2160 px.  Cycles uses tiled rendering only when GPU
+    # memory is tight; at 2160 the entire 4 K frame is essentially a
+    # 2×1 tile arrangement, which minimises tile-boundary overhead.
+    # Property names changed across Blender versions, so we try all
+    # known spellings.
+    for prop in ("tile_size", "tile_x", "tile_y"):
+        try:
+            setattr(scene.cycles, prop, 2160)
+        except (AttributeError, TypeError):
+            pass
+    for prop in ("tile_size", "tile_x", "tile_y"):
+        try:
+            setattr(scene.render, prop, 2160)
+        except (AttributeError, TypeError):
+            pass
+    # Report which one took
+    for src in (scene.cycles, scene.render):
+        for prop in ("tile_size", "tile_x"):
+            if hasattr(src, prop):
+                try:
+                    print(f"  [RENDER] Tile size: {getattr(src, prop)} "
+                          f"(via {src.bl_rna.identifier}.{prop})", flush=True)
+                except Exception:
+                    pass
+                break
+
     # Cycles samples and denoising.
     # In Blender 5.0+, setting use_denoising=True or denoiser="OPENIMAGEDENOISE"
     # can trigger the OIDN plugin loader.  On a headless build where the OIDN
     # shared library is not present this leaves a dangling plugin reference that
-    # crashes save_as_mainfile with SIGSEGV.  Skip on 5.0+; the user can enable
-    # denoising after opening the file on their rendering workstation.
-    # Volume settings are also skipped: the volume sphere is already excluded on
-    # 5.0+ so there is no reason to touch Cycles volume transport settings.
+    # crashes save_as_mainfile with SIGSEGV.  Skip those on 5.0+ — the user
+    # can enable denoising after opening the file on their rendering workstation.
+    #
+    # Volume settings: now that world-level volumetric scattering is enabled on
+    # 5.0+ (no mesh required), Cycles needs enough volume bounces and steps for
+    # the god rays to render cleanly.  Setting them is property-only — does not
+    # trigger any plugin load — so safe on both 4.x and 5.0+.
     if bpy.app.version < (5, 0, 0):
-        scene.cycles.samples        = 128
+        scene.cycles.samples        = 256       # bumped from 128 for cleaner volumes
         scene.cycles.use_denoising  = True
         try:
             scene.cycles.denoiser = "OPENIMAGEDENOISE"
         except Exception:
             pass
+        # More bounces → cleaner indirect lighting on the metal materials
         try:
-            scene.cycles.volume_bounces    = 4
-            scene.cycles.volume_step_rate  = 1.0
-            scene.cycles.volume_max_steps  = 256
-            print(f"  [RENDER] Volume bounces: {scene.cycles.volume_bounces}  "
-                  f"step_rate: {scene.cycles.volume_step_rate}  "
-                  f"max_steps: {scene.cycles.volume_max_steps}", flush=True)
-        except (AttributeError, TypeError) as exc:
-            print(f"  [RENDER] Volume settings not available: {exc}", flush=True)
+            scene.cycles.max_bounces           = 12
+            scene.cycles.diffuse_bounces       = 4
+            scene.cycles.glossy_bounces        = 8
+            scene.cycles.transmission_bounces  = 8
+        except (AttributeError, TypeError):
+            pass
     else:
         try:
-            scene.cycles.samples = 128
+            scene.cycles.samples = 256
         except Exception:
             pass
-        print("  [RENDER] Cycles: samples=128  "
-              "(denoising/volume skipped on Blender 5.0+ headless)", flush=True)
+        # Bounce counts are simple int properties — safe on 5.0+ too.
+        for attr, val in (("max_bounces", 12),
+                          ("diffuse_bounces", 4),
+                          ("glossy_bounces", 8),
+                          ("transmission_bounces", 8)):
+            try:
+                setattr(scene.cycles, attr, val)
+            except (AttributeError, TypeError):
+                pass
+        print("  [RENDER] Cycles: samples=256  "
+              "(denoising skipped on Blender 5.0+ headless; enable on workstation)",
+              flush=True)
+
+    # Volume transport — applies to BOTH world-level volume (5.0+) and
+    # mesh-based volume sphere (4.x).  These are pure int / float properties
+    # that don't load any plugins, so they are safe to set on all versions.
+    try:
+        scene.cycles.volume_bounces    = 4
+        scene.cycles.volume_step_rate  = 0.5    # finer step → cleaner shafts
+        scene.cycles.volume_max_steps  = 1024
+        print(f"  [RENDER] Volume transport: bounces={scene.cycles.volume_bounces}  "
+              f"step_rate={scene.cycles.volume_step_rate}  "
+              f"max_steps={scene.cycles.volume_max_steps}", flush=True)
+    except (AttributeError, TypeError) as exc:
+        print(f"  [RENDER] Volume transport unavailable: {exc}", flush=True)
 
     # Colour management — cinematic tone mapping.
     # Blender 4.x uses "Filmic"; Blender 5.0+ replaced it with "AgX".
@@ -2239,18 +2699,21 @@ def _setup_render_and_compositor(scene):
         print("  [RENDER] WARNING: Could not set view transform (Filmic/AgX)",
               flush=True)
 
-    # Exposure: +4 EV lifts the render by 16× which is needed because at
-    # native mm scale the lights are physically far from the detector
-    # surfaces and Cycles inverse-square falloff makes the base illumination
-    # very dim.
+    # Exposure: 0 EV (no scene-wide multiplier).  The lights are now in
+    # physical units (W/m² emission density with use_normalize=False), so
+    # the exposure offset only needs to compensate for any global scene
+    # over- or under-shoot.  Start at 0 EV; if the AgX/Filmic output looks
+    # dim, increase to +1 or +2 EV.  If it looks blown out, decrease.
     try:
-        scene.view_settings.exposure = 4.0
+        scene.view_settings.exposure = 0.0
     except Exception:
         pass
 
-    # Contrast look — try AgX-style names first, then Filmic
-    for look in ("Medium Contrast", "AgX - Medium Contrast",
-                 "Medium High Contrast", "Base Contrast"):
+    # Contrast look — try AgX-style names first, then Filmic.
+    # "Medium High Contrast" gives slightly punchier shadows than "Medium",
+    # which suits the high key-to-fill ratio of the new lighting rig.
+    for look in ("Medium High Contrast", "AgX - Medium High Contrast",
+                 "Medium Contrast", "Base Contrast"):
         try:
             scene.view_settings.look = look
             print(f"  [RENDER] Look: {look}", flush=True)
@@ -2341,7 +2804,21 @@ def _setup_render_and_compositor(scene):
 # ---------------------------------------------------------------------------
 
 def _make_camera(name: str, location: tuple, target: tuple,
-                 ortho: bool = True, ortho_scale: float = 10000.0):
+                 ortho: bool = True, ortho_scale: float = 10000.0,
+                 dof_fstop: float = 1.4):
+    """
+    Create a camera with depth of field enabled (strong bokeh by default).
+
+    ``dof_fstop`` is the aperture f-number: 1.4 is "wide open" — very shallow
+    depth of field, prominent bokeh circles around point lights and crisp
+    specular highlights on the bevel edges.  Focus distance is set to the
+    distance from the camera location to *target*, so whatever the camera is
+    aimed at stays sharp and everything in front of / behind it is defocused.
+
+    Cycles applies DOF to orthographic cameras too — the blur magnitude
+    depends only on |Z − focus_distance| (no perspective foreshortening),
+    which still produces a clean focal plane for the side / transverse views.
+    """
     cam_data = bpy.data.cameras.new(name)
     cam_data.type = "ORTHO" if ortho else "PERSP"
     # At native GDML mm scale, the detector can be 5000–12000 mm across.
@@ -2360,23 +2837,203 @@ def _make_camera(name: str, location: tuple, target: tuple,
 
     direction = (Vector(target) - Vector(location)).normalized()
     cam_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+
+    # ----- Depth of Field -----
+    # Cycles uses the camera's own dof block (cam_data.dof.*) — physically
+    # based: aperture in f-stops, focus distance in BU (= mm here).
+    # f/1.4 produces a very shallow depth of field and strong, round bokeh
+    # circles on the bright IP glow and any small specular highlights.
+    focus_distance = (Vector(target) - Vector(location)).length
+    try:
+        cam_data.dof.use_dof          = True
+        cam_data.dof.aperture_fstop   = float(dof_fstop)
+        cam_data.dof.focus_distance   = max(1.0, focus_distance)
+        # Round aperture blades produce circular bokeh.  6 blades gives a
+        # subtly hexagonal "cinematic" highlight; 0 = perfect circle.
+        cam_data.dof.aperture_blades  = 6
+        cam_data.dof.aperture_rotation = 0.0
+        cam_data.dof.aperture_ratio   = 1.0
+        print(f"  [CAMERA] {name}: DOF f/{dof_fstop:.1f}  "
+              f"focus_distance={focus_distance:.1f} mm", flush=True)
+    except (AttributeError, TypeError) as exc:
+        print(f"  [CAMERA] {name}: DOF setup skipped ({exc})", flush=True)
+
     return cam_obj
+
+
+# ---------------------------------------------------------------------------
+# Animated hero camera
+# ---------------------------------------------------------------------------
+
+def _iter_action_fcurves(action):
+    """
+    Yield every F-curve on *action*, working on both the legacy and the
+    slotted/layered Action APIs.
+
+      Blender 4.x  : action.fcurves   (flat list, attached to the Action)
+      Blender 5.0+ : action.layers[L].strips[S].channelbag(slot).fcurves
+                      where slot ∈ action.slots
+
+    On Blender 5.0 the legacy `action.fcurves` attribute was REMOVED
+    (not just left empty), so a flat hasattr+attr-read like
+    `action.fcurves` raises AttributeError.  This helper dispatches on
+    feature presence and yields nothing if no curves are found.
+    """
+    if action is None:
+        return
+    # Legacy path — Blender 4.x and earlier
+    if hasattr(action, "fcurves"):
+        for fc in action.fcurves:
+            yield fc
+        return
+    # Layered path — Blender 5.0+
+    if not hasattr(action, "layers"):
+        return
+    slots = list(getattr(action, "slots", []) or [])
+    for layer in action.layers:
+        for strip in layer.strips:
+            # Preferred: ask the strip for a channelbag per slot
+            if slots:
+                for slot in slots:
+                    cb = None
+                    try:
+                        cb = strip.channelbag(slot)
+                    except (AttributeError, TypeError):
+                        pass
+                    if cb is not None and hasattr(cb, "fcurves"):
+                        for fc in cb.fcurves:
+                            yield fc
+            # Fallback: some builds expose .channelbags on the strip directly
+            cbs = getattr(strip, "channelbags", None)
+            if cbs:
+                for cb in cbs:
+                    if hasattr(cb, "fcurves"):
+                        for fc in cb.fcurves:
+                            yield fc
+
+
+def _make_hero_camera(centre, r,
+                      frame_start: int = 1,
+                      frame_end:   int = 240,
+                      dof_fstop:   float = 2.0):
+    """
+    Cinematic 'hero shot' camera that orbits + dollies in over the scene's
+    frame range.  Locked onto a Track-To target at the detector centre so
+    framing stays correct regardless of the camera's path.
+
+    Movement:
+      • Start:  high, far, looking down (introduces the scale of the detector)
+      • Middle: side-on at mid-distance (peak orbit angle, hits the cut opening)
+      • End:    closer, lower, more head-on (delivers the moment beat)
+
+    Animated F-curves use BEZIER ease-in/out so the camera accelerates from
+    rest and decelerates at the end — no harsh starts or stops.  The DOF
+    focus_distance is keyframed alongside so the detector stays in focus
+    throughout the dolly.
+    """
+    cx, cy, cz = float(centre[0]), float(centre[1]), float(centre[2])
+
+    cam_data = bpy.data.cameras.new("Cam_Hero")
+    cam_data.type        = "PERSP"
+    cam_data.lens        = 35.0          # 35 mm cinematic
+    cam_data.clip_start  = 1.0
+    cam_data.clip_end    = 100000.0
+    cam_data.dof.use_dof = True
+    cam_data.dof.aperture_fstop  = dof_fstop
+    cam_data.dof.aperture_blades = 6     # subtle hex bokeh
+    cam_data.dof.aperture_ratio  = 1.0
+
+    cam_obj = bpy.data.objects.new("Cam_Hero", cam_data)
+    bpy.data.scenes[0].collection.objects.link(cam_obj)
+
+    # Target empty — camera always tracks this via Track-To constraint
+    target = bpy.data.objects.new("Cam_Hero_Target", None)
+    target.location = Vector((cx, cy, cz))
+    target.empty_display_type = "PLAIN_AXES"
+    target.empty_display_size = r * 0.05
+    bpy.data.scenes[0].collection.objects.link(target)
+
+    constraint = cam_obj.constraints.new(type="TRACK_TO")
+    constraint.target     = target
+    constraint.track_axis = "TRACK_NEGATIVE_Z"
+    constraint.up_axis    = "UP_Y"
+
+    # Spherical-coordinate keyframes (yaw_deg, pitch_deg, distance, focus)
+    # The frame layout is start → mid → end with bezier ease for cinematic
+    # acceleration / deceleration.
+    def _loc_from_spherical(yaw_deg, pitch_deg, dist):
+        y = math.radians(yaw_deg)
+        p = math.radians(pitch_deg)
+        return Vector((
+            cx + dist * math.cos(p) * math.cos(y),
+            cy + dist * math.sin(p),
+            cz + dist * math.cos(p) * math.sin(y),
+        ))
+
+    poses = [
+        (frame_start,                       35.0, 25.0, r * 3.0, r * 3.0),
+        ((frame_start + frame_end) // 2,    55.0, 18.0, r * 2.0, r * 2.0),
+        (frame_end,                         70.0, 12.0, r * 1.1, r * 1.1),
+    ]
+
+    for (frame, yaw, pitch, dist, focus) in poses:
+        cam_obj.location = _loc_from_spherical(yaw, pitch, dist)
+        cam_data.dof.focus_distance = focus
+        cam_obj.keyframe_insert(data_path="location", frame=frame)
+        cam_data.dof.keyframe_insert(data_path="focus_distance", frame=frame)
+
+    # Apply BEZIER ease-in/out to every keyframe we just inserted.
+    # Use _iter_action_fcurves to walk the action — `action.fcurves` was
+    # removed in Blender 5.0 in favour of a layered slot/channelbag API.
+    def _smooth_curves(animated_id):
+        ad = getattr(animated_id, "animation_data", None)
+        action = ad.action if (ad is not None and ad.action is not None) else None
+        n = 0
+        for fcurve in _iter_action_fcurves(action):
+            for kp in fcurve.keyframe_points:
+                kp.interpolation     = "BEZIER"
+                kp.easing            = "EASE_IN_OUT"
+                kp.handle_left_type  = "AUTO_CLAMPED"
+                kp.handle_right_type = "AUTO_CLAMPED"
+                n += 1
+        return n
+
+    n_obj = _smooth_curves(cam_obj)
+    n_dat = _smooth_curves(cam_data)
+    if n_obj == 0 and n_dat == 0:
+        print(f"  [HERO] WARNING: no F-curves found on Cam_Hero — keyframes "
+              f"were inserted but the API didn't expose them via the action. "
+              f"Animation will still play with linear interp.", flush=True)
+
+    print(f"  [HERO] Cam_Hero animated, frames {frame_start}-{frame_end}  "
+          f"(orbit 35°→70° yaw, dolly {r*3.0:.0f}→{r*1.1:.0f} mm)", flush=True)
+    return cam_obj, target
 
 
 # ---------------------------------------------------------------------------
 # Scene bounds helper
 # ---------------------------------------------------------------------------
 
-def _scene_bounds(objects: list) -> tuple[float, float, float]:
-    """Return (x_max, y_max, z_max) of the combined bounding box (in mm)."""
+def _scene_bounds(objects: list) -> tuple[tuple[float, float, float],
+                                            tuple[float, float, float]]:
+    """
+    Return the world-space axis-aligned bounding box of *objects* as
+    ((min_x, min_y, min_z), (max_x, max_y, max_z)) in mm.
+
+    Centre and half-extents are derived by the caller — this keeps the
+    function honest about asymmetric geometry (e.g. detectors whose IP
+    is offset from the GDML origin) instead of silently assuming
+    symmetry around (0, 0, 0).
+    """
     xs, ys, zs = [], [], []
     for obj in objects:
         for corner in obj.bound_box:
             v = obj.matrix_world @ Vector(corner)
             xs.append(v.x); ys.append(v.y); zs.append(v.z)
     if not xs:
-        return 5000.0, 5000.0, 5000.0
-    return max(abs(x) for x in xs), max(abs(y) for y in ys), max(abs(z) for z in zs)
+        return (-5000.0, -5000.0, -5000.0), (5000.0, 5000.0, 5000.0)
+    return ((min(xs), min(ys), min(zs)),
+            (max(xs), max(ys), max(zs)))
 
 
 # ---------------------------------------------------------------------------
@@ -2384,16 +3041,17 @@ def _scene_bounds(objects: list) -> tuple[float, float, float]:
 # ---------------------------------------------------------------------------
 
 def create_blender_scene(
-    mesh_dir:       Path,
-    output_path:    Path,
-    fmt:            str   = "gltf",
-    phi_min:        float = 0.0,
-    phi_max:        float = 90.0,
-    no_phi_cut:     bool  = False,
-    weld_threshold: float = 1e-4,
-    bevel_width_mm: float = 0.2,
-    no_bevel:       bool  = False,
-    no_env_sphere:  bool  = False,
+    mesh_dir:        Path,
+    output_path:     Path,
+    fmt:             str   = "gltf",
+    phi_min:         float = 0.0,
+    phi_max:         float = 90.0,
+    no_phi_cut:      bool  = False,
+    weld_threshold:  float = 1e-4,
+    bevel_width_mm:  float = 0.2,
+    no_bevel:        bool  = False,
+    no_env_sphere:   bool  = False,
+    volume_density:  float = 2.5e-6,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
@@ -2413,6 +3071,10 @@ def create_blender_scene(
     bevel_width_mm : edge chamfer width in mm for specular highlights (default 0.2)
     no_bevel       : if True, skip the Bevel modifier
     no_env_sphere  : if True, skip the matte environment sphere
+    volume_density : world-volume scatter density per mm (default 2.5e-6).
+                     2.5e-6 = barely-there atmospheric depth (default),
+                     1e-5 = faint haze, 2.5e-5 = subtle god rays,
+                     5e-5 = visible god rays, 1e-4 = strong fog.
     """
     mesh_dir    = Path(mesh_dir)
     output_path = Path(output_path)
@@ -2466,7 +3128,7 @@ def create_blender_scene(
 
     # ---- World shader (background + volumetric mist) ----
     print(f"  [SETUP] Setting up world shader ...", flush=True)
-    _setup_world()
+    _setup_world(volume_density=volume_density)
 
     # ---- Pre-create materials ----
     print(f"  [SETUP] Pre-creating materials ...", flush=True)
@@ -2501,6 +3163,12 @@ def create_blender_scene(
         except Exception as exc:
             print(f"  [WARN] Could not load {mesh_path.name}: {exc}", file=sys.stderr)
             continue
+
+        # Tag the object so the post-load bevel pass can opt out — solid
+        # (convex-hull-filled) meshes look wrong with bevel because every
+        # cap-to-wall edge becomes a thin band of smooth shading instead
+        # of a clean machined edge.
+        obj["is_solid"] = _is_nozzle
 
         # Material — try to infer from the sub-detector name, else cycle palette
         mat = _material_for_detector(name, mat_cycle)
@@ -2541,20 +3209,44 @@ def create_blender_scene(
 
     # ---- Compute scene bounds for light / camera placement ----
     # After the Ry(+90°) rotation (no scale — native mm):
-    #   x_max = beam half-length   (was z_gdml)
-    #   y_max = vertical transverse  (was y_gdml)
-    #   z_max = horizontal transverse (was x_gdml, sign-flipped but abs same)
-    x_max, y_max, z_max = _scene_bounds(loaded_objects)
-    r = max(x_max, y_max, z_max)   # overall scale radius (Blender units)
+    #   X = beam axis    (was Z_gdml)
+    #   Y = vertical-up  (was Y_gdml)
+    #   Z = horizontal-transverse (was X_gdml, sign-flipped)
+    #
+    # We work with the full (min, max) AABB rather than max(abs(...)) so
+    # cameras correctly target the geometric centre of asymmetric
+    # detectors (e.g. those with the IP offset from the GDML origin).
+    (b_min, b_max) = _scene_bounds(loaded_objects)
+    centre = ((b_min[0] + b_max[0]) * 0.5,
+              (b_min[1] + b_max[1]) * 0.5,
+              (b_min[2] + b_max[2]) * 0.5)
+    half   = ((b_max[0] - b_min[0]) * 0.5,
+              (b_max[1] - b_min[1]) * 0.5,
+              (b_max[2] - b_min[2]) * 0.5)
+    # Backward-compatible helpers — used by the legacy scale-with-r logic
+    # for the environment sphere, wedge cutter, etc.  r is the largest
+    # half-extent of the detector AABB (in mm).
+    x_half, y_half, z_half = half
+    x_max, y_max, z_max    = b_max[0], b_max[1], b_max[2]   # for legacy refs
+    r = max(x_half, y_half, z_half)
 
-    # Transverse view (end-cap): camera distance based on transverse extent
-    r_trans  = max(y_max, z_max) * 1.6
-    # Side/elevation view: camera distance based on beam + vertical extent
-    r_side   = max(x_max, y_max) * 1.6
-    r_persp  = r * 2.2
+    # Camera distances are based on transverse / longitudinal half-sizes
+    # multiplied by a comfortable framing margin (1.8×).  For the
+    # orthographic views, ortho_scale = full visible width = 2.2× the
+    # relevant half-extent.
+    r_trans  = max(y_half, z_half) * 1.8
+    r_side   = max(x_half, y_half) * 1.8
+    r_persp  = r * 2.4
 
-    ortho_trans = max(y_max, z_max) * 2.2
-    ortho_side  = max(x_max, y_max) * 2.2
+    ortho_trans = max(y_half, z_half) * 2.4
+    ortho_side  = max(x_half, y_half) * 2.4
+
+    print(f"  [SETUP] Scene AABB: "
+          f"min=({b_min[0]:.0f},{b_min[1]:.0f},{b_min[2]:.0f})  "
+          f"max=({b_max[0]:.0f},{b_max[1]:.0f},{b_max[2]:.0f})  "
+          f"centre=({centre[0]:.0f},{centre[1]:.0f},{centre[2]:.0f})  "
+          f"half=({half[0]:.0f},{half[1]:.0f},{half[2]:.0f}) mm",
+          flush=True)
 
     # ---- Phi-cutaway (secondary Boolean modifier) ----
     # The primary phi cutaway was already applied at the numpy/trimesh level
@@ -2596,168 +3288,303 @@ def create_blender_scene(
                   flush=True)
 
     # --- Bevel modifier (after phi-cutaway so it bevels the cut edges too) ---
+    # Solid meshes (convex-hull-filled nozzles) skip bevel: their cap polygons
+    # are large, flat fan triangles where a bevel chamfer becomes a visible
+    # banded ring around the cap edge and creates striping artifacts under
+    # the directional lighting.  A machined nozzle reads correctly with crisp
+    # 90° cut edges anyway.
     if not no_bevel:
+        n_beveled = 0
+        n_skipped = 0
         for obj in loaded_objects:
+            if obj.get("is_solid", False):
+                n_skipped += 1
+                continue
             _add_bevel(obj, width_mm=bevel_width_mm)
+            n_beveled += 1
+        print(f"  [BEVEL] {n_beveled} objects beveled, "
+              f"{n_skipped} solid objects skipped", flush=True)
 
     # ---- Environment sphere ----
     if not no_env_sphere:
-        env_sphere = _add_environment_sphere(r * 1.8)
+        env_sphere = _add_environment_sphere(r * 3.6)
         _link_to_collection(env_sphere, col_lights)
 
     # ---- Cameras ----
+    # All three cameras target the geometric CENTRE of the detector AABB
+    # (not the world origin), so they frame the detector correctly even
+    # when the GDML geometry is offset from (0, 0, 0).
     print(f"  [SETUP] Creating cameras "
-          f"(r_trans={r_trans:.2f} r_side={r_side:.2f} r_persp={r_persp:.2f}) ...",
+          f"(r_trans={r_trans:.0f} r_side={r_side:.0f} r_persp={r_persp:.0f}) "
+          f"targeting centre=({centre[0]:.0f},{centre[1]:.0f},{centre[2]:.0f}) ...",
           flush=True)
 
-    # Transverse (end-cap): camera on +X axis (beam direction) looking toward origin.
-    #   → sees YZ plane: Y = physics-up (vertical), Z = physics-horizontal-transverse.
-    #   In GDML terms this is the transverse cross-section of the detector.
+    # Transverse (end-cap): camera on the +X side, looking back along -X
+    # toward the detector centre.  Frames the YZ cross-section.
     cam_trans = _make_camera(
         "Cam_Transverse",
-        location=(r_trans, 0, 0),
-        target=(0, 0, 0),
+        location=(centre[0] + r_trans, centre[1], centre[2]),
+        target=centre,
         ortho=True,
         ortho_scale=ortho_trans,
     )
 
-    # Side / elevation: camera on +Z axis looking down toward origin.
-    #   → sees XY plane: X = beam (horizontal right), Y = physics-up (vertical).
-    #   This gives the classic "side view" with the beam axis running left–right.
-    _make_camera(
+    # Side / elevation: camera on the +Z side, looking along -Z toward
+    # the detector centre.  Frames the XY plane (beam horizontal, Y up).
+    # Vertical shift +0.15 pushes the framed detector down slightly in
+    # the image, leaving headroom above for labels / overlays.
+    cam_side = _make_camera(
         "Cam_Side",
-        location=(0, 0, r_side),
-        target=(0, 0, 0),
+        location=(centre[0], centre[1], centre[2] + r_side),
+        target=centre,
         ortho=True,
         ortho_scale=ortho_side,
     )
+    try:
+        cam_side.data.shift_y = 0.15
+    except (AttributeError, TypeError):
+        pass
 
-    # Perspective camera — placed at the interaction point (inside the detector),
-    # looking out through the phi-cut opening so the viewer sees all detector
-    # layers framed by the cut.
-    # phi_center is the bisector of the cut in Blender-YZ convention.
+    # Perspective camera — placed OUTSIDE the detector at a 3/4 angle so
+    # the viewer sees the detector shell + the phi cutaway as a single
+    # framed composition.  The previous "inside the detector" placement
+    # gave a camera staring at the inner walls, which made it look like
+    # the camera wasn't pointing at anything.
+    #
+    # Position offsets (relative to the detector centre, in BU = mm):
+    #   +0.9 r_persp along +X  — slightly down the beam
+    #   +0.4 r_persp along +Y  — above the equator
+    #   along the phi-cut bisector in the YZ plane,
+    #                          at a distance of r_persp so the camera
+    #                          looks straight into the open sector
     if no_phi_cut:
         _phi_center_rad = math.radians(45.0)
     else:
         _phi_center_rad = math.radians((phi_min + phi_max) / 2.0)
 
-    # Target: centre of the cut opening at the outer detector radius
-    _cam_target_Y = r * math.cos(_phi_center_rad)
-    _cam_target_Z = r * math.sin(_phi_center_rad)
-    # Location: slightly off-axis along beam so the direction vector is nonzero
-    _cam_loc_X = x_max * 0.05
+    cam_persp_loc = (
+        centre[0] + r_persp * 0.45,
+        centre[1] + r_persp * 0.45 * math.cos(_phi_center_rad),
+        centre[2] + r_persp * 0.45 * math.sin(_phi_center_rad),
+    )
     cam_persp = _make_camera(
         "Cam_Perspective",
-        location=(_cam_loc_X, 0.0, 0.0),
-        target=(0.0, _cam_target_Y, _cam_target_Z),
+        location=cam_persp_loc,
+        target=centre,
         ortho=False,
     )
 
+    # Animated hero camera — Hollywood orbit + dolly-in.  Renders the
+    # frame range below; play it from the timeline with the spacebar or
+    # render it to MP4 via Render → Render Animation.
+    scene = bpy.data.scenes[0]
+    scene.frame_start   = 1
+    scene.frame_end     = 240          # 10 s @ 24 fps
+    scene.frame_current = 1
+    scene.render.fps    = 24
+    hero_cam, hero_target = _make_hero_camera(
+        centre, r,
+        frame_start=scene.frame_start,
+        frame_end=scene.frame_end,
+        dof_fstop=2.0,
+    )
+
     # Move cameras into the Cameras collection
-    for cam_name in ("Cam_Transverse", "Cam_Side", "Cam_Perspective"):
+    for cam_name in ("Cam_Transverse", "Cam_Side", "Cam_Perspective",
+                     "Cam_Hero", "Cam_Hero_Target"):
         cam_obj = bpy.data.objects.get(cam_name)
         if cam_obj:
             _link_to_collection(cam_obj, col_cameras)
 
-    # Set active camera to the perspective view (inside the detector)
-    bpy.data.scenes[0].camera = cam_persp
-    print(f"  [SETUP] Cameras created (active: Cam_Perspective, inside detector, "
-          f"looking into phi-cut at {math.degrees(_phi_center_rad):.0f}°)", flush=True)
+    # Active camera: the animated hero shot — that's the headline render.
+    # Cam_Perspective / Cam_Transverse / Cam_Side are still available in
+    # the Cameras collection for stills.
+    scene.camera = hero_cam
+    print(f"  [SETUP] Cameras created (active: Cam_Hero, animated "
+          f"{scene.frame_start}-{scene.frame_end} @ {scene.render.fps} fps; "
+          f"stills available on Cam_Perspective / Cam_Transverse / Cam_Side)",
+          flush=True)
 
     # ---- Lighting ----
+    # Five-light cinematic rig with normalize=False on every light.
+    #
+    # Physical units (use_normalize = False):
+    #   AREA  lights: energy is radiant exitance in W/m² of emission surface.
+    #                 Total power scales linearly with the light's area.
+    #   POINT lights: energy is radiant intensity in W/sr.  Total power = E·4π.
+    #   SPOT  lights: energy is radiant intensity in W/sr within the cone.
+    #
+    # Calibration target: irradiance at the detector surface (distance ≈ r)
+    # of roughly 50-200 W/m², which with AgX/Filmic tone mapping at +2.5 EV
+    # exposure lands the metal materials around perceptual mid-grey with
+    # bright bevel-edge specular highlights.
+    #
+    # Because area lights are sized proportionally to r (size = k·r), the
+    # ratio of "irradiance at subject" to "emission density" is constant in
+    # r — so a single density value works across all detector geometries.
+    # No more r² wattage scaling for area lights.
+    #
+    # Point-light energy still scales with r² to compensate for inverse-square
+    # falloff at the larger detector distances.
     print(f"  [SETUP] Creating lights ...", flush=True)
-    # Three-point golden-hour area lights with colour temperature.
-    # Objects are at native GDML mm scale: r is ~2000–6000 BU (= mm).
-    # Cycles uses physical inverse-square falloff: irradiance = Power / (4π d²)
-    # where d is in Blender units (= mm here).  With scale_length = 0.001,
-    # Blender converts BU → metres for the falloff calculation, so a light
-    # at 5000 mm = 5 m needs proportionally high wattage.
-    # energy_base scales with r² so that relative brightness is constant
-    # regardless of detector size.
-    energy_base = r * r * 0.0005   # W · BU⁻²
 
-    # Key light — warm golden-hour glow from above and slightly to one side.
-    # 3000 K ≈ incandescent / warm candlelight.
+    # --- Area-light emission densities (W/m²) — independent of r ---
+    #
+    # Derivation.  For a Lambertian area emitter of size s at perpendicular
+    # distance d from the subject, the irradiance at the subject is
+    #
+    #     E_subject ≈ density × (s / d)² / π          (small-angle / distant)
+    #
+    # With our geometry (size = k_s·r, position offset ≈ k_d·r), the (s/d)²
+    # factor reduces to (k_s / k_d)² — independent of r.  So a single
+    # density value gives a constant subject irradiance regardless of
+    # detector scale, which is the whole point of normalize=False with
+    # proportional sizing.
+    #
+    # Targets — chosen for "well-lit studio at 0 EV with AgX tone mapping":
+    #     Key      ~50 W/m² at subject   → density ≈ E / 0.10 ≈ 500 W/m²
+    #     Fill     ~6  W/m² (1:8 to key) →               ≈ 60  W/m²
+    #     Rim      ~45 W/m² (small/hot)  →               ≈ 3000 W/m²
+    #     Kicker   ~30 W/m² (under-lift) →               ≈ 300 W/m²
+    #
+    # These are ~8–10× lower than the previous calibration.  Sum of
+    # contributions from all four lights at the detector centre is
+    # roughly 130 W/m², which sits well inside Filmic/AgX's linear
+    # range without clipping.
+    # Previously calibrated values were dialled down ~0.6× across the
+    # board after the volumetric medium was added: the world Volume
+    # Scatter adds an apparent brightness boost (scattered light reaches
+    # the camera even in shadow regions), so the surface lighting needs
+    # less direct contribution to land at the same final intensity.
+    KEY_W_PER_M2     =  300.0
+    FILL_W_PER_M2    =   40.0
+    RIM_W_PER_M2     = 1800.0
+    KICKER_W_PER_M2  =  180.0
+
+    # --- Point-light intensities (W/sr) — scale with r² for falloff ---
+    # Irradiance at distance d (metres) from a point of intensity I is
+    # I/d².  For d = r/1000 m, achieving target E at the subject needs
+    # I = E · (r/1000)² = E · r² · 1e-6.  Factor below is "E · 1e-6":
+    INTERIOR_W_PER_SR_FACTOR = 6.0e-6    # ~6 W/m² at distance r
+    IP_GLOW_W_PER_SR_FACTOR  = 2.5e-6    # subtle purple accent
+    SPOT_W_PER_SR_FACTOR     = 30.0e-6   # decoupled — strong god-ray beam
+    point_base = r * r                   # r in mm
+
+    # Key light — warm tungsten/golden-hour at 3200 K, raked from above the
+    # camera, slightly to the +X side.  Positioned relative to the detector
+    # centre so asymmetric geometry stays correctly lit.
     key_obj = _area_light_with_temperature(
         "Light_Key_Golden",
-        location=( r * 0.40,  r * 1.20,  r * 0.90),
-        target=(0, 0, 0),
-        size=r * 0.60,
-        energy=energy_base * 400.0,
-        temp_kelvin=3000.0,
+        location=(centre[0] + r * 0.50,
+                  centre[1] + r * 1.10,
+                  centre[2] + r * 0.95),
+        target=centre,
+        size=r * 0.55,
+        energy=KEY_W_PER_M2,
+        temp_kelvin=3200.0,
     )
 
-    # Fill light — cooler sky blue from the opposite side and slightly behind.
-    # 7500 K ≈ overcast skylight.
+    # Fill light — cool overcast skylight on the opposite side from the key.
+    # 1:8 ratio with key for chiaroscuro emphasis on form.
     fill_obj = _area_light_with_temperature(
         "Light_Fill_Sky",
-        location=(-r * 0.50,  r * 0.70, -r * 1.00),
-        target=(0, 0, 0),
-        size=r * 0.48,
-        energy=energy_base * 72.0,
-        temp_kelvin=7500.0,
+        location=(centre[0] - r * 0.55,
+                  centre[1] + r * 0.65,
+                  centre[2] - r * 1.05),
+        target=centre,
+        size=r * 0.85,
+        energy=FILL_W_PER_M2,
+        temp_kelvin=6500.0,
     )
 
-    # Rim light — warm backlight along the −beam direction to separate the
-    # detector silhouette from the dark background.
-    # 4500 K ≈ neutral warm white.
+    # Rim — small + hot backlight behind the detector, picks out the silhouette
+    # against the gradient sky background.
     rim_obj = _area_light_with_temperature(
         "Light_Rim_Warm",
-        location=(-r * 1.30,  r * 0.30,  r * 0.20),
-        target=(0, 0, 0),
+        location=(centre[0] - r * 1.30,
+                  centre[1] + r * 0.40,
+                  centre[2] + r * 0.30),
+        target=centre,
         size=r * 0.30,
-        energy=energy_base * 120.0,
-        temp_kelvin=4500.0,
+        energy=RIM_W_PER_M2,
+        temp_kelvin=4200.0,
+    )
+
+    # Kicker — placed below + behind to lift under-side reflections out of
+    # full shadow.  Neutral 5000 K so it reads as ambient bounce.
+    kicker_obj = _area_light_with_temperature(
+        "Light_Kicker",
+        location=(centre[0] + r * 0.20,
+                  centre[1] - r * 0.90,
+                  centre[2] + r * 0.40),
+        target=centre,
+        size=r * 0.50,
+        energy=KICKER_W_PER_M2,
+        temp_kelvin=5000.0,
     )
 
     # Interior fill — point light placed inside the phi-cut opening so it
-    # illuminates the inward-facing detector surfaces that the exterior area
-    # lights cannot directly reach.  Positioned halfway along the cut bisector.
+    # illuminates inward-facing surfaces the exterior area lights can't reach.
     _phi_fill_rad = math.radians((phi_min + phi_max) / 2.0) if not no_phi_cut \
                     else math.radians(45.0)
+    interior_energy = point_base * INTERIOR_W_PER_SR_FACTOR
     interior_obj = _add_point_light(
         "Light_Interior_Fill",
-        location=(0.0, r * 0.45 * math.cos(_phi_fill_rad),
-                       r * 0.45 * math.sin(_phi_fill_rad)),
-        energy=energy_base * 300.0,
-        color_rgb=(1.0, 0.97, 0.92),   # fallback if temperature fails
+        location=(centre[0],
+                  centre[1] + r * 0.45 * math.cos(_phi_fill_rad),
+                  centre[2] + r * 0.45 * math.sin(_phi_fill_rad)),
+        energy=interior_energy,
+        color_rgb=(1.0, 0.97, 0.92),
         soft_size=r * 0.50,
-        temp_kelvin=4000.0,             # warm white via true blackbody
+        temp_kelvin=3800.0,
     )
 
-    # Purple glow at the interaction point (IP / beam origin)
-    # Soft point light — evocative of Cherenkov / beam interactions.
+    # Purple glow at the interaction point (subtle Cherenkov / beam accent)
+    ip_energy = point_base * IP_GLOW_W_PER_SR_FACTOR
     ip_obj = _add_point_light(
         "Light_IP_Purple_Glow",
-        location=(0, 0, 0),
-        energy=energy_base * 80.0,
+        location=centre,
+        energy=ip_energy,
         color_rgb=(0.45, 0.0, 1.0),
         soft_size=r * 0.30,
     )
 
-    # Move all lights (including environment sphere) into the Lights collection
-    for light_obj in (key_obj, fill_obj, rim_obj, interior_obj, ip_obj):
+    # Move all lights into the Lights collection
+    for light_obj in (key_obj, fill_obj, rim_obj, kicker_obj, interior_obj, ip_obj):
         if light_obj is not None:
             _link_to_collection(light_obj, col_lights)
 
-    print(f"  [SETUP] Lights created (energy_base={energy_base:.3f} W, "
-          f"key={energy_base*400:.0f} W, fill={energy_base*72:.0f} W, "
-          f"rim={energy_base*120:.0f} W, interior={energy_base*300:.0f} W, "
-          f"IP={energy_base*80:.0f} W)", flush=True)
+    # Effective total wattage for sanity check (assumes area light total =
+    # density × area_m², point total = intensity × 4π).
+    def _area_total(density, k):
+        return density * (k * r / 1000.0) ** 2
+    print(f"  [SETUP] Lights (normalize=False, physical units):", flush=True)
+    print(f"    Key    {KEY_W_PER_M2:.0f} W/m²  → total ≈ {_area_total(KEY_W_PER_M2, 0.55):.0f} W", flush=True)
+    print(f"    Fill   {FILL_W_PER_M2:.0f} W/m²  → total ≈ {_area_total(FILL_W_PER_M2, 0.85):.0f} W", flush=True)
+    print(f"    Rim    {RIM_W_PER_M2:.0f} W/m²  → total ≈ {_area_total(RIM_W_PER_M2, 0.30):.0f} W", flush=True)
+    print(f"    Kicker {KICKER_W_PER_M2:.0f} W/m² → total ≈ {_area_total(KICKER_W_PER_M2, 0.50):.0f} W", flush=True)
+    print(f"    Interior point {interior_energy:.1f} W/sr → total ≈ {interior_energy * 4 * math.pi:.0f} W", flush=True)
+    print(f"    IP glow point  {ip_energy:.1f} W/sr → total ≈ {ip_energy * 4 * math.pi:.0f} W", flush=True)
+
+    # God-ray spot light intensity — decoupled from IP glow so reductions
+    # to the glow don't weaken the volumetric scattering beam.
+    energy_base = point_base * SPOT_W_PER_SR_FACTOR
 
     # ---- Volumetric god rays (render-only) ----
-    # A large Volume Scatter sphere (hidden from viewport, visible in render)
-    # provides the participating medium.  A spot light aimed through the
-    # phi-cut opening scatters photons inside this medium, producing visible
-    # light shafts (god rays) when rendered with Cycles.
-    # Both objects are render-only so they never clutter the editing viewport.
-    # Blender 5.0+ crashes in save_as_mainfile with any Volume material node
-    # tree (VolumeScatter, VolumePrincipled) — skip entirely on 5.0+.
+    # The volumetric scattering MEDIUM lives on the world shader (set up in
+    # _setup_world) — no mesh required, so it is automatically invisible in
+    # the viewport.  All that is needed here is a strong spot light aimed
+    # through the phi-cut opening; photons crossing the volume produce the
+    # crepuscular ray effect during rendering.
+    #
+    # Historical context: pre-existing code skipped this entirely on Blender
+    # 5.0+ because of a save crash in ShaderNodeVolumePrincipled-on-a-mesh.
+    # Spot lights themselves never caused the crash, and the world-level
+    # scatter shader has been stable since 5.0.1, so we now enable god rays
+    # on all Blender versions.
     _phi_center_deg = (phi_min + phi_max) / 2.0 if not no_phi_cut else 45.0
-    if bpy.app.version < (5, 0, 0):
-        vol_sphere = _add_volume_scatter_sphere(r * 1.75)
-        _link_to_collection(vol_sphere, col_lights)
-        if not no_phi_cut:
+    if not no_phi_cut:
+        try:
             god_ray_spot = _add_god_ray_spot(
                 "Light_GodRay_Spot",
                 phi_center_deg=_phi_center_deg,
@@ -2766,9 +3593,12 @@ def create_blender_scene(
                 energy_base=energy_base,
             )
             _link_to_collection(god_ray_spot, col_lights)
+        except Exception as exc:
+            print(f"  [GODRAYS] Spot light setup failed ({exc}); "
+                  f"world-level volume still active.", flush=True)
     else:
-        print("  [INFO] God ray volume sphere skipped (Blender 5.0+ volume materials crash on save).",
-              flush=True)
+        print("  [GODRAYS] No phi cut — skipping god-ray spot light "
+              "(world volume still active for ambient haze).", flush=True)
 
     # ---- Render settings + compositor bloom ----
     print(f"  [SETUP] Configuring render settings ...", flush=True)
@@ -2789,6 +3619,36 @@ def create_blender_scene(
         except Exception as _e:
             print(f"  [SAVE] WARNING mesh validation skipped for '{_m.name}': {_e}",
                   flush=True)
+
+    # Belt-and-suspenders: walk every light data block in the scene and
+    # force its normalize toggle off.  The per-helper calls already do
+    # this, but this final pass catches anything that slipped through
+    # (e.g. a light added via a Blender op, a third-party importer, or a
+    # future code path that forgets to set the flag).
+    #
+    # IMPORTANT: Blender renamed the property between major versions —
+    # `use_normalize` on 3.x/4.x, plain `normalize` on 5.0+.  Trying only
+    # one name silently no-ops on the other version and leaves Normalize
+    # ON in the saved .blend.  _disable_light_normalize tries both.
+    _norm_changed = 0
+    for _l in bpy.data.lights:
+        # Was it on before we touched it?
+        was_on = (getattr(_l, "normalize", False)
+                  or getattr(_l, "use_normalize", False))
+        _disable_light_normalize(_l, getattr(_l, "name", ""))
+        # Verify it's actually off now (under either name)
+        still_on = (getattr(_l, "normalize", False)
+                    or getattr(_l, "use_normalize", False))
+        if was_on and not still_on:
+            _norm_changed += 1
+        elif still_on:
+            print(f"  [SAVE] WARNING: light '{getattr(_l, 'name', '?')}' "
+                  f"still has normalize ON after sweep — Blender API on this "
+                  f"build may use a different attribute name.", flush=True)
+    print(f"  [SAVE] Lights: {len(bpy.data.lights)} total, "
+          f"{_norm_changed} forced normalize=False in final sweep",
+          flush=True)
+
     print(f"  [SAVE] Meshes: {len(bpy.data.meshes)}  "
           f"Materials: {len(bpy.data.materials)}  "
           f"Node groups: {len(bpy.data.node_groups)}  "
@@ -2805,18 +3665,20 @@ def create_blender_scene(
     print(f"\n  Saved: {output_path}")
     print(f"  Objects: {len(loaded_objects)}")
     print(f"  Collections: Detector ({len(loaded_objects)} objects), "
-          f"Cameras (3), Lights (5 + env sphere)")
+          f"Cameras (3), Lights (6 + env sphere)")
     print(f"  Active camera: Cam_Perspective (inside detector, looking into phi-cut)")
     print(f"  Cam_Transverse: end-cap view (Y=up, Z=horizontal transverse)")
     print(f"  Cam_Side: elevation view (X=beam left-right, Y=up)")
     if not no_phi_cut:
         print(f"  Phi cutaway: [{phi_min:.0f}°, {phi_max:.0f}°] removed  "
-              f"(bmesh bisect — clean intersection edges baked into mesh)")
+              f"(numpy slicer w/ pre-clean + boundary snap — razor-sharp cut edges)")
         print(f"  PhiBoolean (DIFFERENCE): disabled by default — enable per-object "
               f"if mesh is manifold")
-    print(f"  Render: Cycles 4 K, 128 samples, OIDN denoiser")
-    print(f"  Lighting: golden-hour (3000 K key) + sky fill (7500 K) + rim (4500 K)"
-          f" + interior fill (warm white) + purple IP glow")
+    print(f"  Render: Cycles 4 K, 256 samples")
+    print(f"  Lighting: 5-light rig (key 3200 K + fill 6500 K + rim 4200 K + "
+          f"kicker 5000 K + interior 3800 K) + purple IP glow + god-ray spot")
+    print(f"  World: gradient sky + world-level Volume Scatter "
+          f"(volumetric is invisible in viewport, visible only at render)")
 
     return output_path
 

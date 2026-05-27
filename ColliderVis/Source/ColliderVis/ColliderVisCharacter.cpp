@@ -137,9 +137,9 @@ void AColliderVisCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	}
 }
 
-void AColliderVisCharacter::OnLanded(const FHitResult& Hit)
+void AColliderVisCharacter::Landed(const FHitResult& Hit)
 {
-	Super::OnLanded(Hit);
+	Super::Landed(Hit);
 	if (LandingShake)
 	{
 		if (APlayerController* PC = Cast<APlayerController>(GetController()))

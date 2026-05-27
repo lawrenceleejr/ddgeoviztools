@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "5.4",
+	"EngineAssociation": "5.7",
 	"Category": "",
 	"Description": "ColliderVis — UE5 Photo-Realistic HEP Collision Event Visualizer",
 	"Modules": [
@@ -21,6 +21,10 @@
 		},
 		{
 			"Name": "OpenXRHandTracking",
+			"Enabled": true
+		},
+		{
+			"Name": "XRBase",
 			"Enabled": true
 		},
 		{

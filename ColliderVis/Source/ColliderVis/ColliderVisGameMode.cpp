@@ -6,11 +6,16 @@
 #include "Engine/RectLight.h"
 #include "Engine/SkyLight.h"
 #include "Engine/ExponentialHeightFog.h"
-#include "Engine/SkyAtmosphere.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/StaticMesh.h"
+#include "Components/StaticMeshComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/RectLightComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "UObject/ConstructorHelpers.h"
 
 AColliderVisGameMode::AColliderVisGameMode()
 {
@@ -22,6 +27,7 @@ void AColliderVisGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 	SetupAtmosphere();
+	SpawnSciFiRoom();
 }
 
 void AColliderVisGameMode::SetupAtmosphere()
@@ -82,15 +88,18 @@ void AColliderVisGameMode::SetupAtmosphere()
 		S.bOverride_ColorContrastShadows = true;
 		S.ColorContrastShadows           = FVector4(1.5f, 1.5f, 1.5f, 1.0f);
 
-		// Midtones → teal/cyan push for the "inside a scientific instrument" feel
+		// Sci-fi indoor palette — cool teal/cyan dominant, with subtle warm
+		// accents from the practical lights.  Reads like "inside a clean
+		// laboratory hall" rather than "floating in the abyss".
 		S.bOverride_ColorGain = true;
-		S.ColorGain           = FVector4(0.82f, 0.92f, 1.18f, 1.0f);
+		S.ColorGain           = FVector4(0.88f, 0.98f, 1.10f, 1.0f);
 		S.bOverride_ColorSaturationMidtones = true;
-		S.ColorSaturationMidtones           = FVector4(1.f, 1.f, 1.f, 0.82f);  // slight desaturation
+		S.ColorSaturationMidtones           = FVector4(1.f, 1.f, 1.f, 0.90f);  // light desaturation
 
-		// Highlights → warm gold-white so glowing tracks read against cool void
+		// Highlights — pushed slightly toward cool cyan-white so the indoor
+		// fixture light reads as fluorescent / LED rather than tungsten.
 		S.bOverride_ColorGainHighlights = true;
-		S.ColorGainHighlights           = FVector4(1.12f, 1.05f, 0.90f, 1.0f);
+		S.ColorGainHighlights           = FVector4(0.95f, 1.02f, 1.10f, 1.0f);
 
 		// Global contrast boost — deepens blacks, brightens track glow
 		S.bOverride_ColorContrast = true;
@@ -111,25 +120,9 @@ void AColliderVisGameMode::SetupAtmosphere()
 		// Depth of Field — NOT overridden (cine camera drives this via UpdateFocusToCentroid)
 	}
 
-	// ── Sky Atmosphere ───────────────────────────────────────────────────────
-	// Kept for volumetric fog compatibility.  The directional light is set to
-	// near-zero intensity below so the sky produces no visible colour contribution.
-	World->SpawnActor<ASkyAtmosphere>();
-
-	// ── Directional Light — near zero; just enough to keep the atmosphere pipeline
-	//    active.  Rect lights + Lumen GI from emissive tracks are the real sources.
-	ADirectionalLight* DirLight = World->SpawnActor<ADirectionalLight>();
-	if (DirLight)
-	{
-		if (UDirectionalLightComponent* DLC = Cast<UDirectionalLightComponent>(DirLight->GetLightComponent()))
-		{
-			DLC->Intensity           = 0.05f;   // was 1.0 — near-zero; void has no sun
-			DLC->bUseTemperature     = true;
-			DLC->Temperature         = 5600.f;
-			DLC->bAtmosphereSunLight = true;
-		}
-		DirLight->SetActorRotation(FRotator(-45.f, 30.f, 0.f));
-	}
+	// NO SkyAtmosphere — we're indoors.  An atmosphere would render a sky
+	// outside the room and bleach the upper walls with skylight.  We rely
+	// entirely on the practical lights spawned below for indoor illumination.
 
 	// Helper: orient an actor's +X toward the world origin
 	auto PointAtOrigin = [](AActor* A, const FVector& Pos)
@@ -138,116 +131,222 @@ void AColliderVisGameMode::SetupAtmosphere()
 		A->SetActorRotation(FRotationMatrix::MakeFromX(Dir).Rotator());
 	};
 
-	// ── Key light — dimmed vs. studio setup; emissives do the heavy lifting ─
+	// ── Key light: warm ceiling fixture above the detector ──
+	// Big rect light on the ceiling acting like a recessed panel.  4400 K
+	// reads as the warm side of a clean-room overhead — distinctive against
+	// the cool teal post-process gain.
 	ARectLight* KeyLight = World->SpawnActor<ARectLight>();
 	if (KeyLight)
 	{
-		const FVector KeyPos(-400.f, 0.f, 1200.f);
+		const FVector KeyPos(-400.f, 0.f, 1500.f);
 		KeyLight->SetActorLocation(KeyPos);
 		PointAtOrigin(KeyLight, KeyPos);
-		URectLightComponent* KLC = KeyLight->GetRectLightComponent();
-		KLC->Intensity         = 400.f;    // was 2000 — void is dark; tracks glow
+		URectLightComponent* KLC = KeyLight->RectLightComponent;
+		KLC->Intensity         = 800.f;
 		KLC->bUseTemperature   = true;
-		KLC->Temperature       = 4600.f;   // slightly cooler for void feel
-		KLC->SourceWidth       = 300.f;
-		KLC->SourceHeight      = 200.f;
-		KLC->AttenuationRadius = 3000.f;
+		KLC->Temperature       = 4400.f;
+		KLC->SourceWidth       = 500.f;
+		KLC->SourceHeight      = 300.f;
+		KLC->AttenuationRadius = 4000.f;
 	}
 
-	// ── Fill light — barely-there; prevents total blackout of shadowed faces ─
-	ARectLight* FillLight = World->SpawnActor<ARectLight>();
-	if (FillLight)
+	// ── Cool cyan side panel (left wall) ──
+	ARectLight* SideLeft = World->SpawnActor<ARectLight>();
+	if (SideLeft)
 	{
-		const FVector FillPos(500.f, 300.f, 700.f);
-		FillLight->SetActorLocation(FillPos);
-		PointAtOrigin(FillLight, FillPos);
-		URectLightComponent* FLC = FillLight->GetRectLightComponent();
-		FLC->Intensity         = 150.f;    // was 800
-		FLC->bUseTemperature   = true;
-		FLC->Temperature       = 5200.f;
-		FLC->SourceWidth       = 150.f;
-		FLC->SourceHeight      = 150.f;
-		FLC->AttenuationRadius = 2500.f;
+		const FVector P(0.f, -900.f, 600.f);
+		SideLeft->SetActorLocation(P);
+		PointAtOrigin(SideLeft, P);
+		URectLightComponent* C = SideLeft->RectLightComponent;
+		C->Intensity         = 300.f;
+		C->bUseTemperature   = true;
+		C->Temperature       = 7000.f;     // cool cyan
+		C->SourceWidth       = 1200.f;     // tall narrow strip on the wall
+		C->SourceHeight      = 80.f;
+		C->AttenuationRadius = 3000.f;
 	}
 
-	// ── Rim light — cool white edge separation; stops detector merging with void
+	// ── Cool cyan side panel (right wall) ──
+	ARectLight* SideRight = World->SpawnActor<ARectLight>();
+	if (SideRight)
+	{
+		const FVector P(0.f, 900.f, 600.f);
+		SideRight->SetActorLocation(P);
+		PointAtOrigin(SideRight, P);
+		URectLightComponent* C = SideRight->RectLightComponent;
+		C->Intensity         = 300.f;
+		C->bUseTemperature   = true;
+		C->Temperature       = 7000.f;
+		C->SourceWidth       = 1200.f;
+		C->SourceHeight      = 80.f;
+		C->AttenuationRadius = 3000.f;
+	}
+
+	// ── Rim accent (back wall) ──
 	ARectLight* RimLight = World->SpawnActor<ARectLight>();
 	if (RimLight)
 	{
-		const FVector RimPos(-300.f, -600.f, 900.f);
+		const FVector RimPos(900.f, 0.f, 800.f);
 		RimLight->SetActorLocation(RimPos);
 		PointAtOrigin(RimLight, RimPos);
-		URectLightComponent* RLC = RimLight->GetRectLightComponent();
-		RLC->Intensity         = 250.f;   // was 400 — keep as distinct accent
-		RLC->bUseTemperature   = true;
-		RLC->Temperature       = 6500.f;  // cold blue-white for rim
-		RLC->SourceWidth       = 80.f;
-		RLC->SourceHeight      = 150.f;
-		RLC->AttenuationRadius = 2000.f;
+		URectLightComponent* C = RimLight->RectLightComponent;
+		C->Intensity         = 250.f;
+		C->bUseTemperature   = true;
+		C->Temperature       = 6500.f;
+		C->SourceWidth       = 200.f;
+		C->SourceHeight      = 600.f;
+		C->AttenuationRadius = 3000.f;
 	}
 
-	// ── Under-glow — deep blue-violet from below; suggests infinite abyss
-	ARectLight* UnderLight = World->SpawnActor<ARectLight>();
-	if (UnderLight)
-	{
-		const FVector UnderPos(0.f, 0.f, -1400.f);
-		UnderLight->SetActorLocation(UnderPos);
-		PointAtOrigin(UnderLight, UnderPos);   // points upward toward origin
-		URectLightComponent* ULC = UnderLight->GetRectLightComponent();
-		ULC->Intensity         = 120.f;
-		ULC->bUseTemperature   = true;
-		ULC->Temperature       = 8000.f;   // deep cold blue-violet
-		ULC->SourceWidth       = 600.f;    // very wide → diffuse upwelling glow
-		ULC->SourceHeight      = 600.f;
-		ULC->AttenuationRadius = 3500.f;
-	}
-
-	// ── Sky Light — near-zero ambient; the void should not have an ambient sky ─
+	// ── Sky Light — low ambient cyan tint, no scene capture (no sky exists) ──
 	ASkyLight* SkyLightActor = World->SpawnActor<ASkyLight>();
 	if (SkyLightActor)
 	{
 		USkyLightComponent* SLC = SkyLightActor->GetLightComponent();
-		SLC->SourceType       = ESkyLightSourceType::SLS_CapturedScene;
-		SLC->Intensity        = 0.05f;   // was 0.3 — almost nothing
+		SLC->SourceType       = ESkyLightSourceType::SLS_SpecifiedCubemap; // no captured scene
+		SLC->Intensity        = 0.4f;
 		SLC->bRealTimeCapture = false;
+		// Cool cyan ambient — fills shadow regions with subtle sci-fi tint
+		SLC->LightColor       = FColor(180, 210, 230);
 	}
 
-	// ── Exponential Height Fog — two-layer ethereal void ─────────────────────
+	// ── Exponential Height Fog — INDOOR HAZE ─────────────────────────────────
 	//
-	// Layer 1 (upper/uniform):  thin indigo mist that wraps the whole scene
-	//   uniformly (very low HeightFalloff).  The detector floats in it.
-	// Layer 2 (lower/dense):    heavy black-blue void beneath the detector —
-	//   looking down the bottom disappears into nothing.
-	//
-	// VolumetricFogScatteringDistribution=0.85 (strongly forward) means bright
-	// emissive track segments scatter light forward through the fog as visible
-	// god-ray halos — a free effect with no extra cost.
+	// Indoor laboratory haze: low density (so the room is visible), short
+	// reach (StartDistance keeps the player's near-field clean), neutral
+	// cool tint.  Volumetric scattering ON so the practical rect lights
+	// cast visible god-ray shafts through the room.
 	AExponentialHeightFog* FogActor = World->SpawnActor<AExponentialHeightFog>();
 	if (FogActor)
 	{
 		UExponentialHeightFogComponent* FC = FogActor->GetComponent();
 
-		// ── Layer 1: uniform indigo mist ──────────────────────────────────
-		FC->FogDensity           = 0.02f;                                // was 0.008
-		FC->FogInscatteringColor = FLinearColor(0.012f, 0.010f, 0.045f);// deep indigo-black
-		FC->FogHeightFalloff    = 0.04f;   // was 0.2 — very low → uniform regardless of height
-		FC->StartDistance       = 150.f;   // was 500 — mist begins 1.5 m from camera
-		FC->FogMaxOpacity       = 1.0f;    // complete fadeout at extreme distance
+		FC->FogDensity              = 0.006f;            // light haze, not soup
+		FC->FogInscatteringLuminance = FLinearColor(0.05f, 0.07f, 0.10f);
+		FC->FogHeightFalloff        = 0.2f;
+		FC->StartDistance           = 300.f;
+		FC->FogMaxOpacity           = 0.7f;
 
-		// Volumetric: strong forward scatter → emissive god-ray halos
 		FC->bEnableVolumetricFog                 = true;
-		FC->VolumetricFogScatteringDistribution  = 0.85f;  // was 0.2
-		FC->VolumetricFogExtinctionScale         = 2.0f;   // more absorptive (darker void)
-		FC->VolumetricFogAlbedo                  = FLinearColor(0.08f, 0.08f, 0.15f);
-		// Subtle self-luminance of the void — faint bioluminescent blue-teal haze
-		FC->VolumetricFogEmissive                = FLinearColor(0.0008f, 0.0008f, 0.003f);
+		FC->VolumetricFogScatteringDistribution  = 0.6f;
+		FC->VolumetricFogExtinctionScale         = 1.0f;
+		FC->VolumetricFogAlbedo                  = FLinearColor(0.5f, 0.6f, 0.7f).ToFColor(true);
+		FC->VolumetricFogEmissive                = FLinearColor(0.001f, 0.0015f, 0.002f);
 
-		// ── Layer 2: abyss below the detector ─────────────────────────────
-		// UE5 stores second-layer fog in a SecondFogData struct (FExponentialHeightFogData);
-		// the struct only carries Density / HeightFalloff / HeightOffset, and the layer
-		// shares the component's FogInscatteringColor — there is no second-layer color.
-		FC->SecondFogData.FogDensity       = 0.06f;   // thick lower void
-		FC->SecondFogData.FogHeightFalloff = 0.5f;    // falls off with altitude
-		FC->SecondFogData.FogHeightOffset  = -500.f;  // 500 cm below origin
+		// No abyssal second layer — we're in a finite room.
+		FC->SecondFogData.FogDensity       = 0.0f;
+		FC->SecondFogData.FogHeightFalloff = 0.5f;
+		FC->SecondFogData.FogHeightOffset  = -500.f;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Procedural sci-fi room
+//
+// Spawned at BeginPlay so the level always has something for the third-person
+// character to stand on, even if you opened a blank default map.  Uses the
+// engine's built-in Plane mesh and a dynamic dark metallic material — no
+// content browser assets required.
+// ---------------------------------------------------------------------------
+void AColliderVisGameMode::SpawnSciFiRoom()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(
+		nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+	if (!PlaneMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ColliderVisGameMode: /Engine/BasicShapes/Plane "
+		                              "not loadable; skipping procedural room."));
+		return;
+	}
+
+	// Default plane is 100×100 cm at Z=0 facing +Z.  Scale up to room size.
+	// Room: 30 m × 30 m × 8 m tall — comfortably encloses a typical
+	// 6 m detector with space for the third-person character to walk.
+	const float RoomHalf   = 1500.f;     // 15 m half-extent → 30 m room
+	const float RoomHeight = 800.f;      //  8 m ceiling
+
+	// Default Engine material (lookup is cheap; failure is fine — actor
+	// will just use the engine WorldGrid).
+	UMaterialInterface* BaseMat = LoadObject<UMaterialInterface>(
+		nullptr, TEXT("/Engine/EngineMaterials/M_AssetPlatform.M_AssetPlatform"));
+
+	auto SpawnPanel = [&](FName Name, FVector Location, FRotator Rotation,
+	                      float ScaleXY, FLinearColor Tint, float Metallic, float Roughness)
+	{
+		FActorSpawnParameters Params;
+		Params.Name = Name;
+		AStaticMeshActor* Actor = World->SpawnActor<AStaticMeshActor>(
+			AStaticMeshActor::StaticClass(), Location, Rotation, Params);
+		if (!Actor) return;
+		Actor->SetMobility(EComponentMobility::Static);
+		UStaticMeshComponent* SMC = Actor->GetStaticMeshComponent();
+		if (!SMC) return;
+		SMC->SetStaticMesh(PlaneMesh);
+		Actor->SetActorScale3D(FVector(ScaleXY, ScaleXY, 1.f));
+		if (BaseMat)
+		{
+			UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(BaseMat, Actor);
+			if (MID)
+			{
+				MID->SetVectorParameterValue(TEXT("Color"),     Tint);
+				MID->SetVectorParameterValue(TEXT("BaseColor"), Tint);
+				MID->SetScalarParameterValue(TEXT("Metallic"),  Metallic);
+				MID->SetScalarParameterValue(TEXT("Roughness"), Roughness);
+				SMC->SetMaterial(0, MID);
+			}
+		}
+		// Tag so DetectorVisibilityManager can opt these out of toggles
+		Actor->Tags.Add(TEXT("SciFiRoom"));
+	};
+
+	const float RoomXY = RoomHalf / 50.f;   // Plane.Plane is 100 cm, so XY scale = half/50
+
+	// Floor — gunmetal, smooth-but-not-mirror
+	SpawnPanel(TEXT("SciFi_Floor"),
+	           FVector(0.f, 0.f, -200.f),
+	           FRotator::ZeroRotator,
+	           RoomXY,
+	           FLinearColor(0.04f, 0.05f, 0.06f), 0.6f, 0.35f);
+
+	// Ceiling — even darker, more matte; needs to be flipped to face down
+	SpawnPanel(TEXT("SciFi_Ceiling"),
+	           FVector(0.f, 0.f, RoomHeight),
+	           FRotator(180.f, 0.f, 0.f),
+	           RoomXY,
+	           FLinearColor(0.02f, 0.025f, 0.035f), 0.3f, 0.7f);
+
+	// Four walls — slightly bluer than floor, brushed-feel roughness
+	const FLinearColor WallTint(0.05f, 0.06f, 0.08f);
+	const float        Metallic  = 0.4f;
+	const float        Roughness = 0.55f;
+	const float        WallH     = RoomHeight / 100.f; // for Z-scale on rotated planes
+	const float        WallScale = RoomXY;             // matches floor
+
+	// +X wall (faces −X)
+	SpawnPanel(TEXT("SciFi_Wall_PosX"),
+	           FVector( RoomHalf, 0.f, RoomHeight * 0.5f),
+	           FRotator(0.f, 0.f, 90.f),                 // tip plane onto XZ
+	           WallScale, WallTint, Metallic, Roughness);
+	// −X wall
+	SpawnPanel(TEXT("SciFi_Wall_NegX"),
+	           FVector(-RoomHalf, 0.f, RoomHeight * 0.5f),
+	           FRotator(0.f, 0.f, -90.f),
+	           WallScale, WallTint, Metallic, Roughness);
+	// +Y wall
+	SpawnPanel(TEXT("SciFi_Wall_PosY"),
+	           FVector(0.f,  RoomHalf, RoomHeight * 0.5f),
+	           FRotator(90.f, 0.f, 0.f),
+	           WallScale, WallTint, Metallic, Roughness);
+	// −Y wall
+	SpawnPanel(TEXT("SciFi_Wall_NegY"),
+	           FVector(0.f, -RoomHalf, RoomHeight * 0.5f),
+	           FRotator(-90.f, 0.f, 0.f),
+	           WallScale, WallTint, Metallic, Roughness);
+
+	UE_LOG(LogTemp, Log,
+	       TEXT("ColliderVisGameMode: spawned sci-fi room (%.0fm × %.0fm × %.0fm)"),
+	       RoomHalf * 2.f / 100.f, RoomHalf * 2.f / 100.f, RoomHeight / 100.f);
 }

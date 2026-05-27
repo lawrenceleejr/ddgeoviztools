@@ -12,7 +12,7 @@ Follows the [Unreal Engine Skill](https://github.com/DSTN2000/claude-unreal-engi
 - Discover all assets (IA_, IMC_, BP_) by path before referencing in code
 - Use Enhanced Input System (no legacy input)
 - Verify engine version from `.uproject` before using APIs
-- Engine version: **UE5.3** (minimum; target 5.4+)
+- Engine version: **UE5.7** (target; tested against 5.7.4)
 
 ---
 
@@ -368,7 +368,7 @@ All in `Source/ColliderVis/` (compiled by UE build system):
 
 ### Project File
 - `ColliderVis.uproject`
-  - `"EngineAssociation": "5.4"`
+  - `"EngineAssociation": "5.7"`
   - Plugins: `EnhancedInput`, `CinematicCamera`, `ProceduralMeshComponent`, `MovieRenderPipeline`, `GLTFExporter` (for GLTF import)
 
 ---

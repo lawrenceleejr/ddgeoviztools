@@ -1,4 +1,4 @@
-# ColliderVis — Unreal Engine 5.4 headless Linux build container
+# ColliderVis — Unreal Engine 5.7 headless Linux build container
 #
 # PURPOSE
 #   Compiles the ColliderVis C++ module inside a reproducible Linux container
@@ -31,7 +31,7 @@
 #     ./scripts/docker_build_ue5.sh
 # ─────────────────────────────────────────────────────────────────────────────
 
-ARG UE_VERSION=5.4
+ARG UE_VERSION=5.7
 FROM ghcr.io/epicgames/unreal-engine:${UE_VERSION}-dev-slim
 
 # ── Engine root inside Epic's official Linux images ───────────────────────────

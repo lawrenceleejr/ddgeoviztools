@@ -5,7 +5,7 @@
 # Usage:
 #   ./scripts/build_quest.sh                    # Shipping build (default)
 #   BUILD_CONFIG=Development ./scripts/build_quest.sh
-#   UE5_ROOT="/path/to/UE_5.4" ./scripts/build_quest.sh
+#   UE5_ROOT="/path/to/UE_5.7" ./scripts/build_quest.sh
 #
 # Prerequisites (one-time setup — see UE5_SETUP.md § Android Packaging):
 #   1. Android Studio + NDK r25b installed
@@ -18,10 +18,10 @@ set -euo pipefail
 # ── Configuration ────────────────────────────────────────────────────────────
 # Adjust UE5_ROOT to match your Unreal Engine 5 installation.
 # Common locations:
-#   macOS:   /Users/Shared/Epic\ Games/UE_5.4
+#   macOS:   /Users/Shared/Epic\ Games/UE_5.7
 #   Linux:   ~/UnrealEngine  (if built from source)
-#   Windows: C:\Program Files\Epic Games\UE_5.4  (use build_quest.bat instead)
-UE5_ROOT="${UE5_ROOT:-/Users/Shared/Epic Games/UE_5.4}"
+#   Windows: C:\Program Files\Epic Games\UE_5.7  (use build_quest.bat instead)
+UE5_ROOT="${UE5_ROOT:-/Users/Shared/Epic Games/UE_5.7}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/../ColliderVis"
@@ -38,7 +38,7 @@ if [[ ! -f "$UAT" ]]; then
     echo "    $UAT"
     echo ""
     echo "  Set UE5_ROOT to your Unreal Engine 5 installation directory, e.g.:"
-    echo "    UE5_ROOT=\"/Users/Shared/Epic Games/UE_5.4\" ./scripts/build_quest.sh"
+    echo "    UE5_ROOT=\"/Users/Shared/Epic Games/UE_5.7\" ./scripts/build_quest.sh"
     echo ""
     exit 1
 fi

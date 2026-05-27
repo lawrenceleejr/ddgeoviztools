@@ -27,8 +27,8 @@ input assets, materials, and packaging settings described here.
 
 | Tool | Version | Where |
 |------|---------|--------|
-| Unreal Engine | 5.4 (or later) | Epic Games Launcher |
-| Xcode | 15+ | Mac App Store (for Mac builds) |
+| Unreal Engine | 5.7 (or later) | Epic Games Launcher |
+| Xcode | 26+ | Mac App Store (for Mac builds) |
 | Android Studio | 2023+ | developer.android.com |
 | Android NDK | r25b | NDK manager inside Android Studio |
 | Java JDK | 17+ | adoptium.net |
@@ -591,7 +591,7 @@ Both scripts auto-detect the project path relative to themselves. Set
 BUILD_CONFIG=Development ./scripts/build_quest.sh
 
 # Custom engine path
-UE5_ROOT="/Volumes/SSD/UE_5.4" ./scripts/build_quest.sh
+UE5_ROOT="/Volumes/SSD/UE_5.7" ./scripts/build_quest.sh
 ```
 
 Output: `Builds/Quest3/Android_ASTC/ColliderVis-arm64.apk`
