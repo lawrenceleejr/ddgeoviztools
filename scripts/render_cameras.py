@@ -34,11 +34,14 @@ def parse_args(argv):
 
 
 def is_stationary(obj):
-    """A camera is stationary if it has no transform animation f-curves."""
+    """A camera is stationary if it has no animation action attached.
+
+    The animated hero camera has a keyframed action; the fixed HEP views do
+    not. (Blender 5.0 dropped Action.fcurves for the layered action system,
+    so we test for the action itself rather than its f-curves.)
+    """
     ad = obj.animation_data
-    if ad is not None and ad.action is not None and len(ad.action.fcurves) > 0:
-        return False
-    return True
+    return ad is None or ad.action is None
 
 
 def main():
