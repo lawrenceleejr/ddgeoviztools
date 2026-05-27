@@ -36,6 +36,7 @@ jobs:
           docker run --rm --entrypoint blender -v "$PWD:/data" -w /data \
             ddgeoviztools \
             --background /data/ci_render/scene.blend \
+            --python-exit-code 1 \
             --python /data/scripts/render_cameras.py -- \
             --out /data/ci_render/renders \
             --samples 24 --width 1280 --height 720 --device CPU

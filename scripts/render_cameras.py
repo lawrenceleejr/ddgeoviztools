@@ -45,10 +45,20 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     args = parse_args(argv)
 
+    print(f"render_cameras.py: Blender {bpy.app.version_string}", flush=True)
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     scene = bpy.context.scene
+    print(f"render_cameras.py: active scene = {scene.name!r}", flush=True)
+
+    # Log every camera and whether we consider it stationary, so a CI log makes
+    # it obvious what got rendered (and what got skipped).
+    all_cams = [o for o in bpy.data.objects if o.type == "CAMERA"]
+    for o in sorted(all_cams, key=lambda c: c.name):
+        print(f"  camera {o.name!r}: stationary={is_stationary(o)} "
+              f"in_scene={o.name in scene.objects}", flush=True)
 
     scene.render.engine = args.engine
     scene.render.resolution_x = args.width
@@ -91,4 +101,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException:
+        import traceback
+        print("render_cameras.py: FATAL — unhandled exception:", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
