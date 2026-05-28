@@ -2770,6 +2770,61 @@ def _get_compositor_tree(scene):
         return None
 
 
+def _add_compositor_output(ctree, link_from_socket):
+    """
+    Add the compositor's terminal output node and wire ``link_from_socket``
+    into its image input.
+
+    Blender 4.x uses ``CompositorNodeComposite``.  Blender 5.0 redesigned
+    the compositor: ``scene.compositing_node_group`` is a regular
+    ``CompositorNodeTree`` whose final image is read from a ``NodeGroupOutput``
+    node — the ``CompositorNodeComposite`` type is undefined.  We try the
+    legacy node first, fall back to the group-output pattern (creating an
+    "Image" OUTPUT socket on the tree's interface if it isn't already there).
+    """
+    cnodes = ctree.nodes
+    clinks = ctree.links
+
+    # Legacy Blender 4.x path
+    try:
+        out = cnodes.new("CompositorNodeComposite")
+        out.location = (900, 100)
+        clinks.new(link_from_socket, out.inputs["Image"])
+        return out
+    except RuntimeError:
+        pass
+
+    # Blender 5.0+ node-group output pattern
+    if hasattr(ctree, "interface"):
+        have_image_out = False
+        try:
+            for item in ctree.interface.items_tree:
+                if (getattr(item, "item_type", None) == "SOCKET"
+                        and getattr(item, "in_out", None) == "OUTPUT"
+                        and item.name == "Image"):
+                    have_image_out = True
+                    break
+        except Exception:
+            pass
+        if not have_image_out:
+            try:
+                ctree.interface.new_socket(
+                    name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+            except (TypeError, RuntimeError):
+                pass
+
+    out = cnodes.new("NodeGroupOutput")
+    out.location = (900, 100)
+    target_input = None
+    if "Image" in out.inputs:
+        target_input = out.inputs["Image"]
+    elif len(out.inputs) > 0:
+        target_input = out.inputs[0]
+    if target_input is not None:
+        clinks.new(link_from_socket, target_input)
+    return out
+
+
 def _new_mix_rgba(cnodes, blend_type: str = "MIX"):
     """
     Construct a compositor RGBA mix node, transparently handling the
@@ -2938,11 +2993,11 @@ def _build_compositor_graph(scene, ctree) -> None:
     except Exception:
         pass
 
-    # --- Composite + Viewer (both wired to the same end of the chain) ---
-    composite = cnodes.new("CompositorNodeComposite")
-    composite.location = (900, 100)
-    clinks.new(after_grain.outputs[0], composite.inputs["Image"])
+    # --- Terminal output node (Composite on 4.x, NodeGroupOutput on 5.0+) ---
+    _add_compositor_output(ctree, after_grain.outputs[0])
 
+    # Viewer is optional and only meaningful in the UI; skip silently if the
+    # node type isn't available on this Blender version.
     try:
         viewer = cnodes.new("CompositorNodeViewer")
         viewer.location = (900, -100)
@@ -3240,9 +3295,8 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
               flush=True)
         ctree.nodes.clear()
         rl = ctree.nodes.new("CompositorNodeRLayers")
-        co = ctree.nodes.new("CompositorNodeComposite")
-        co.location = (400, 0)
-        ctree.links.new(rl.outputs["Image"], co.inputs["Image"])
+        rl.location = (-200, 0)
+        _add_compositor_output(ctree, rl.outputs["Image"])
 
 
 # ---------------------------------------------------------------------------
