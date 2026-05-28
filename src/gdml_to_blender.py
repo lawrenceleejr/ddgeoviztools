@@ -142,20 +142,168 @@ def _make_material(name: str, color_rgb: tuple, metallic: float, roughness: floa
         if key in bsdf.inputs:
             bsdf.inputs[key].default_value = 0.4
             break
-    # Anisotropy: disabled (= 0).  Previously set to 0.35 to mimic a
-    # brushed-metal look on metallic materials, but anisotropic BRDFs use
-    # the per-face tangent direction — on faceted geometry (decimated cones,
-    # convex-hull-filled nozzles) each triangle has a slightly different
-    # tangent, which produces a different highlight streak on each face.
-    # The eye reads the difference as visible stripes on what should be a
-    # smooth surface.  Leaving anisotropy off restores uniform highlights.
-    # If a brushed-metal effect is wanted in the future, do it via a
-    # tangent-map texture so the direction is controlled, not derived from
-    # arbitrary triangulation.
+    # Anisotropy off for the generic case — see _make_brushed_metal_material
+    # for the nozzle treatment that uses a controlled radial tangent instead.
     for key in ("Anisotropic", "Anisotropy"):
         if key in bsdf.inputs:
             bsdf.inputs[key].default_value = 0.0
             break
+
+    # Photoreal touch on metals: pointiness-driven edge wear, procedural
+    # roughness variation, and a fine micro-bump.  Skipped on diffuse /
+    # matte materials (metallic < 0.5) where it adds no visible value and
+    # would muddy the matte read.
+    if metallic >= 0.5:
+        _decorate_metal_bsdf(mat, color_rgb, roughness)
+
+    return mat
+
+
+def _decorate_metal_bsdf(mat, base_rgb: tuple, base_rough: float) -> None:
+    """
+    Layer photoreal detail onto a metal Principled BSDF: pointiness edge
+    highlights, procedural roughness variation, and a sub-pixel micro-bump.
+
+    Drives Base Color, Roughness, and Normal of the existing 'Principled
+    BSDF' node via additional procedural nodes.  All textures are object-
+    space — no UVs required (VTK exports have none) — and consistent across
+    the mesh, so faceted triangulation does not produce per-triangle seams.
+    """
+    nt = mat.node_tree
+    nodes, links = nt.nodes, nt.links
+    bsdf = nodes.get("Principled BSDF")
+    if bsdf is None:
+        return
+
+    coord = nodes.new("ShaderNodeTexCoord")
+    geom = nodes.new("ShaderNodeNewGeometry")
+
+    # Pointiness 0..1, edges (convex) are higher.  Remap with a tight ramp
+    # so only the actual edges light up — the bulk of each face stays as
+    # base color / roughness.
+    pt_ramp = nodes.new("ShaderNodeValToRGB")
+    pt_ramp.color_ramp.elements[0].position = 0.48
+    pt_ramp.color_ramp.elements[0].color = (0.0, 0.0, 0.0, 1.0)
+    pt_ramp.color_ramp.elements[1].position = 0.62
+    pt_ramp.color_ramp.elements[1].color = (1.0, 1.0, 1.0, 1.0)
+    links.new(geom.outputs["Pointiness"], pt_ramp.inputs["Fac"])
+
+    # --- Base Color: subtle lift on the convex edges ---
+    color_mix = nodes.new("ShaderNodeMixRGB")
+    lighter = tuple(min(1.0, c + 0.18) for c in base_rgb)
+    color_mix.blend_type = "MIX"
+    color_mix.inputs["Color1"].default_value = (*base_rgb, 1.0)
+    color_mix.inputs["Color2"].default_value = (*lighter, 1.0)
+    links.new(pt_ramp.outputs["Color"], color_mix.inputs["Fac"])
+    links.new(color_mix.outputs["Color"], bsdf.inputs["Base Color"])
+
+    # --- Roughness: object-space noise variation, dropped on edges ---
+    rough_noise = nodes.new("ShaderNodeTexNoise")
+    rough_noise.inputs["Scale"].default_value = 25.0
+    rough_noise.inputs["Detail"].default_value = 3.0
+    links.new(coord.outputs["Object"], rough_noise.inputs["Vector"])
+
+    rough_ramp = nodes.new("ShaderNodeValToRGB")
+    low_r  = max(0.05, base_rough - 0.10)
+    high_r = min(0.95, base_rough + 0.10)
+    rough_ramp.color_ramp.elements[0].position = 0.30
+    rough_ramp.color_ramp.elements[0].color = (low_r, low_r, low_r, 1.0)
+    rough_ramp.color_ramp.elements[1].position = 0.70
+    rough_ramp.color_ramp.elements[1].color = (high_r, high_r, high_r, 1.0)
+    links.new(rough_noise.outputs["Fac"], rough_ramp.inputs["Fac"])
+
+    rough_mix = nodes.new("ShaderNodeMixRGB")
+    rough_mix.blend_type = "MIX"
+    edge_r = max(0.05, base_rough - 0.20)
+    rough_mix.inputs["Color2"].default_value = (edge_r, edge_r, edge_r, 1.0)
+    links.new(pt_ramp.outputs["Color"], rough_mix.inputs["Fac"])
+    links.new(rough_ramp.outputs["Color"], rough_mix.inputs["Color1"])
+    links.new(rough_mix.outputs["Color"], bsdf.inputs["Roughness"])
+
+    # --- Micro-bump: very fine object-space noise feeding the normal ---
+    micro_noise = nodes.new("ShaderNodeTexNoise")
+    micro_noise.inputs["Scale"].default_value = 800.0
+    micro_noise.inputs["Detail"].default_value = 6.0
+    links.new(coord.outputs["Object"], micro_noise.inputs["Vector"])
+    bump = nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.04
+    bump.inputs["Distance"].default_value = 0.02
+    links.new(micro_noise.outputs["Fac"], bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+
+
+def _make_brushed_metal_material(
+    name: str, base_rgb: tuple,
+    roughness: float = 0.35, anisotropy: float = 0.75,
+):
+    """
+    Brushed-metal material with anisotropic highlights aligned around the
+    beam (Z) axis.  Use for the lathe-turned tungsten nozzles, where the
+    brush direction is genuinely circumferential.
+
+    Uses ShaderNodeTangent direction='RADIAL' axis='Z' so the BRDF tangent
+    is well-defined per-fragment regardless of the underlying triangulation.
+    A stretched Noise→Bump adds visible groove micro-relief; a second noise
+    drives roughness variation so the highlights aren't laser-uniform.
+    """
+    mat = bpy.data.materials.new(name=name)
+    if mat.node_tree is None:
+        mat.use_nodes = True
+    nt = mat.node_tree
+    nodes, links = nt.nodes, nt.links
+    bsdf = nodes.get("Principled BSDF")
+    bsdf.inputs["Base Color"].default_value = (*base_rgb, 1.0)
+    bsdf.inputs["Metallic"].default_value = 1.0
+    bsdf.inputs["Roughness"].default_value = roughness
+    for key in ("Specular IOR Level", "Specular"):
+        if key in bsdf.inputs:
+            bsdf.inputs[key].default_value = 0.5
+            break
+    for key in ("Anisotropic", "Anisotropy"):
+        if key in bsdf.inputs:
+            bsdf.inputs[key].default_value = anisotropy
+            break
+
+    coord = nodes.new("ShaderNodeTexCoord")
+
+    # Radial tangent around Z → highlights streak circumferentially, like a
+    # lathe-turned cylinder.
+    tangent = nodes.new("ShaderNodeTangent")
+    try:
+        tangent.direction_type = "RADIAL"
+        tangent.axis = "Z"
+    except (AttributeError, TypeError):
+        pass
+    if "Tangent" in bsdf.inputs:
+        links.new(tangent.outputs["Tangent"], bsdf.inputs["Tangent"])
+
+    # Stretched brush grooves: noise in object space, scaled long along Z
+    # so the texture reads as fine circumferential streaks.
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.inputs["Scale"].default_value = (40.0, 40.0, 220.0)
+    links.new(coord.outputs["Object"], mapping.inputs["Vector"])
+
+    grooves = nodes.new("ShaderNodeTexNoise")
+    grooves.inputs["Scale"].default_value = 20.0
+    grooves.inputs["Detail"].default_value = 4.0
+    links.new(mapping.outputs["Vector"], grooves.inputs["Vector"])
+
+    bump = nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.10
+    bump.inputs["Distance"].default_value = 0.02
+    links.new(grooves.outputs["Fac"], bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+
+    # Roughness variation driven by the same grooves — keeps the brushed
+    # highlight from looking like a perfect anisotropic mirror.
+    rough_ramp = nodes.new("ShaderNodeValToRGB")
+    low_r  = max(0.05, roughness - 0.10)
+    high_r = min(0.95, roughness + 0.10)
+    rough_ramp.color_ramp.elements[0].color = (low_r, low_r, low_r, 1.0)
+    rough_ramp.color_ramp.elements[1].color = (high_r, high_r, high_r, 1.0)
+    links.new(grooves.outputs["Fac"], rough_ramp.inputs["Fac"])
+    links.new(rough_ramp.outputs["Color"], bsdf.inputs["Roughness"])
+
     return mat
 
 
@@ -180,6 +328,13 @@ def _material_for_detector(stem: str, mat_cycle):
             existing = bpy.data.materials.get(mat_name)
             if existing:
                 return existing
+            # Nozzles are visibly lathe-turned tungsten parts in real life —
+            # render them with an anisotropic brushed-metal shader.
+            if keywords[0] in ("nozzlew", "nozzle"):
+                return _make_brushed_metal_material(
+                    mat_name, color,
+                    roughness=roughness, anisotropy=0.75,
+                )
             return _make_material(mat_name, color, metallic, roughness)
     return next(mat_cycle)
 
@@ -2567,16 +2722,16 @@ def _setup_render_and_compositor(scene):
     # Engine
     scene.render.engine = "CYCLES"
 
-    # Set Cycles to GPU rendering so the .blend renders on a workstation GPU.
-    # In Blender 5.0+, setting GPU on a headless build without hardware triggers
-    # CUEW/HIP/Metal enumeration that can leave Cycles in an invalid state and
-    # crash save_as_mainfile.  Skip the device override on 5.0+; the user can
-    # select the render device when opening the file on their workstation.
-    if bpy.app.version < (5, 0, 0):
+    # Always render on the GPU — the .blend is meant to be opened on a
+    # workstation with hardware acceleration.  Wrapped in try/except so a
+    # headless build with no GPU backend still saves cleanly (Cycles falls
+    # back to CPU at render time when the configured device is unavailable).
+    try:
         scene.cycles.device = "GPU"
         print("  [RENDER] Cycles device set to GPU", flush=True)
-    else:
-        print("  [RENDER] Cycles device: not set (Blender 5.0+ — select on workstation)", flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] Could not set Cycles device to GPU ({exc}); "
+              f"leaving default", flush=True)
 
     # Resolution — 4 K UHD
     scene.render.resolution_x          = 3840
