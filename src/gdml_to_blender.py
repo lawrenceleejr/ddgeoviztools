@@ -2882,19 +2882,19 @@ def _build_compositor_graph(scene, ctree) -> None:
     # --- Main image chain ---
     bloom = cnodes.new("CompositorNodeGlare")
     _set(bloom, "glare_type", "BLOOM")
-    _set(bloom, "threshold",  1.0)
-    _set(bloom, "size",       8)
+    _set(bloom, "threshold",  1.5)         # only true HDR superwhites bloom
+    _set(bloom, "size",       7)
     _set(bloom, "quality",    "HIGH")
-    _set(bloom, "mix",        -0.88)       # ~12% glare blended over image
+    _set(bloom, "mix",        -0.92)       # ~8% glare blended over image
     bloom.location = (-900, 150)
     clinks.new(rlayers.outputs["Image"], bloom.inputs["Image"])
 
     fog = cnodes.new("CompositorNodeGlare")
     _set(fog, "glare_type", "FOG_GLOW")
-    _set(fog, "threshold",  0.6)
-    _set(fog, "size",       7)
+    _set(fog, "threshold",  1.2)           # was 0.6 — only highlights, not midtones
+    _set(fog, "size",       6)
     _set(fog, "quality",    "HIGH")
-    _set(fog, "mix",        -0.95)         # ~5% atmospheric halo
+    _set(fog, "mix",        -0.96)         # ~4% halo
     fog.location = (-650, 150)
     clinks.new(bloom.outputs["Image"], fog.inputs["Image"])
 
@@ -2907,20 +2907,20 @@ def _build_compositor_graph(scene, ctree) -> None:
         streaks = cnodes.new("CompositorNodeGlare")
         _set(streaks, "glare_type",   "STREAKS")
         _set(streaks, "streaks",       4)
-        _set(streaks, "iterations",    3)
-        _set(streaks, "fade",          0.95)
+        _set(streaks, "iterations",    2)    # was 3 — fewer recursions
+        _set(streaks, "fade",          0.80) # was 0.95 — streak length drops fast
         _set(streaks, "angle_offset",  0.0)
-        _set(streaks, "size",          9)
-        _set(streaks, "threshold",     0.05)
+        _set(streaks, "size",          4)    # was 9 — short streaks, not framewide
+        _set(streaks, "threshold",     1.0)  # was 0.05 — only true emitters
         _set(streaks, "quality",       "HIGH")
-        _set(streaks, "mix",           1.0)   # glare-only, mixed in below
+        _set(streaks, "mix",           1.0)
         streaks.location = (-650, -250)
         clinks.new(rlayers.outputs["Emit"], streaks.inputs["Image"])
 
         mix_streaks, a1, a2 = _new_mix_rgba(cnodes, blend_type="ADD")
         _set(mix_streaks, "location", (-400, 0))
         try:
-            mix_streaks.inputs["Fac"].default_value = 0.2
+            mix_streaks.inputs["Fac"].default_value = 0.1   # was 0.2
         except (KeyError, AttributeError):
             pass
         clinks.new(fog.outputs["Image"],     mix_streaks.inputs[a1])
@@ -3211,13 +3211,14 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
         print("  [RENDER] WARNING: Could not set view transform (Filmic/AgX)",
               flush=True)
 
-    # Exposure: -1 EV.  The lights are in physical units (W/m² emission
-    # density with use_normalize=False); combined with the new compositor
-    # bloom + streaks they overshoot at 0 EV.  -1 EV halves the scene
-    # luminance and brings the post chain back into the AgX/Filmic
-    # linear range.  Increase if too dim, decrease further if still hot.
+    # Exposure: -2 EV.  Lights are in physical units (use_normalize=False);
+    # combined with volumetric god rays and the post-chain bloom they
+    # overshoot AgX's tone-mapping linear range badly at 0 EV.  -2 EV
+    # quarters the scene luminance which keeps the highlights inside AgX.
+    # Increase toward 0 if the result looks dim once samples / denoising
+    # are healthier on a real render.
     try:
-        scene.view_settings.exposure = -1.0
+        scene.view_settings.exposure = -2.0
     except Exception:
         pass
 
@@ -3967,7 +3968,7 @@ def create_blender_scene(
     # I = E · (r/1000)² = E · r² · 1e-6.  Factor below is "E · 1e-6":
     INTERIOR_W_PER_SR_FACTOR = 3.0e-6    # ~3 W/m² at distance r
     IP_GLOW_W_PER_SR_FACTOR  = 1.25e-6   # subtle purple accent
-    SPOT_W_PER_SR_FACTOR     = 15.0e-6   # decoupled — strong god-ray beam
+    SPOT_W_PER_SR_FACTOR     = 5.0e-6    # decoupled — god-ray beam (3× softer)
     point_base = r * r                   # r in mm
 
     # Key light — warm tungsten/golden-hour at 3200 K, raked from above the
@@ -4049,7 +4050,7 @@ def create_blender_scene(
         location=centre,
         radius_mm=20.0,
         color_rgb=(0.6, 0.1, 1.0),
-        strength=30.0,
+        strength=5.0,
     )
     _link_to_collection(ip_disk, col_lights)
 

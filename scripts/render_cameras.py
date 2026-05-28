@@ -73,7 +73,18 @@ def main():
     if args.engine == "CYCLES":
         scene.cycles.device = args.device
         scene.cycles.samples = args.samples
-        scene.cycles.use_denoising = True
+        # OIDN denoise at render-time is safe (the save_as_mainfile crash
+        # the build step worries about is a separate plugin-load path).
+        # At low sample counts the post-chain bloom otherwise turns noise
+        # into solid white, so denoise is essential for CI signal.
+        try:
+            scene.cycles.use_denoising = True
+            scene.cycles.denoiser = "OPENIMAGEDENOISE"
+        except Exception:
+            try:
+                scene.cycles.use_denoising = False
+            except Exception:
+                pass
 
     cameras = [o for o in scene.objects if o.type == "CAMERA" and is_stationary(o)]
     cameras.sort(key=lambda o: o.name)
