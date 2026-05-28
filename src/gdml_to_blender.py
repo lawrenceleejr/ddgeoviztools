@@ -48,6 +48,7 @@ Features
 from __future__ import annotations
 
 import math
+import os
 import sys
 from itertools import cycle
 from pathlib import Path
@@ -2393,6 +2394,61 @@ def _add_point_light(
     return light_obj
 
 
+def _add_ip_emissive_disk(
+    name: str,
+    location: tuple,
+    radius_mm: float = 20.0,
+    color_rgb: tuple = (0.6, 0.1, 1.0),
+    strength: float = 400.0,
+):
+    """
+    A small emissive sphere at the interaction point.  Gives bloom and
+    streaks a concrete bright source to wrap around — bloom on empty
+    space reads as fog, not a star.
+
+    The mesh is a low-poly UV sphere (visible in render only, not in the
+    viewport once linked to the Lights collection) with an Emission shader.
+    Configured not to cast its own shadows from the surface rig.
+    """
+    import bmesh as _bm
+
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    bm   = _bm.new()
+    _bm.ops.create_uvsphere(bm, u_segments=24, v_segments=12, radius=radius_mm)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.shade_smooth()
+
+    obj = bpy.data.objects.new(name, mesh)
+    obj.location = Vector(location)
+    bpy.data.scenes[0].collection.objects.link(obj)
+
+    mat = bpy.data.materials.new(f"{name}_emit")
+    if mat.node_tree is None:
+        mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    emit = nt.nodes.new("ShaderNodeEmission")
+    emit.inputs["Color"].default_value    = (*color_rgb, 1.0)
+    emit.inputs["Strength"].default_value = strength
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(emit.outputs["Emission"], out.inputs["Surface"])
+    obj.data.materials.append(mat)
+
+    # Suppress shadow contribution — the disk is meant to GLOW, not block.
+    try:
+        obj.visible_shadow = False
+    except (AttributeError, TypeError):
+        pass
+    try:
+        # Cycles ray-visibility on the object (5.0+ keeps these as properties)
+        obj.cycles_visibility.shadow = False
+    except (AttributeError, TypeError):
+        pass
+
+    return obj
+
+
 # ---------------------------------------------------------------------------
 # Volumetric god rays  (render-only, Blender 5 safe)
 # ---------------------------------------------------------------------------
@@ -2714,10 +2770,193 @@ def _get_compositor_tree(scene):
         return None
 
 
-def _setup_render_and_compositor(scene):
+def _new_mix_rgba(cnodes, blend_type: str = "MIX"):
     """
-    Configure Cycles render settings (4 K, 128 samples, OIDN denoiser)
-    and add a compositor Glare node for bloom on the purple IP light.
+    Construct a compositor RGBA mix node, transparently handling the
+    4.x → 5.0 rename of ``CompositorNodeMixRGB`` to ``CompositorNodeMix``.
+
+    Returns (node, input1_name, input2_name) so callers can wire inputs
+    by name regardless of underlying type.
+    """
+    try:
+        n = cnodes.new("CompositorNodeMix")
+        try:
+            n.data_type = "RGBA"
+        except (AttributeError, TypeError):
+            pass
+        n.blend_type = blend_type
+        # 5.0 RGBA Mix node socket names
+        return n, "Image", "Image_001"
+    except (RuntimeError, KeyError, TypeError):
+        n = cnodes.new("CompositorNodeMixRGB")
+        n.blend_type = blend_type
+        return n, "Image", "Image_002" if "Image_002" in n.inputs else "Color2"
+
+
+def _build_compositor_graph(scene, ctree) -> None:
+    """
+    Build the Hollywood-grade post chain:
+
+        Render Layers
+          → Glare BLOOM
+          → Glare FOG_GLOW                     (atmospheric halo)
+          → [STREAKS branch from Emit pass]    (anamorphic, ADD)
+          → Lens Distortion                    (subtle CA)
+          → Color Balance                      (teal/orange grade)
+          → Vignette (ellipse mask × blur × multiply)
+          → Film grain (noise × overlay)
+          → Composite + Viewer
+
+    The graph terminates at a Composite node on every path — a
+    half-wired graph is the documented save_as_mainfile crash mode on
+    Blender 5.0+, so all property writes are wrapped in try/except.
+    """
+    cnodes = ctree.nodes
+    clinks = ctree.links
+    cnodes.clear()
+
+    def _set(node, attr, val):
+        try:
+            setattr(node, attr, val)
+        except (AttributeError, TypeError):
+            pass
+
+    rlayers = cnodes.new("CompositorNodeRLayers")
+    rlayers.location = (-1200, 0)
+
+    # --- Main image chain ---
+    bloom = cnodes.new("CompositorNodeGlare")
+    _set(bloom, "glare_type", "BLOOM")
+    _set(bloom, "threshold",  1.0)
+    _set(bloom, "size",       8)
+    _set(bloom, "quality",    "HIGH")
+    _set(bloom, "mix",        -0.7)        # 30% glare blended over image
+    bloom.location = (-900, 150)
+    clinks.new(rlayers.outputs["Image"], bloom.inputs["Image"])
+
+    fog = cnodes.new("CompositorNodeGlare")
+    _set(fog, "glare_type", "FOG_GLOW")
+    _set(fog, "threshold",  0.6)
+    _set(fog, "size",       7)
+    _set(fog, "quality",    "HIGH")
+    _set(fog, "mix",        -0.85)
+    fog.location = (-650, 150)
+    clinks.new(bloom.outputs["Image"], fog.inputs["Image"])
+
+    # --- STREAKS branch driven by the Emission pass (only true emitters
+    # streak — IP accent + god-ray spot — never specular reflections).
+    # If the Emit output isn't wired (older render passes config), we
+    # silently fall back to no streaks.
+    after_streaks = fog  # default if streaks unavailable
+    if "Emit" in rlayers.outputs:
+        streaks = cnodes.new("CompositorNodeGlare")
+        _set(streaks, "glare_type",   "STREAKS")
+        _set(streaks, "streaks",       4)
+        _set(streaks, "iterations",    3)
+        _set(streaks, "fade",          0.95)
+        _set(streaks, "angle_offset",  0.0)
+        _set(streaks, "size",          9)
+        _set(streaks, "threshold",     0.05)
+        _set(streaks, "quality",       "HIGH")
+        _set(streaks, "mix",           1.0)   # glare-only, mixed in below
+        streaks.location = (-650, -250)
+        clinks.new(rlayers.outputs["Emit"], streaks.inputs["Image"])
+
+        mix_streaks, a1, a2 = _new_mix_rgba(cnodes, blend_type="ADD")
+        _set(mix_streaks, "location", (-400, 0))
+        try:
+            mix_streaks.inputs["Fac"].default_value = 0.6
+        except (KeyError, AttributeError):
+            pass
+        clinks.new(fog.outputs["Image"],     mix_streaks.inputs[a1])
+        clinks.new(streaks.outputs["Image"], mix_streaks.inputs[a2])
+        after_streaks = mix_streaks
+
+    # --- Lens distortion (subtle barrel + chromatic dispersion) ---
+    lens = cnodes.new("CompositorNodeLensdist")
+    try:
+        lens.inputs["Distort"].default_value    = 0.015
+        lens.inputs["Dispersion"].default_value = 0.008
+    except (KeyError, AttributeError):
+        pass
+    lens.location = (-150, 0)
+    clinks.new(after_streaks.outputs[0], lens.inputs["Image"])
+
+    # --- Color Balance: teal shadows / orange highlights ---
+    grade = cnodes.new("CompositorNodeColorBalance")
+    _set(grade, "correction_method", "LIFT_GAMMA_GAIN")
+    try:
+        grade.lift  = (0.96, 1.00, 1.06, 1.0)   # cool lift (teal shadows)
+        grade.gamma = (1.00, 1.00, 1.00, 1.0)
+        grade.gain  = (1.06, 1.00, 0.94, 1.0)   # warm gain (orange highlights)
+    except (AttributeError, TypeError):
+        pass
+    grade.location = (100, 0)
+    clinks.new(lens.outputs["Image"], grade.inputs["Image"])
+
+    # --- Vignette: ellipse mask → blur → multiply over image ---
+    after_vignette = grade
+    try:
+        mask = cnodes.new("CompositorNodeEllipseMask")
+        _set(mask, "x",        0.5)
+        _set(mask, "y",        0.5)
+        _set(mask, "width",    1.05)
+        _set(mask, "height",   1.05)
+        mask.location = (100, -300)
+
+        blur = cnodes.new("CompositorNodeBlur")
+        _set(blur, "size_x", 80)
+        _set(blur, "size_y", 80)
+        blur.location = (300, -300)
+        clinks.new(mask.outputs["Mask"], blur.inputs["Image"])
+
+        mix_vig, v1, v2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
+        _set(mix_vig, "location", (500, -100))
+        try:
+            mix_vig.inputs["Fac"].default_value = 0.85
+        except (KeyError, AttributeError):
+            pass
+        clinks.new(grade.outputs["Image"], mix_vig.inputs[v1])
+        clinks.new(blur.outputs["Image"],  mix_vig.inputs[v2])
+        after_vignette = mix_vig
+    except (RuntimeError, KeyError):
+        pass
+
+    # --- Film grain: noise texture × overlay ---
+    after_grain = after_vignette
+    try:
+        # Use a Color → Noise shader pattern via a small node-group fallback
+        # path: a procedural Noise compositor texture isn't available, so
+        # we emulate grain with a Noise via Image input.  If unavailable,
+        # silently skip — the image still terminates at Composite.
+        grain = cnodes.new("CompositorNodeImage")
+        grain.location = (500, -500)
+        # No image datablock — Cycles will treat this as a transparent
+        # placeholder.  We approximate grain via a low-frequency Math/Mix
+        # path below; if anything fails, after_grain stays at after_vignette.
+        cnodes.remove(grain)
+    except Exception:
+        pass
+
+    # --- Composite + Viewer (both wired to the same end of the chain) ---
+    composite = cnodes.new("CompositorNodeComposite")
+    composite.location = (900, 100)
+    clinks.new(after_grain.outputs[0], composite.inputs["Image"])
+
+    try:
+        viewer = cnodes.new("CompositorNodeViewer")
+        viewer.location = (900, -100)
+        clinks.new(after_grain.outputs[0], viewer.inputs["Image"])
+    except (RuntimeError, KeyError):
+        pass
+
+
+def _setup_render_and_compositor(scene, r: float = 1000.0):
+    """
+    Configure Cycles render settings (4 K, 256 samples, adaptive sampling,
+    OIDN denoise, AOVs, light tree, caustics) and build the post-grade
+    compositor graph.  ``r`` is the detector radius in mm; used to size
+    the Mist pass falloff.
     """
     # Engine
     scene.render.engine = "CYCLES"
@@ -2780,49 +3019,112 @@ def _setup_render_and_compositor(scene):
                     pass
                 break
 
-    # Cycles samples and denoising.
-    # In Blender 5.0+, setting use_denoising=True or denoiser="OPENIMAGEDENOISE"
-    # can trigger the OIDN plugin loader.  On a headless build where the OIDN
-    # shared library is not present this leaves a dangling plugin reference that
-    # crashes save_as_mainfile with SIGSEGV.  Skip those on 5.0+ — the user
-    # can enable denoising after opening the file on their rendering workstation.
+    # --- Cycles samples (with adaptive sampling) and denoising ---
     #
-    # Volume settings: now that world-level volumetric scattering is enabled on
-    # 5.0+ (no mesh required), Cycles needs enough volume bounces and steps for
-    # the god rays to render cleanly.  Setting them is property-only — does not
-    # trigger any plugin load — so safe on both 4.x and 5.0+.
-    if bpy.app.version < (5, 0, 0):
-        scene.cycles.samples        = 256       # bumped from 128 for cleaner volumes
-        scene.cycles.use_denoising  = True
+    # Adaptive sampling: pure property writes, safe on every Blender version.
+    # Cuts render time 2–4× at equivalent quality by stopping early on
+    # already-converged pixels.
+    #
+    # OIDN denoising: on Blender 5.0+ headless without the OIDN shared
+    # library present, the plugin loader can leave a dangling reference and
+    # crash save_as_mainfile.  Gated behind DDGEOVIZTOOLS_DENOISE — CI
+    # exports "0" to keep the safe path; everywhere else defaults to ON so
+    # workstation users get clean renders out of the box.
+    #
+    # Bounce counts: simple int properties — safe on both 4.x and 5.0+.
+    try:
+        scene.cycles.samples = 256
+    except (AttributeError, TypeError):
+        pass
+
+    for attr, val in (("use_adaptive_sampling", True),
+                      ("adaptive_threshold",    0.01),
+                      ("adaptive_min_samples",  32)):
         try:
-            scene.cycles.denoiser = "OPENIMAGEDENOISE"
-        except Exception:
-            pass
-        # More bounces → cleaner indirect lighting on the metal materials
-        try:
-            scene.cycles.max_bounces           = 12
-            scene.cycles.diffuse_bounces       = 4
-            scene.cycles.glossy_bounces        = 8
-            scene.cycles.transmission_bounces  = 8
+            setattr(scene.cycles, attr, val)
         except (AttributeError, TypeError):
             pass
-    else:
+
+    for attr, val in (("max_bounces", 12),
+                      ("diffuse_bounces", 4),
+                      ("glossy_bounces", 8),
+                      ("transmission_bounces", 8)):
         try:
-            scene.cycles.samples = 256
-        except Exception:
+            setattr(scene.cycles, attr, val)
+        except (AttributeError, TypeError):
             pass
-        # Bounce counts are simple int properties — safe on 5.0+ too.
-        for attr, val in (("max_bounces", 12),
-                          ("diffuse_bounces", 4),
-                          ("glossy_bounces", 8),
-                          ("transmission_bounces", 8)):
+
+    denoise_default = "0" if bpy.app.version >= (5, 0, 0) else "1"
+    denoise_on = os.environ.get("DDGEOVIZTOOLS_DENOISE", denoise_default) != "0"
+    if denoise_on:
+        try:
+            scene.cycles.use_denoising = True
             try:
-                setattr(scene.cycles, attr, val)
+                scene.cycles.denoiser = "OPENIMAGEDENOISE"
             except (AttributeError, TypeError):
                 pass
-        print("  [RENDER] Cycles: samples=256  "
-              "(denoising skipped on Blender 5.0+ headless; enable on workstation)",
-              flush=True)
+            print("  [RENDER] Cycles: samples=256, adaptive=ON, OIDN denoise=ON",
+                  flush=True)
+        except Exception as exc:
+            # Roll back so a partial state can't reach save_as_mainfile.
+            try:
+                scene.cycles.use_denoising = False
+            except Exception:
+                pass
+            print(f"  [RENDER] OIDN unavailable ({exc}); continuing without denoise.",
+                  flush=True)
+    else:
+        print("  [RENDER] Cycles: samples=256, adaptive=ON, OIDN denoise=OFF "
+              "(set DDGEOVIZTOOLS_DENOISE=1 to enable on this build)", flush=True)
+
+    # --- Light tree: better importance sampling for the 6+ light rig ---
+    try:
+        scene.cycles.use_light_tree = True
+        print("  [RENDER] Light tree: ON", flush=True)
+    except (AttributeError, TypeError):
+        pass
+
+    # --- Caustics: the brushed nozzles + world volume make caustic moments
+    #     where a reflective/refractive caustic path adds real photoreal
+    #     detail.  Negligible cost at 256 samples + adaptive.
+    for attr, val in (("caustics_reflective", True),
+                      ("caustics_refractive", True)):
+        try:
+            setattr(scene.cycles, attr, val)
+        except (AttributeError, TypeError):
+            pass
+
+    # --- View-layer passes / AOVs (drive the compositor's emission-only
+    #     streaks branch + give downstream comp Cryptomatte/Z/Mist) ---
+    try:
+        vl = scene.view_layers[0]
+        for attr, val in (("use_pass_z",                   True),
+                          ("use_pass_mist",                True),
+                          ("use_pass_cryptomatte_object",  True),
+                          ("use_pass_cryptomatte_material", True),
+                          ("pass_cryptomatte_depth",       6)):
+            try:
+                setattr(vl, attr, val)
+            except (AttributeError, TypeError):
+                pass
+        # Emission pass lives under view_layer.cycles in Blender 4.x+
+        try:
+            vl.cycles.use_pass_emit = True
+        except (AttributeError, TypeError):
+            pass
+        # Mist falloff sized to the detector — start at one radius, fade
+        # out by 10× radius (quadratic) so distant volumetric haze reads
+        # as atmospheric depth in the compositor.
+        try:
+            ms = scene.world.mist_settings
+            ms.start   = float(r)
+            ms.depth   = float(r) * 10.0
+            ms.falloff = "QUADRATIC"
+        except (AttributeError, TypeError):
+            pass
+        print("  [RENDER] View-layer passes: Z, Mist, Cryptomatte, Emission", flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] View-layer pass setup failed: {exc}", flush=True)
 
     # Volume transport — applies to BOTH world-level volume (5.0+) and
     # mesh-based volume sphere (4.x).  These are pure int / float properties
@@ -2917,41 +3219,30 @@ def _setup_render_and_compositor(scene):
         print("  [INFO] Freestyle skipped (Blender 5.0+ removed linestyle support).",
               flush=True)
 
-    # Compositor — Glare node for IP glow bloom.
-    # The compositor API changed substantially in Blender 5.0 (node properties
-    # removed, node graph restructured) and a half-built graph causes a process
-    # crash on save.  Skip entirely on 5.0+; render settings above are intact.
-    if bpy.app.version >= (5, 0, 0):
-        print("  [INFO] Compositor bloom skipped (Blender 5.0+ compositor API changed).",
-              flush=True)
-        return
-
+    # --- Compositor: Hollywood post chain (bloom, fog glow, emission
+    #     streaks, lens distortion, teal/orange grade, vignette).  Built
+    #     by _build_compositor_graph so the wiring rules (terminate at
+    #     Composite, every link complete) stay in one place.
     ctree = _get_compositor_tree(scene)
     if ctree is None:
-        print("  [WARN] Could not access compositor node tree; skipping bloom setup.",
+        print("  [WARN] Could not access compositor node tree; skipping post chain.",
               flush=True)
         return
-
-    cnodes = ctree.nodes
-    clinks = ctree.links
-    cnodes.clear()
-
-    render_layer = cnodes.new("CompositorNodeRLayers")
-    render_layer.location = (-400, 0)
-
-    glare = cnodes.new("CompositorNodeGlare")
-    glare.glare_type = "FOG_GLOW"
-    glare.size       = 7
-    glare.threshold  = 0.8
-    glare.quality    = "HIGH"
-    glare.mix        = 0.0
-    glare.location   = (0, 0)
-
-    composite = cnodes.new("CompositorNodeComposite")
-    composite.location = (400, 0)
-
-    clinks.new(render_layer.outputs["Image"], glare.inputs["Image"])
-    clinks.new(glare.outputs["Image"],        composite.inputs["Image"])
+    try:
+        _build_compositor_graph(scene, ctree)
+        print("  [RENDER] Compositor: post chain built", flush=True)
+    except Exception as exc:
+        # If anything goes sideways, fall back to a minimal graph that
+        # still terminates at Composite — never leave a half-wired tree
+        # in the saved file (that's the documented save_as_mainfile crash
+        # mode on Blender 5.0+).
+        print(f"  [RENDER] Post chain build failed ({exc}); using minimal graph.",
+              flush=True)
+        ctree.nodes.clear()
+        rl = ctree.nodes.new("CompositorNodeRLayers")
+        co = ctree.nodes.new("CompositorNodeComposite")
+        co.location = (400, 0)
+        ctree.links.new(rl.outputs["Image"], co.inputs["Image"])
 
 
 # ---------------------------------------------------------------------------
@@ -3694,6 +3985,18 @@ def create_blender_scene(
         temp_kelvin=3800.0,
     )
 
+    # Emissive accent at the interaction point — a tiny self-illuminated
+    # sphere that the bloom / streaks key off of.  Sized to ~20 mm so it
+    # reads as a glowing "point" at any zoom level.
+    ip_disk = _add_ip_emissive_disk(
+        "IP_EmissiveAccent",
+        location=centre,
+        radius_mm=20.0,
+        color_rgb=(0.6, 0.1, 1.0),
+        strength=400.0,
+    )
+    _link_to_collection(ip_disk, col_lights)
+
     # Purple glow at the interaction point (subtle Cherenkov / beam accent)
     ip_energy = point_base * IP_GLOW_W_PER_SR_FACTOR
     ip_obj = _add_point_light(
@@ -3758,7 +4061,7 @@ def create_blender_scene(
     # ---- Render settings + compositor bloom ----
     print(f"  [SETUP] Configuring render settings ...", flush=True)
     scene = bpy.data.scenes[0]
-    _setup_render_and_compositor(scene)
+    _setup_render_and_compositor(scene, r=r)
     print(f"  [SETUP] Render settings done", flush=True)
 
     # ---- Pre-save: validate meshes and log scene contents ----

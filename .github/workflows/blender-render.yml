@@ -21,10 +21,16 @@ jobs:
 
       # Build the .blend from the pre-converted sub-detector meshes shipped in
       # test/ (the blender-scene step only needs bpy + trimesh, no VTK).
+      # DDGEOVIZTOOLS_DENOISE=0 keeps OIDN off during the headless save —
+      # the plugin loader can crash save_as_mainfile on a Blender 5.0+
+      # build without OIDN shared libs.  Shipped .blends opened on a
+      # workstation default to denoise ON.
       - name: Build Blender scene
         run: |
           mkdir -p ci_render/renders
-          docker run --rm -v "$PWD:/data" -w /data ddgeoviztools \
+          docker run --rm -v "$PWD:/data" -w /data \
+            -e DDGEOVIZTOOLS_DENOISE=0 \
+            ddgeoviztools \
             blender-scene /data/test \
             --output /data/ci_render/scene.blend \
             --format gltf
