@@ -2885,7 +2885,7 @@ def _build_compositor_graph(scene, ctree) -> None:
     _set(bloom, "threshold",  1.0)
     _set(bloom, "size",       8)
     _set(bloom, "quality",    "HIGH")
-    _set(bloom, "mix",        -0.7)        # 30% glare blended over image
+    _set(bloom, "mix",        -0.88)       # ~12% glare blended over image
     bloom.location = (-900, 150)
     clinks.new(rlayers.outputs["Image"], bloom.inputs["Image"])
 
@@ -2894,7 +2894,7 @@ def _build_compositor_graph(scene, ctree) -> None:
     _set(fog, "threshold",  0.6)
     _set(fog, "size",       7)
     _set(fog, "quality",    "HIGH")
-    _set(fog, "mix",        -0.85)
+    _set(fog, "mix",        -0.95)         # ~5% atmospheric halo
     fog.location = (-650, 150)
     clinks.new(bloom.outputs["Image"], fog.inputs["Image"])
 
@@ -2920,7 +2920,7 @@ def _build_compositor_graph(scene, ctree) -> None:
         mix_streaks, a1, a2 = _new_mix_rgba(cnodes, blend_type="ADD")
         _set(mix_streaks, "location", (-400, 0))
         try:
-            mix_streaks.inputs["Fac"].default_value = 0.6
+            mix_streaks.inputs["Fac"].default_value = 0.2
         except (KeyError, AttributeError):
             pass
         clinks.new(fog.outputs["Image"],     mix_streaks.inputs[a1])
@@ -2941,9 +2941,9 @@ def _build_compositor_graph(scene, ctree) -> None:
     grade = cnodes.new("CompositorNodeColorBalance")
     _set(grade, "correction_method", "LIFT_GAMMA_GAIN")
     try:
-        grade.lift  = (0.96, 1.00, 1.06, 1.0)   # cool lift (teal shadows)
+        grade.lift  = (0.97, 1.00, 1.04, 1.0)   # gentle teal in the shadows
         grade.gamma = (1.00, 1.00, 1.00, 1.0)
-        grade.gain  = (1.06, 1.00, 0.94, 1.0)   # warm gain (orange highlights)
+        grade.gain  = (1.03, 1.00, 0.97, 1.0)   # gentle warm gain on highlights
     except (AttributeError, TypeError):
         pass
     grade.location = (100, 0)
@@ -3211,13 +3211,13 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
         print("  [RENDER] WARNING: Could not set view transform (Filmic/AgX)",
               flush=True)
 
-    # Exposure: 0 EV (no scene-wide multiplier).  The lights are now in
-    # physical units (W/m² emission density with use_normalize=False), so
-    # the exposure offset only needs to compensate for any global scene
-    # over- or under-shoot.  Start at 0 EV; if the AgX/Filmic output looks
-    # dim, increase to +1 or +2 EV.  If it looks blown out, decrease.
+    # Exposure: -1 EV.  The lights are in physical units (W/m² emission
+    # density with use_normalize=False); combined with the new compositor
+    # bloom + streaks they overshoot at 0 EV.  -1 EV halves the scene
+    # luminance and brings the post chain back into the AgX/Filmic
+    # linear range.  Increase if too dim, decrease further if still hot.
     try:
-        scene.view_settings.exposure = 0.0
+        scene.view_settings.exposure = -1.0
     except Exception:
         pass
 
@@ -4041,13 +4041,15 @@ def create_blender_scene(
 
     # Emissive accent at the interaction point — a tiny self-illuminated
     # sphere that the bloom / streaks key off of.  Sized to ~20 mm so it
-    # reads as a glowing "point" at any zoom level.
+    # reads as a glowing "point" at any zoom level.  Strength is modest:
+    # the comp's emission-driven streaks pass amplifies it, and anything
+    # much above ~50 W/m²/sr blows out into a featureless white field.
     ip_disk = _add_ip_emissive_disk(
         "IP_EmissiveAccent",
         location=centre,
         radius_mm=20.0,
         color_rgb=(0.6, 0.1, 1.0),
-        strength=400.0,
+        strength=30.0,
     )
     _link_to_collection(ip_disk, col_lights)
 
