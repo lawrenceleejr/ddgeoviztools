@@ -3382,17 +3382,16 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
 
 def _make_camera(name: str, location: tuple, target: tuple,
                  ortho: bool = True, ortho_scale: float = 10000.0,
-                 dof_fstop: float = 0.8,
-                 focal_length: float = 85.0):
+                 dof_fstop: float = 0.5,
+                 focal_length: float = 50.0):
     """
     Create a camera with depth of field enabled (strong bokeh by default).
 
-    ``dof_fstop`` is the aperture f-number: 0.8 is "wide open"
-    cinema-prime — very shallow depth of field, prominent bokeh circles
-    around point lights and crisp specular highlights on the bevel edges.
-    ``focal_length`` is the perspective lens in mm — 85 is the classic
-    cinema portrait length, compressing perspective and amplifying the
-    bokeh on whatever is out of the focal plane.
+    ``dof_fstop`` is the aperture f-number: 0.5 is wider than any real
+    cinema prime — gives very shallow depth of field and prominent bokeh
+    on whatever is off the focal plane.  ``focal_length`` stays at 50 mm
+    (classic "natural perspective") so the framing matches a normal lens
+    while the bokeh is amplified entirely by the aperture.
 
     Focus distance is set to the distance from the camera location to
     *target*, so whatever the camera is aimed at stays sharp and
