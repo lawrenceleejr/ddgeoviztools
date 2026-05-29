@@ -2601,7 +2601,7 @@ def _add_god_ray_spot(
 # World shader — dark space background + volumetric mist
 # ---------------------------------------------------------------------------
 
-def _setup_world(volume_density: float = 1.0e-6):
+def _setup_world(volume_density: float = 2.5e-6):
     """
     Configure the world shader for realistic detector visualisation.
 
@@ -2922,7 +2922,7 @@ def _build_compositor_graph(scene, ctree) -> None:
         glow_mix, g1, g2 = _new_mix_rgba(cnodes, blend_type="ADD")
         _set(glow_mix, "location", (-260, 0))
         try:
-            glow_mix.inputs["Fac"].default_value = 0.35
+            glow_mix.inputs["Fac"].default_value = 0.5
         except (KeyError, AttributeError):
             pass
         clinks.new(main_image,             glow_mix.inputs[g1])
@@ -2930,6 +2930,27 @@ def _build_compositor_graph(scene, ctree) -> None:
         main_image = glow_mix.outputs[0]
     except (RuntimeError, KeyError, AttributeError) as exc:
         print(f"  [RENDER] Manual bloom skipped ({exc})", flush=True)
+
+    # --- Atmospheric haze driven by the Mist pass.  Mixes a cool teal
+    # tint into the image based on per-pixel depth — sharp foreground,
+    # progressively hazier background.  Cinematic "atmospheric perspective"
+    # at almost zero render cost.
+    if "Mist" in rlayers.outputs:
+        try:
+            haze_mix, h1, h2 = _new_mix_rgba(cnodes, blend_type="MIX")
+            _set(haze_mix, "location", (-100, 0))
+            # Color2 is the haze tint — slightly cool, slightly blue, low
+            # luminance so distant objects fade *into* the gradient sky
+            # rather than getting brighter.
+            try:
+                haze_mix.inputs[h2].default_value = (0.30, 0.36, 0.46, 1.0)
+            except (KeyError, AttributeError):
+                pass
+            clinks.new(main_image,             haze_mix.inputs[h1])
+            clinks.new(rlayers.outputs["Mist"], haze_mix.inputs["Fac"])
+            main_image = haze_mix.outputs[0]
+        except (RuntimeError, KeyError, AttributeError) as exc:
+            print(f"  [RENDER] Mist haze skipped ({exc})", flush=True)
 
     # --- Optional Glare BLOOM + FOG_GLOW (default OFF on Blender 5.0+
     # because their config moved to input sockets and the setattr path
@@ -3025,7 +3046,7 @@ def _build_compositor_graph(scene, ctree) -> None:
         mix_vig, v1, v2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
         _set(mix_vig, "location", (500, -100))
         try:
-            mix_vig.inputs["Fac"].default_value = 0.85
+            mix_vig.inputs["Fac"].default_value = 0.7
         except (KeyError, AttributeError):
             pass
         clinks.new(grade.outputs["Image"], mix_vig.inputs[v1])
@@ -3361,15 +3382,21 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
 
 def _make_camera(name: str, location: tuple, target: tuple,
                  ortho: bool = True, ortho_scale: float = 10000.0,
-                 dof_fstop: float = 1.4):
+                 dof_fstop: float = 0.8,
+                 focal_length: float = 85.0):
     """
     Create a camera with depth of field enabled (strong bokeh by default).
 
-    ``dof_fstop`` is the aperture f-number: 1.4 is "wide open" — very shallow
-    depth of field, prominent bokeh circles around point lights and crisp
-    specular highlights on the bevel edges.  Focus distance is set to the
-    distance from the camera location to *target*, so whatever the camera is
-    aimed at stays sharp and everything in front of / behind it is defocused.
+    ``dof_fstop`` is the aperture f-number: 0.8 is "wide open"
+    cinema-prime — very shallow depth of field, prominent bokeh circles
+    around point lights and crisp specular highlights on the bevel edges.
+    ``focal_length`` is the perspective lens in mm — 85 is the classic
+    cinema portrait length, compressing perspective and amplifying the
+    bokeh on whatever is out of the focal plane.
+
+    Focus distance is set to the distance from the camera location to
+    *target*, so whatever the camera is aimed at stays sharp and
+    everything in front of / behind it is defocused.
 
     Cycles applies DOF to orthographic cameras too — the blur magnitude
     depends only on |Z − focus_distance| (no perspective foreshortening),
@@ -3385,7 +3412,7 @@ def _make_camera(name: str, location: tuple, target: tuple,
     if ortho:
         cam_data.ortho_scale = ortho_scale
     else:
-        cam_data.lens = 50
+        cam_data.lens = float(focal_length)
 
     cam_obj = bpy.data.objects.new(name, cam_data)
     bpy.data.scenes[0].collection.objects.link(cam_obj)
@@ -3607,7 +3634,7 @@ def create_blender_scene(
     bevel_width_mm:  float = 0.2,
     no_bevel:        bool  = False,
     no_env_sphere:   bool  = False,
-    volume_density:  float = 1.0e-6,
+    volume_density:  float = 2.5e-6,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
@@ -4023,7 +4050,7 @@ def create_blender_scene(
     # I = E · (r/1000)² = E · r² · 1e-6.  Factor below is "E · 1e-6":
     INTERIOR_W_PER_SR_FACTOR = 3.0e-6    # ~3 W/m² at distance r
     IP_GLOW_W_PER_SR_FACTOR  = 1.25e-6   # subtle purple accent
-    SPOT_W_PER_SR_FACTOR     = 5.0e-6    # decoupled — god-ray beam (3× softer)
+    SPOT_W_PER_SR_FACTOR     = 12.0e-6   # decoupled — god-ray beam (visible drama)
     point_base = r * r                   # r in mm
 
     # Key light — warm tungsten/golden-hour at 3200 K, raked from above the
