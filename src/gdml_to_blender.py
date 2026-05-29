@@ -2880,32 +2880,40 @@ def _build_compositor_graph(scene, ctree) -> None:
     rlayers.location = (-1200, 0)
 
     # --- Main image chain ---
-    bloom = cnodes.new("CompositorNodeGlare")
-    _set(bloom, "glare_type", "BLOOM")
-    _set(bloom, "threshold",  1.5)         # only true HDR superwhites bloom
-    _set(bloom, "size",       7)
-    _set(bloom, "quality",    "HIGH")
-    _set(bloom, "mix",        -0.95)       # ~5% glare blended over image
-    bloom.location = (-900, 150)
-    clinks.new(rlayers.outputs["Image"], bloom.inputs["Image"])
+    # --- BLOOM + FOG_GLOW (default OFF on Blender 5.0+).
+    # Blender 5.0 reworked the Glare node — properties like ``mix`` and
+    # ``threshold`` moved to input sockets, so the old setattr-based
+    # configuration silently no-ops and the nodes fall back to a heavy
+    # default that hazes the whole frame.  Until the input-socket plumbing
+    # is implemented, both glare modes are gated behind env vars so the
+    # baseline image is the clean raw render.
+    main_image = rlayers.outputs["Image"]
+    if os.environ.get("DDGEOVIZTOOLS_BLOOM", "0") != "0":
+        bloom = cnodes.new("CompositorNodeGlare")
+        _set(bloom, "glare_type", "BLOOM")
+        _set(bloom, "threshold",  5.0)
+        _set(bloom, "size",       7)
+        _set(bloom, "quality",    "HIGH")
+        _set(bloom, "mix",        -0.97)
+        bloom.location = (-900, 150)
+        clinks.new(main_image, bloom.inputs["Image"])
+        main_image = bloom.outputs["Image"]
 
-    fog = cnodes.new("CompositorNodeGlare")
-    _set(fog, "glare_type", "FOG_GLOW")
-    _set(fog, "threshold",  1.2)
-    _set(fog, "size",       6)
-    _set(fog, "quality",    "HIGH")
-    _set(fog, "mix",        -0.97)         # ~3% halo
-    fog.location = (-650, 150)
-    clinks.new(bloom.outputs["Image"], fog.inputs["Image"])
+    if os.environ.get("DDGEOVIZTOOLS_FOG_GLOW", "0") != "0":
+        fog = cnodes.new("CompositorNodeGlare")
+        _set(fog, "glare_type", "FOG_GLOW")
+        _set(fog, "threshold",  4.0)
+        _set(fog, "size",       6)
+        _set(fog, "quality",    "HIGH")
+        _set(fog, "mix",        -0.98)
+        fog.location = (-650, 150)
+        clinks.new(main_image, fog.inputs["Image"])
+        main_image = fog.outputs["Image"]
 
-    # --- STREAKS branch (Emit-pass-driven anamorphic flare) is OFF.
-    # At any sensible threshold the streaks-of-many-pixels overlap into
-    # a framewide criss-cross pattern that dominates the composite.  The
-    # raw scene already has an IP emissive accent + god-ray spot doing
-    # the "bright source" job; bloom and fog-glow above carry the halo.
-    # Re-enable behind an env-var gate if you genuinely want anamorphic.
-    after_streaks = fog
-    if os.environ.get("DDGEOVIZTOOLS_STREAKS", "0") != "0" and "Emit" in rlayers.outputs:
+    # --- STREAKS branch (default OFF — Glare on Blender 5.0 produces
+    # framewide criss-cross under the old API, see BLOOM note above).
+    if (os.environ.get("DDGEOVIZTOOLS_STREAKS", "0") != "0"
+            and "Emit" in rlayers.outputs):
         streaks = cnodes.new("CompositorNodeGlare")
         _set(streaks, "glare_type",   "STREAKS")
         _set(streaks, "streaks",       4)
@@ -2913,7 +2921,7 @@ def _build_compositor_graph(scene, ctree) -> None:
         _set(streaks, "fade",          0.80)
         _set(streaks, "angle_offset",  0.0)
         _set(streaks, "size",          4)
-        _set(streaks, "threshold",     1.5)  # higher still — true HDR only
+        _set(streaks, "threshold",     1.5)
         _set(streaks, "quality",       "HIGH")
         _set(streaks, "mix",           1.0)
         streaks.location = (-650, -250)
@@ -2925,9 +2933,9 @@ def _build_compositor_graph(scene, ctree) -> None:
             mix_streaks.inputs["Fac"].default_value = 0.08
         except (KeyError, AttributeError):
             pass
-        clinks.new(fog.outputs["Image"],     mix_streaks.inputs[a1])
+        clinks.new(main_image,              mix_streaks.inputs[a1])
         clinks.new(streaks.outputs["Image"], mix_streaks.inputs[a2])
-        after_streaks = mix_streaks
+        main_image = mix_streaks.outputs[0]
 
     # --- Lens distortion (subtle barrel + chromatic dispersion) ---
     lens = cnodes.new("CompositorNodeLensdist")
@@ -2937,7 +2945,7 @@ def _build_compositor_graph(scene, ctree) -> None:
     except (KeyError, AttributeError):
         pass
     lens.location = (-150, 0)
-    clinks.new(after_streaks.outputs[0], lens.inputs["Image"])
+    clinks.new(main_image, lens.inputs["Image"])
 
     # --- Color Balance: teal shadows / orange highlights ---
     grade = cnodes.new("CompositorNodeColorBalance")
