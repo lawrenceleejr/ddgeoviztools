@@ -2880,14 +2880,61 @@ def _build_compositor_graph(scene, ctree) -> None:
     rlayers.location = (-1200, 0)
 
     # --- Main image chain ---
-    # --- BLOOM + FOG_GLOW (default OFF on Blender 5.0+).
-    # Blender 5.0 reworked the Glare node — properties like ``mix`` and
-    # ``threshold`` moved to input sockets, so the old setattr-based
-    # configuration silently no-ops and the nodes fall back to a heavy
-    # default that hazes the whole frame.  Until the input-socket plumbing
-    # is implemented, both glare modes are gated behind env vars so the
-    # baseline image is the clean raw render.
+    # --- Manual bright-pass bloom (drama without depending on the
+    # Blender 5.0 Glare node, whose config moved to input sockets and
+    # whose default mix produces a fullframe haze).  The chain:
+    #
+    #   image -> RGBToBW -> Math GREATER_THAN(0.9) -> Multiply with image
+    #         -> Blur(40px) -> Mix ADD over image at fac=0.35
+    #
+    # Only pixels above 0.9 linear (the IP accent, brightest rim-lit
+    # specular hits, the god-ray spot cone) leak glow; the bulk of the
+    # detector stays sharp.  Adjustable: bump threshold lower for more
+    # glow, raise blur size for softer halos.
     main_image = rlayers.outputs["Image"]
+
+    try:
+        lum = cnodes.new("CompositorNodeRGBToBW")
+        lum.location = (-1000, -300)
+        clinks.new(main_image, lum.inputs["Image"])
+
+        thresh = cnodes.new("CompositorNodeMath")
+        thresh.operation = "GREATER_THAN"
+        thresh.inputs[1].default_value = 0.9
+        thresh.location = (-820, -300)
+        clinks.new(lum.outputs["Val"], thresh.inputs[0])
+
+        bright, b1, b2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
+        _set(bright, "location", (-640, -200))
+        try:
+            bright.inputs["Fac"].default_value = 1.0
+        except (KeyError, AttributeError):
+            pass
+        clinks.new(main_image,            bright.inputs[b1])
+        clinks.new(thresh.outputs["Value"], bright.inputs[b2])
+
+        glow_blur = cnodes.new("CompositorNodeBlur")
+        _set(glow_blur, "size_x", 40)
+        _set(glow_blur, "size_y", 40)
+        glow_blur.location = (-460, -200)
+        clinks.new(bright.outputs[0], glow_blur.inputs["Image"])
+
+        glow_mix, g1, g2 = _new_mix_rgba(cnodes, blend_type="ADD")
+        _set(glow_mix, "location", (-260, 0))
+        try:
+            glow_mix.inputs["Fac"].default_value = 0.35
+        except (KeyError, AttributeError):
+            pass
+        clinks.new(main_image,             glow_mix.inputs[g1])
+        clinks.new(glow_blur.outputs[0],   glow_mix.inputs[g2])
+        main_image = glow_mix.outputs[0]
+    except (RuntimeError, KeyError, AttributeError) as exc:
+        print(f"  [RENDER] Manual bloom skipped ({exc})", flush=True)
+
+    # --- Optional Glare BLOOM + FOG_GLOW (default OFF on Blender 5.0+
+    # because their config moved to input sockets and the setattr path
+    # silently falls back to a 50% mix).  Re-enable behind env vars once
+    # the input-socket plumbing lands.
     if os.environ.get("DDGEOVIZTOOLS_BLOOM", "0") != "0":
         bloom = cnodes.new("CompositorNodeGlare")
         _set(bloom, "glare_type", "BLOOM")
@@ -2951,9 +2998,9 @@ def _build_compositor_graph(scene, ctree) -> None:
     grade = cnodes.new("CompositorNodeColorBalance")
     _set(grade, "correction_method", "LIFT_GAMMA_GAIN")
     try:
-        grade.lift  = (0.97, 1.00, 1.04, 1.0)   # gentle teal in the shadows
+        grade.lift  = (0.95, 1.00, 1.07, 1.0)   # teal lift in the shadows
         grade.gamma = (1.00, 1.00, 1.00, 1.0)
-        grade.gain  = (1.03, 1.00, 0.97, 1.0)   # gentle warm gain on highlights
+        grade.gain  = (1.05, 1.00, 0.94, 1.0)   # warm gain on highlights
     except (AttributeError, TypeError):
         pass
     grade.location = (100, 0)
@@ -3221,12 +3268,12 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
         print("  [RENDER] WARNING: Could not set view transform (Filmic/AgX)",
               flush=True)
 
-    # Exposure: -3 EV.  Compounded with the recently halved light energies,
-    # the AgX view transform now has plenty of headroom — the highlights
-    # land mid-grey instead of clipping.  Re-raise toward -1 EV later if
-    # the result is too dim once denoised renders are stable.
+    # Exposure: -2 EV.  Combined with the now-reduced light power and the
+    # manual bright-pass bloom in the compositor, this lands the highlights
+    # bright enough to show real specular drama while keeping the AgX
+    # tone-map comfortably inside its linear range.
     try:
-        scene.view_settings.exposure = -3.0
+        scene.view_settings.exposure = -2.0
     except Exception:
         pass
 
@@ -3967,7 +4014,7 @@ def create_blender_scene(
     # less direct contribution to land at the same final intensity.
     KEY_W_PER_M2     =   37.0
     FILL_W_PER_M2    =   10.0
-    RIM_W_PER_M2     =  225.0
+    RIM_W_PER_M2     =  400.0
     KICKER_W_PER_M2  =   45.0
 
     # --- Point-light intensities (W/sr) — scale with r² for falloff ---
@@ -4058,7 +4105,7 @@ def create_blender_scene(
         location=centre,
         radius_mm=20.0,
         color_rgb=(0.6, 0.1, 1.0),
-        strength=5.0,
+        strength=15.0,
     )
     _link_to_collection(ip_disk, col_lights)
 
