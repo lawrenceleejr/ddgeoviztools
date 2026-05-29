@@ -45,8 +45,7 @@ jobs:
             --python-exit-code 1 \
             --python /data/scripts/render_cameras.py -- \
             --out /data/ci_render/renders \
-            --samples 32 --width 1280 --height 720 --device CPU \
-            --no-compositor
+            --samples 32 --width 1280 --height 720 --device CPU
 
       - name: Verify renders were produced
         run: |

@@ -2885,33 +2885,35 @@ def _build_compositor_graph(scene, ctree) -> None:
     _set(bloom, "threshold",  1.5)         # only true HDR superwhites bloom
     _set(bloom, "size",       7)
     _set(bloom, "quality",    "HIGH")
-    _set(bloom, "mix",        -0.92)       # ~8% glare blended over image
+    _set(bloom, "mix",        -0.95)       # ~5% glare blended over image
     bloom.location = (-900, 150)
     clinks.new(rlayers.outputs["Image"], bloom.inputs["Image"])
 
     fog = cnodes.new("CompositorNodeGlare")
     _set(fog, "glare_type", "FOG_GLOW")
-    _set(fog, "threshold",  1.2)           # was 0.6 — only highlights, not midtones
+    _set(fog, "threshold",  1.2)
     _set(fog, "size",       6)
     _set(fog, "quality",    "HIGH")
-    _set(fog, "mix",        -0.96)         # ~4% halo
+    _set(fog, "mix",        -0.97)         # ~3% halo
     fog.location = (-650, 150)
     clinks.new(bloom.outputs["Image"], fog.inputs["Image"])
 
-    # --- STREAKS branch driven by the Emission pass (only true emitters
-    # streak — IP accent + god-ray spot — never specular reflections).
-    # If the Emit output isn't wired (older render passes config), we
-    # silently fall back to no streaks.
-    after_streaks = fog  # default if streaks unavailable
-    if "Emit" in rlayers.outputs:
+    # --- STREAKS branch (Emit-pass-driven anamorphic flare) is OFF.
+    # At any sensible threshold the streaks-of-many-pixels overlap into
+    # a framewide criss-cross pattern that dominates the composite.  The
+    # raw scene already has an IP emissive accent + god-ray spot doing
+    # the "bright source" job; bloom and fog-glow above carry the halo.
+    # Re-enable behind an env-var gate if you genuinely want anamorphic.
+    after_streaks = fog
+    if os.environ.get("DDGEOVIZTOOLS_STREAKS", "0") != "0" and "Emit" in rlayers.outputs:
         streaks = cnodes.new("CompositorNodeGlare")
         _set(streaks, "glare_type",   "STREAKS")
         _set(streaks, "streaks",       4)
-        _set(streaks, "iterations",    2)    # was 3 — fewer recursions
-        _set(streaks, "fade",          0.80) # was 0.95 — streak length drops fast
+        _set(streaks, "iterations",    2)
+        _set(streaks, "fade",          0.80)
         _set(streaks, "angle_offset",  0.0)
-        _set(streaks, "size",          4)    # was 9 — short streaks, not framewide
-        _set(streaks, "threshold",     1.0)  # was 0.05 — only true emitters
+        _set(streaks, "size",          4)
+        _set(streaks, "threshold",     1.5)  # higher still — true HDR only
         _set(streaks, "quality",       "HIGH")
         _set(streaks, "mix",           1.0)
         streaks.location = (-650, -250)
@@ -2920,7 +2922,7 @@ def _build_compositor_graph(scene, ctree) -> None:
         mix_streaks, a1, a2 = _new_mix_rgba(cnodes, blend_type="ADD")
         _set(mix_streaks, "location", (-400, 0))
         try:
-            mix_streaks.inputs["Fac"].default_value = 0.1   # was 0.2
+            mix_streaks.inputs["Fac"].default_value = 0.08
         except (KeyError, AttributeError):
             pass
         clinks.new(fog.outputs["Image"],     mix_streaks.inputs[a1])
