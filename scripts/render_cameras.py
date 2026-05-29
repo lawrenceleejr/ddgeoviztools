@@ -30,6 +30,13 @@ def parse_args(argv):
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--engine", default="CYCLES")
     p.add_argument("--device", default="CPU", choices=["CPU", "GPU"])
+    p.add_argument(
+        "--no-compositor",
+        action="store_true",
+        help="Disable the scene's compositor (renders raw Cycles output). "
+        "Useful for diagnosing whether bloom/glare in the post chain is "
+        "blowing out the image vs. the underlying scene being too bright.",
+    )
     return p.parse_args(argv)
 
 
@@ -69,6 +76,9 @@ def main():
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
     scene.render.use_motion_blur = False
+    if args.no_compositor:
+        scene.render.use_compositing = False
+        print("render_cameras.py: compositor DISABLED (raw render)", flush=True)
 
     if args.engine == "CYCLES":
         scene.cycles.device = args.device

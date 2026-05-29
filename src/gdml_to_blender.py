@@ -235,7 +235,7 @@ def _decorate_metal_bsdf(mat, base_rgb: tuple, base_rough: float) -> None:
 
 def _make_brushed_metal_material(
     name: str, base_rgb: tuple,
-    roughness: float = 0.35, anisotropy: float = 0.75,
+    roughness: float = 0.35, anisotropy: float = 0.5,
 ):
     """
     Brushed-metal material with anisotropic highlights aligned around the
@@ -290,7 +290,7 @@ def _make_brushed_metal_material(
     links.new(mapping.outputs["Vector"], grooves.inputs["Vector"])
 
     bump = nodes.new("ShaderNodeBump")
-    bump.inputs["Strength"].default_value = 0.10
+    bump.inputs["Strength"].default_value = 0.03
     bump.inputs["Distance"].default_value = 0.02
     links.new(grooves.outputs["Fac"], bump.inputs["Height"])
     links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
@@ -334,7 +334,7 @@ def _material_for_detector(stem: str, mat_cycle):
             if keywords[0] in ("nozzlew", "nozzle"):
                 return _make_brushed_metal_material(
                     mat_name, color,
-                    roughness=roughness, anisotropy=0.75,
+                    roughness=roughness, anisotropy=0.5,
                 )
             return _make_material(mat_name, color, metallic, roughness)
     return next(mat_cycle)
@@ -2601,7 +2601,7 @@ def _add_god_ray_spot(
 # World shader — dark space background + volumetric mist
 # ---------------------------------------------------------------------------
 
-def _setup_world(volume_density: float = 2.5e-6):
+def _setup_world(volume_density: float = 1.0e-6):
     """
     Configure the world shader for realistic detector visualisation.
 
@@ -3211,14 +3211,12 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
         print("  [RENDER] WARNING: Could not set view transform (Filmic/AgX)",
               flush=True)
 
-    # Exposure: -2 EV.  Lights are in physical units (use_normalize=False);
-    # combined with volumetric god rays and the post-chain bloom they
-    # overshoot AgX's tone-mapping linear range badly at 0 EV.  -2 EV
-    # quarters the scene luminance which keeps the highlights inside AgX.
-    # Increase toward 0 if the result looks dim once samples / denoising
-    # are healthier on a real render.
+    # Exposure: -3 EV.  Compounded with the recently halved light energies,
+    # the AgX view transform now has plenty of headroom — the highlights
+    # land mid-grey instead of clipping.  Re-raise toward -1 EV later if
+    # the result is too dim once denoised renders are stable.
     try:
-        scene.view_settings.exposure = -2.0
+        scene.view_settings.exposure = -3.0
     except Exception:
         pass
 
@@ -3552,7 +3550,7 @@ def create_blender_scene(
     bevel_width_mm:  float = 0.2,
     no_bevel:        bool  = False,
     no_env_sphere:   bool  = False,
-    volume_density:  float = 2.5e-6,
+    volume_density:  float = 1.0e-6,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
@@ -3957,10 +3955,10 @@ def create_blender_scene(
     # Scatter adds an apparent brightness boost (scattered light reaches
     # the camera even in shadow regions), so the surface lighting needs
     # less direct contribution to land at the same final intensity.
-    KEY_W_PER_M2     =  150.0
-    FILL_W_PER_M2    =   20.0
-    RIM_W_PER_M2     =  900.0
-    KICKER_W_PER_M2  =   90.0
+    KEY_W_PER_M2     =   37.0
+    FILL_W_PER_M2    =   10.0
+    RIM_W_PER_M2     =  225.0
+    KICKER_W_PER_M2  =   45.0
 
     # --- Point-light intensities (W/sr) — scale with r² for falloff ---
     # Irradiance at distance d (metres) from a point of intensity I is
