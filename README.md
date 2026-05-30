@@ -99,7 +99,7 @@ either copy them in first or use `--shell` to set up custom mounts by
 hand. `geoConverter` inside the container is invoked as:
 
 ```
-geoConverter -compact2gdml in=file:/compact/<input.xml> out=/out/<output.gdml>
+geoConverter -compact2gdml -input /compact/<input.xml> -output /out/<output.gdml>
 ```
 
 ### 1. Split into sub-detector GDMLs

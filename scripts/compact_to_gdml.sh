@@ -212,4 +212,4 @@ exec docker run --rm \
     -w /compact \
     "$IMAGE" \
     -lc "$INIT_BLOCK
-geoConverter -compact2gdml in=file:/compact/$COMPACT_NAME out=/out/$OUT_NAME"
+geoConverter -compact2gdml -input /compact/$COMPACT_NAME -output /out/$OUT_NAME"
