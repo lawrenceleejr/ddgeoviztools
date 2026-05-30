@@ -116,7 +116,11 @@ if [[ "$DROP_SHELL" == 1 ]]; then
     [[ -n "$COMPACT_NAME" ]] && echo "    compact file: /compact/$COMPACT_NAME"
     echo "    To run the conversion by hand:"
     echo "        geoConverter -compact2gdml in=file:/compact/$COMPACT_NAME out=/out/$OUT_NAME"
-    exec docker run --rm -it "${MOUNTS[@]}" -w /compact "$IMAGE" /bin/bash
+    exec docker run --rm -it \
+        --entrypoint /bin/bash \
+        "${MOUNTS[@]}" \
+        -w /compact \
+        "$IMAGE"
 fi
 
 echo "==> Converting DD4hep compact -> GDML"
@@ -125,12 +129,13 @@ echo "    compact     : $COMPACT_DIR/$COMPACT_NAME"
 echo "    output GDML : $OUT_DIR/$OUT_NAME"
 
 # Use bash -lc so the image's login profile (which is where AIDASoft /
-# Key4hep images source the DD4hep environment) is honoured.  The
-# converter is then invoked with file:URLs to keep DD4hep's XInclude
-# resolver happy with relative paths inside the compact directory tree.
+# Key4hep / Muon Collider images source the DD4hep environment) is
+# honoured.  Override the image's ENTRYPOINT explicitly — several of
+# these stacks set ENTRYPOINT=/bin/bash, which would otherwise eat our
+# command and try to exec /bin/bash as a script.
 exec docker run --rm \
+    --entrypoint /bin/bash \
     "${MOUNTS[@]}" \
     -w /compact \
     "$IMAGE" \
-    /bin/bash -lc \
-        "geoConverter -compact2gdml in=file:/compact/$COMPACT_NAME out=/out/$OUT_NAME"
+    -lc "geoConverter -compact2gdml in=file:/compact/$COMPACT_NAME out=/out/$OUT_NAME"
