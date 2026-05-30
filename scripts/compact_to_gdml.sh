@@ -139,25 +139,58 @@ echo "    output GDML : $OUT_DIR/$OUT_NAME"
 # images can point at any init file).
 INIT_OVERRIDE="${DDGDML_INIT:-}"
 INIT_BLOCK='
+set +e
+
+# 1) Honour DDGDML_INIT override on the host if it points at a real file.
 if [ -n "'"$INIT_OVERRIDE"'" ] && [ -f "'"$INIT_OVERRIDE"'" ]; then
     source "'"$INIT_OVERRIDE"'"
-elif [ -f /opt/ilcsoft/muonc/init_ilcsoft.sh ]; then
-    source /opt/ilcsoft/muonc/init_ilcsoft.sh
-elif [ -f /opt/setup.sh ]; then
-    source /opt/setup.sh
-elif [ -f /setup.sh ]; then
-    source /setup.sh
-else
-    for f in /opt/spack-environments/*/activate.sh /opt/*/setup.sh; do
-        [ -f "$f" ] && source "$f" && break
-    done
 fi
+
+# 2) Try the common HEP / Muon Collider / Spack-env init scripts.
+for s in \
+    /opt/ilcsoft/muonc/init_ilcsoft.sh \
+    /opt/ilcsoft/init_ilcsoft.sh \
+    /opt/MuonCollider/setup.sh \
+    /opt/spack-environments/*/activate.sh \
+    /opt/spack-environment/activate.sh \
+    /opt/spack/share/spack/setup-env.sh \
+    /opt/setup.sh \
+    /setup.sh \
+    /usr/local/setup.sh \
+    /opt/*/setup.sh \
+    /opt/*/bin/thisdd4hep.sh; do
+    [ -f "$s" ] && source "$s" 2>/dev/null
+done
+
+# 3) Last-ditch: locate the geoConverter binary on the filesystem and
+#    source its neighbouring init script + prepend its dir to PATH.
+if ! command -v geoConverter >/dev/null 2>&1; then
+    GC=$(find /opt /usr/local /usr -maxdepth 8 -name geoConverter \
+            -type f -executable 2>/dev/null | head -1)
+    if [ -n "$GC" ]; then
+        BIN_DIR=$(dirname "$GC")
+        PREFIX=$(dirname "$BIN_DIR")
+        for s in "$BIN_DIR/thisdd4hep.sh" \
+                 "$PREFIX/bin/thisdd4hep.sh" \
+                 "$PREFIX/setup.sh" \
+                 "$PREFIX/init.sh"; do
+            [ -f "$s" ] && source "$s" 2>/dev/null
+        done
+        export PATH="$BIN_DIR:$PATH"
+    fi
+fi
+
+set -e
+
 if ! command -v geoConverter >/dev/null 2>&1; then
     echo "error: geoConverter not on PATH after env init." >&2
-    echo "       Re-run with --shell and source the right init script by hand," >&2
-    echo "       or set DDGDML_INIT=/path/inside/container/init.sh on the host." >&2
+    echo "       /opt contents:" >&2
+    ls -1 /opt 2>/dev/null | sed "s/^/         /" >&2
+    echo "       Re-run with --shell to investigate, or set DDGDML_INIT=" >&2
+    echo "       on the host to a known-good init script path inside the container." >&2
     exit 1
 fi
+echo "    geoConverter at: $(command -v geoConverter)"
 '
 
 # Override the image's ENTRYPOINT — several of these stacks set
