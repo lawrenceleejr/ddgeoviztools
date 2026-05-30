@@ -141,10 +141,14 @@ INIT_OVERRIDE="${DDGDML_INIT:-}"
 INIT_BLOCK='
 set +e
 
-# 0) Muon Collider images expose a setup_mucoll function/command that
-#    puts the entire stack (including geoConverter) on PATH in one call.
-#    Other vendor images expose similar one-shot setups (key4hep_nightly,
-#    setupATLAS, …) — try the common ones silently.
+# 0) Muon Collider images expose a one-shot setup:
+#    - mucoll-sim-ubuntu24 (v2.11+):  source /opt/setup_mucoll.sh
+#    - mucoll-sim-alma9    (v2.9.x):  call the setup_mucoll function
+#    Try the source-based form first since it works for the current
+#    default image; fall through to the function form for older images.
+if [ -f /opt/setup_mucoll.sh ]; then
+    source /opt/setup_mucoll.sh
+fi
 for cmd in setup_mucoll key4hep_nightly key4hep_release; do
     if type "$cmd" >/dev/null 2>&1; then
         "$cmd" >/dev/null 2>&1 || true
