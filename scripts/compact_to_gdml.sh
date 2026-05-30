@@ -15,7 +15,7 @@
 #   -o, --out PATH       Output GDML path (default: same dir as input,
 #                        same basename with a .gdml extension).
 #       --image NAME     Docker image with DD4hep installed
-#                        (default: ghcr.io/muoncollidersoft/mucoll-sim-alma9:v2.9.7).
+#                        (default: ghcr.io/muoncollidersoft/mucoll-sim-ubuntu24:v2.11-amd64).
 #       --pull           docker pull the image before running.
 #       --shell          Drop into a bash shell inside the container with
 #                        the compact and output mounts in place — handy
@@ -38,7 +38,7 @@ usage() {
 # --- Defaults ---
 COMPACT=""
 OUT=""
-IMAGE="ghcr.io/muoncollidersoft/mucoll-sim-alma9:v2.9.7"
+IMAGE="ghcr.io/muoncollidersoft/mucoll-sim-ubuntu24:v2.11-amd64"
 DO_PULL=0
 DROP_SHELL=0
 
