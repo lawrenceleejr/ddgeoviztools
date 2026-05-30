@@ -44,6 +44,49 @@ Place `MAIA_260226.gdml` in your working directory (or any directory you
 prefer — just `cd` there first). All paths inside the container start with
 `/data`, which maps to your current directory on the host.
 
+### 0. (Optional) Generate the GDML from a DD4hep compact XML
+
+If you only have the DD4hep compact description and not the flattened
+GDML, `scripts/compact_to_gdml.sh` runs DD4hep's `geoConverter` inside a
+Docker container — no local DD4hep / ROOT / Geant4 install needed.
+
+```bash
+# Default output: alongside the compact, .xml → .gdml
+./scripts/compact_to_gdml.sh /path/to/MAIA/compact/MAIA.xml
+
+# Custom output path
+./scripts/compact_to_gdml.sh MAIA.xml -o /tmp/MAIA_260226.gdml
+
+# Use a different DD4hep image
+./scripts/compact_to_gdml.sh MAIA.xml \
+    --image gitlab-registry.cern.ch/sft/docker/dd4hep:latest
+
+# Pull the image first (e.g. to refresh to the latest tag)
+./scripts/compact_to_gdml.sh MAIA.xml --pull
+
+# Debug XInclude / plugin errors interactively
+./scripts/compact_to_gdml.sh MAIA.xml --shell
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-o`, `--out PATH` | `<compact>.gdml` | Output GDML path |
+| `--image NAME` | `ghcr.io/aidasoft/dd4hep:latest` | Docker image with DD4hep |
+| `--pull` | off | `docker pull` the image before running |
+| `--shell` | off | Drop into bash inside the container with the mounts in place |
+
+The script bind-mounts the compact file's parent directory as `/compact`
+(read-only) so the XInclude'd materials / segmentations / sub-detector
+XMLs resolve, and writes the GDML to a `/out` mount.
+
+If your compact includes files from **outside** that parent directory,
+either copy them in first or use `--shell` to set up custom mounts by
+hand. `geoConverter` inside the container is invoked as:
+
+```
+geoConverter -compact2gdml in=file:/compact/<input.xml> out=/out/<output.gdml>
+```
+
 ### 1. Split into sub-detector GDMLs
 
 ```bash
