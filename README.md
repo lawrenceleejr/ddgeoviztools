@@ -79,6 +79,17 @@ Collider compacts.
 | `--pull` | off | `docker pull` the image before running |
 | `--shell` | off | Drop into bash inside the container with the mounts in place |
 
+These HEP images need a per-image init script sourced before `geoConverter`
+is on `PATH`. The script searches common paths in this order:
+
+1. `$DDGDML_INIT` (host env var — overrides everything)
+2. `/opt/ilcsoft/muonc/init_ilcsoft.sh` (Muon Collider stack)
+3. `/opt/setup.sh`, `/setup.sh`
+4. `/opt/spack-environments/*/activate.sh`, `/opt/*/setup.sh`
+
+If your image puts its init somewhere else, set `DDGDML_INIT=/path/in/container`
+on the host and re-run.
+
 The script bind-mounts the compact file's parent directory as `/compact`
 (read-only) so the XInclude'd materials / segmentations / sub-detector
 XMLs resolve, and writes the GDML to a `/out` mount.

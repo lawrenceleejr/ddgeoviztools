@@ -128,14 +128,45 @@ echo "    image       : $IMAGE"
 echo "    compact     : $COMPACT_DIR/$COMPACT_NAME"
 echo "    output GDML : $OUT_DIR/$OUT_NAME"
 
-# Use bash -lc so the image's login profile (which is where AIDASoft /
-# Key4hep / Muon Collider images source the DD4hep environment) is
-# honoured.  Override the image's ENTRYPOINT explicitly — several of
-# these stacks set ENTRYPOINT=/bin/bash, which would otherwise eat our
-# command and try to exec /bin/bash as a script.
+# HEP simulation images (muoncollidersoft, AIDASoft, Key4hep, …) generally
+# require an explicit ``source <init.sh>`` to put geoConverter / DD4hep on
+# PATH — even a login shell isn't always enough, since they don't always
+# drop hooks into /etc/profile.d.
+#
+# Search the common init-script locations in priority order; the first
+# match wins.  ``DDGDML_INIT`` env var on the host overrides everything
+# (the script is passed through to the container so users with custom
+# images can point at any init file).
+INIT_OVERRIDE="${DDGDML_INIT:-}"
+INIT_BLOCK='
+if [ -n "'"$INIT_OVERRIDE"'" ] && [ -f "'"$INIT_OVERRIDE"'" ]; then
+    source "'"$INIT_OVERRIDE"'"
+elif [ -f /opt/ilcsoft/muonc/init_ilcsoft.sh ]; then
+    source /opt/ilcsoft/muonc/init_ilcsoft.sh
+elif [ -f /opt/setup.sh ]; then
+    source /opt/setup.sh
+elif [ -f /setup.sh ]; then
+    source /setup.sh
+else
+    for f in /opt/spack-environments/*/activate.sh /opt/*/setup.sh; do
+        [ -f "$f" ] && source "$f" && break
+    done
+fi
+if ! command -v geoConverter >/dev/null 2>&1; then
+    echo "error: geoConverter not on PATH after env init." >&2
+    echo "       Re-run with --shell and source the right init script by hand," >&2
+    echo "       or set DDGDML_INIT=/path/inside/container/init.sh on the host." >&2
+    exit 1
+fi
+'
+
+# Override the image's ENTRYPOINT — several of these stacks set
+# ENTRYPOINT=/bin/bash, which would otherwise eat our command and try
+# to exec /bin/bash as a script.
 exec docker run --rm \
     --entrypoint /bin/bash \
     "${MOUNTS[@]}" \
     -w /compact \
     "$IMAGE" \
-    -lc "geoConverter -compact2gdml in=file:/compact/$COMPACT_NAME out=/out/$OUT_NAME"
+    -lc "$INIT_BLOCK
+geoConverter -compact2gdml in=file:/compact/$COMPACT_NAME out=/out/$OUT_NAME"
