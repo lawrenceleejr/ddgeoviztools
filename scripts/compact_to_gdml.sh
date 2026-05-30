@@ -141,6 +141,16 @@ INIT_OVERRIDE="${DDGDML_INIT:-}"
 INIT_BLOCK='
 set +e
 
+# 0) Muon Collider images expose a setup_mucoll function/command that
+#    puts the entire stack (including geoConverter) on PATH in one call.
+#    Other vendor images expose similar one-shot setups (key4hep_nightly,
+#    setupATLAS, …) — try the common ones silently.
+for cmd in setup_mucoll key4hep_nightly key4hep_release; do
+    if type "$cmd" >/dev/null 2>&1; then
+        "$cmd" >/dev/null 2>&1 || true
+    fi
+done
+
 # 1) Honour DDGDML_INIT override on the host if it points at a real file.
 if [ -n "'"$INIT_OVERRIDE"'" ] && [ -f "'"$INIT_OVERRIDE"'" ]; then
     source "'"$INIT_OVERRIDE"'"
