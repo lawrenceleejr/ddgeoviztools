@@ -155,6 +155,29 @@ for cmd in setup_mucoll key4hep_nightly key4hep_release; do
     fi
 done
 
+# 0b) Ensure every detector-plugin library dir is on LD_LIBRARY_PATH and
+#     DD4HEP_LIBRARY_PATH.  setup_mucoll.sh wires up the Muon Collider
+#     plugins but not always lcgeo / k4geo / DDDetectors, which provide
+#     the standard *_o1_v0X tracker/calorimeter plugins MAIA references.
+ADDED=""
+for libfile in $(find /opt /usr/local -maxdepth 10 \
+        \( -name "liblcgeo*.so*" \
+           -o -name "libk4geo*.so*" \
+           -o -name "libDDDetectors*.so*" \
+           -o -name "libMuColl*.so*" \
+           -o -name "libMu*Detector*.so*" \) \
+        2>/dev/null); do
+    d=$(dirname "$libfile")
+    case ":$ADDED:" in
+        *":$d:"*) ;;
+        *)
+            ADDED="$ADDED:$d"
+            export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export DD4HEP_LIBRARY_PATH="$d${DD4HEP_LIBRARY_PATH:+:$DD4HEP_LIBRARY_PATH}"
+            ;;
+    esac
+done
+
 # 1) Honour DDGDML_INIT override on the host if it points at a real file.
 if [ -n "'"$INIT_OVERRIDE"'" ] && [ -f "'"$INIT_OVERRIDE"'" ]; then
     source "'"$INIT_OVERRIDE"'"
