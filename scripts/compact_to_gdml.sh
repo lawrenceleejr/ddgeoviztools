@@ -167,13 +167,20 @@ done
 #     DD4HEP_LIBRARY_PATH.  setup_mucoll.sh wires up the Muon Collider
 #     plugins but not always lcgeo / k4geo / DDDetectors, which provide
 #     the standard *_o1_v0X tracker/calorimeter plugins MAIA references.
+#     Cast a wide net — any lib whose name suggests a detector / plugin
+#     package gets its dir added.
 ADDED=""
 for libfile in $(find /opt /usr/local -maxdepth 10 \
         \( -name "liblcgeo*.so*" \
            -o -name "libk4geo*.so*" \
+           -o -name "libk4*.so*" \
            -o -name "libDDDetectors*.so*" \
            -o -name "libMuColl*.so*" \
-           -o -name "libMu*Detector*.so*" \) \
+           -o -name "libMuon*.so*" \
+           -o -name "libMu*Detector*.so*" \
+           -o -name "libdet*.so*" \
+           -o -name "lib*Plugins*.so*" \
+           -o -name "lib*detector*.so*" \) \
         2>/dev/null); do
     d=$(dirname "$libfile")
     case ":$ADDED:" in
@@ -185,6 +192,37 @@ for libfile in $(find /opt /usr/local -maxdepth 10 \
             ;;
     esac
 done
+
+# Final: scan every .so found anywhere under /opt and check whether its
+# symbol table exports the still-missing plugin names; if so, add its
+# directory.  Slow (calls nm) but only runs as a fallback when faster
+# pattern matching has already added every obvious candidate above.
+maybe_add_dir_for() {
+    local needle="$1"
+    if [ -z "$needle" ]; then return; fi
+    for so in $(find /opt -name "*.so*" -type f 2>/dev/null); do
+        if nm -D --defined-only "$so" 2>/dev/null | grep -q "$needle"; then
+            local d
+            d=$(dirname "$so")
+            case ":$ADDED:" in
+                *":$d:"*) ;;
+                *)
+                    ADDED="$ADDED:$d"
+                    export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                    export DD4HEP_LIBRARY_PATH="$d${DD4HEP_LIBRARY_PATH:+:$DD4HEP_LIBRARY_PATH}"
+                    echo "    [plugin-search] $needle found in $so"
+                    ;;
+            esac
+            break
+        fi
+    done
+}
+# These are the two factory names MAIA needs that the obvious sweeps miss.
+maybe_add_dir_for VertexEndcap_o1_v07
+maybe_add_dir_for ZSegmentedPlanarTracker
+
+echo "    LD_LIBRARY_PATH:"
+echo "$LD_LIBRARY_PATH" | tr ":" "\n" | sed "s/^/        /"
 
 # 1) Honour DDGDML_INIT override on the host if it points at a real file.
 if [ -n "'"$INIT_OVERRIDE"'" ] && [ -f "'"$INIT_OVERRIDE"'" ]; then
