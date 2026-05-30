@@ -15,7 +15,7 @@
 #   -o, --out PATH       Output GDML path (default: same dir as input,
 #                        same basename with a .gdml extension).
 #       --image NAME     Docker image with DD4hep installed
-#                        (default: ghcr.io/aidasoft/dd4hep:latest).
+#                        (default: ghcr.io/muoncollidersoft/mucoll-sim-alma9:v2.9.7).
 #       --pull           docker pull the image before running.
 #       --shell          Drop into a bash shell inside the container with
 #                        the compact and output mounts in place — handy
@@ -25,7 +25,7 @@
 # Examples:
 #   scripts/compact_to_gdml.sh MAIA_compact/MAIA.xml
 #   scripts/compact_to_gdml.sh MAIA.xml -o /tmp/MAIA.gdml
-#   scripts/compact_to_gdml.sh MAIA.xml --image gitlab-registry.cern.ch/sft/docker/dd4hep:latest
+#   scripts/compact_to_gdml.sh MAIA.xml --image ghcr.io/aidasoft/dd4hep:latest
 #   scripts/compact_to_gdml.sh MAIA.xml --shell
 
 set -euo pipefail
@@ -38,7 +38,7 @@ usage() {
 # --- Defaults ---
 COMPACT=""
 OUT=""
-IMAGE="ghcr.io/aidasoft/dd4hep:latest"
+IMAGE="ghcr.io/muoncollidersoft/mucoll-sim-alma9:v2.9.7"
 DO_PULL=0
 DROP_SHELL=0
 
