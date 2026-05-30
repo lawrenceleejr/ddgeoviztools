@@ -142,10 +142,18 @@ INIT_BLOCK='
 set +e
 
 # 0) Muon Collider images expose a one-shot setup:
-#    - mucoll-sim-ubuntu24 (v2.11+):  source /opt/setup_mucoll.sh
+#    - mucoll-sim-ubuntu24 (v2.11+):  source setup_spack.sh, then
+#                                     source /opt/setup_mucoll.sh
 #    - mucoll-sim-alma9    (v2.9.x):  call the setup_mucoll function
-#    Try the source-based form first since it works for the current
-#    default image; fall through to the function form for older images.
+#    Spack first (so its view dirs land on PATH / LD_LIBRARY_PATH),
+#    then mucoll on top.  Source-based form for the current default
+#    image; function-call fallback for older images.
+for spack in /opt/setup_spack.sh /opt/spack/share/spack/setup-env.sh; do
+    if [ -f "$spack" ]; then
+        source "$spack"
+        break
+    fi
+done
 if [ -f /opt/setup_mucoll.sh ]; then
     source /opt/setup_mucoll.sh
 fi
