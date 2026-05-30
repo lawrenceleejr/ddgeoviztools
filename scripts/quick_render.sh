@@ -168,7 +168,7 @@ echo "    device     : $DEVICE"
 
 exec docker run --rm \
     --entrypoint blender \
-    "${GPU_FLAGS[@]}" \
+    ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} \
     "${MOUNTS[@]}" \
     "$IMAGE" \
     --background "/blend/$BLEND_NAME" \
@@ -178,4 +178,4 @@ exec docker run --rm \
     --samples "$SAMPLES" \
     --width "$WIDTH" --height "$HEIGHT" \
     --device "$DEVICE" \
-    "${NO_COMP_FLAG[@]}"
+    ${NO_COMP_FLAG[@]+"${NO_COMP_FLAG[@]}"}
