@@ -49,10 +49,12 @@ prefer — just `cd` there first). All paths inside the container start with
 If you only have the DD4hep compact description and not the flattened
 GDML, `scripts/compact_to_gdml.sh` runs DD4hep's `geoConverter` inside a
 Docker container — no local DD4hep / ROOT / Geant4 install needed. The
-default image is the Muon Collider simulation stack
-(`ghcr.io/muoncollidersoft/mucoll-sim-ubuntu24:v2.11-amd64`), which
-ships DD4hep + the MuC detector model pre-configured and is the
-canonical environment for MAIA / Muon Collider compacts.
+default image is the legacy Muon Collider simulation stack
+(`ghcr.io/muoncollidersoft/mucoll-sim-alma9:legacy-2.x`), which ships
+DD4hep + the MuC detector model pre-configured and provides the legacy
+`_o1_v0X` detector plugin variants MAIA's compact still references.
+The newer `mucoll-sim-ubuntu24:v2.11-amd64` image is faster but has
+ABI mismatches against MAIA's older plugin set.
 
 ```bash
 # Default output: alongside the compact, .xml → .gdml
@@ -75,7 +77,7 @@ canonical environment for MAIA / Muon Collider compacts.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-o`, `--out PATH` | `<compact>.gdml` | Output GDML path |
-| `--image NAME` | `ghcr.io/muoncollidersoft/mucoll-sim-ubuntu24:v2.11-amd64` | Docker image with DD4hep |
+| `--image NAME` | `ghcr.io/muoncollidersoft/mucoll-sim-alma9:legacy-2.x` | Docker image with DD4hep |
 | `--pull` | off | `docker pull` the image before running |
 | `--shell` | off | Drop into bash inside the container with the mounts in place |
 
