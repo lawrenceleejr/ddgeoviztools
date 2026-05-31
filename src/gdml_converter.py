@@ -242,9 +242,23 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
                         delattr(s, a)
                     except (AttributeError, TypeError):
                         pass
+            # Try to force a rebuild now that nslice is updated.  If
+            # pyg4ometry's mesher uses self.nslice this rebuilds the
+            # cached mesh at the new resolution; if it doesn't, no harm.
+            for method_name in ("pycsgmesh", "mesh", "_mesh_from_polygons",
+                                "_construct", "build_mesh"):
+                fn = getattr(s, method_name, None)
+                if callable(fn):
+                    try:
+                        fn()
+                        break
+                    except Exception:
+                        pass
             bumped_by[cls] += 1
             # Log the first bumped sample so we can confirm the
             # attribute actually stuck (and what the live value is).
+            # Also dump its full instance dict + class-level attrs so
+            # we can see what other tessellation knobs exist.
             if not sample_logged:
                 for a in SLICE_ATTRS:
                     if hasattr(s, a):
@@ -257,6 +271,22 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
                             break
                         except Exception:
                             pass
+                # Deep introspection: instance + class attrs whose names
+                # hint at tessellation knobs.  Surfaces what we need to
+                # set instead if self.nslice isn't enough.
+                try:
+                    inst_keys = sorted(k for k in vars(s).keys()
+                                       if not k.startswith("__"))
+                    cls_attrs = sorted(a for a in dir(type(s))
+                                       if any(t in a.lower() for t in
+                                              ("slice","slic","segment",
+                                               "side","sub","mesh","poly","tess")))
+                    print(f"  [TESSELLATION] sample vars: {inst_keys}",
+                          flush=True)
+                    print(f"  [TESSELLATION] sample class tessellation-ish "
+                          f"attrs: {cls_attrs}", flush=True)
+                except Exception:
+                    pass
 
     total = sum(bumped_by.values())
     all_types    = ", ".join(f"{k}={v}" for k, v in sorted(by_type.items()))
