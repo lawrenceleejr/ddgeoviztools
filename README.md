@@ -8,6 +8,9 @@ CLI tools for working with ddsim/DD4hep GDML detector geometries:
 4. **Blender-scene** — build a ready-to-use `.blend` file from the converted
    meshes, with physics-inspired materials, a phi-cutaway, and standard HEP
    camera views.
+5. **Web viewer** — an interactive, third-person 3D walkthrough of the detector
+   in the browser, with Cycles lighting baked in. See
+   [Web viewer](#web-viewer-interactive-3d-walkthrough).
 
 Everything runs inside a Docker container — no local Python environment or
 library installation required.
@@ -498,3 +501,67 @@ stacks.
 > to bake it into the mesh. You can also hide sub-detectors you are not
 > currently working with (H key in the viewport, or the eye icon in the
 > outliner).
+
+---
+
+## Web viewer (interactive 3D walkthrough)
+
+`web/` is a browser-based, third-person 3D walkthrough of the detector built with
+React Three Fiber (three.js) and Vite. It loads the committed sub-detector GLTFs,
+lights them with a studio HDRI in real time, and — for the "full Cycles render"
+look — displays **Cycles lighting baked into the geometry**.
+
+### Controls
+
+- **Click** the scene to capture the mouse (pointer lock); **Esc** releases it.
+- **WASD** move · **mouse** look · **Shift** run · **Space** jump.
+- **F** toggles free-fly / noclip (Space = up, C / Ctrl = down) so you can rise
+  above the multi-metre detector.
+- **Scroll** zooms; the side panel toggles per-sub-detector visibility.
+
+### Run locally
+
+```bash
+cd web
+npm install
+npm run dev          # http://localhost:5173/ddgeoviztools/
+```
+
+This uses the raw GLTFs with real-time studio lighting — no Blender required.
+
+### Bake the Cycles lighting (the beautiful path)
+
+The "looks like a render" lighting is produced headlessly by Blender Cycles and
+baked into the geometry, then shown unlit in the browser:
+
+```
+committed GLTF  ->  blender-scene (.blend)  ->  Cycles bake  ->  detector_baked.glb
+```
+
+```bash
+# from web/ (needs Docker; builds the ddgeoviztools image on first run)
+npm run bake         # -> web/public/baked/detector_baked.glb
+npm run dev          # the viewer now shows the baked lighting
+```
+
+Tune with `BAKE_RESOLUTION` (default 1024) and `BAKE_SAMPLES` (default 256), e.g.
+`BAKE_RESOLUTION=2048 BAKE_SAMPLES=512 npm run bake`.
+
+### Build / deploy
+
+`npm run build` produces a static site in `web/dist`. The
+[`web-deploy`](.github/workflows/web-deploy.yml) workflow runs the whole pipeline
+on every push — bake (cached on its inputs), then build — and deploys to GitHub
+Pages. **One-time setup:** repo **Settings → Pages → Source = "GitHub Actions"**
+(and, to deploy from a non-default branch, allow it under **Settings →
+Environments → github-pages**). The site serves at
+`https://<user>.github.io/ddgeoviztools/`.
+
+### How the bake reaches the browser
+
+`scripts/bake_lightmaps.py` applies modifiers, Smart-UV-unwraps each
+sub-detector, Cycles-bakes a COMBINED pass into a per-object texture, and rebuilds
+each material as an emission of that texture before exporting one self-contained
+`detector_baked.glb`. The web build sets a `__BAKED__` flag when
+`web/public/baked/manifest.json` is present; if it is absent (e.g. plain
+`npm run dev`), the viewer falls back to the raw GLTFs with real-time lighting.

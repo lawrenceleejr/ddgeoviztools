@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import { Loader, AdaptiveDpr, Grid } from '@react-three/drei'
 import * as THREE from 'three'
 import { Detector } from './scene/Detector'
+import { BakedDetector } from './scene/BakedDetector'
 import { SceneEnvironment } from './scene/Environment'
 import { Player } from './player/Player'
 import { Hud } from './ui/Hud'
@@ -31,7 +32,7 @@ export default function App() {
 
         <Suspense fallback={null}>
           <SceneEnvironment />
-          <Detector />
+          {__BAKED__ ? <BakedDetector /> : <Detector />}
         </Suspense>
 
         <Grid
