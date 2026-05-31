@@ -20,6 +20,10 @@ interface ViewerState {
   mode: MoveMode
   setMode: (m: MoveMode) => void
   toggleMode: () => void
+
+  /** True while pointer-lock mouse-look is active. */
+  lookEngaged: boolean
+  setLookEngaged: (v: boolean) => void
 }
 
 const initialVisibility: Record<string, boolean> = Object.fromEntries(
@@ -44,4 +48,7 @@ export const useViewer = create<ViewerState>((set) => ({
   mode: 'walk',
   setMode: (m) => set(() => ({ mode: m })),
   toggleMode: () => set((s) => ({ mode: s.mode === 'walk' ? 'fly' : 'walk' })),
+
+  lookEngaged: false,
+  setLookEngaged: (v) => set(() => ({ lookEngaged: v })),
 }))

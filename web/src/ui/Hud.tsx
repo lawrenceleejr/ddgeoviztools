@@ -7,6 +7,8 @@ export function Hud() {
   const visibility = useViewer((s) => s.visibility)
   const toggleVisibility = useViewer((s) => s.toggleVisibility)
   const setAllVisible = useViewer((s) => s.setAllVisible)
+  const mode = useViewer((s) => s.mode)
+  const toggleMode = useViewer((s) => s.toggleMode)
 
   return (
     <div className="hud">
@@ -42,9 +44,13 @@ export function Hud() {
       </div>
 
       <div className="hud-help">
-        <span><kbd>drag</kbd> orbit</span>
-        <span><kbd>scroll</kbd> zoom</span>
-        <span className="hud-help-note">third-person controls coming next</span>
+        <button className={`mode-chip mode-chip--${mode}`} onClick={toggleMode} title="toggle with F">
+          {mode === 'fly' ? '✈ FLY' : '🚶 WALK'}
+        </button>
+        <span><kbd>WASD</kbd>move</span>
+        <span><kbd>Shift</kbd>run</span>
+        <span><kbd>Space</kbd>{mode === 'fly' ? 'up' : 'jump'}</span>
+        <span><kbd>F</kbd>fly</span>
       </div>
     </div>
   )

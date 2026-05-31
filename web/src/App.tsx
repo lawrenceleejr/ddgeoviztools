@@ -1,19 +1,23 @@
 import { Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { OrbitControls, Loader, AdaptiveDpr } from '@react-three/drei'
+import { Loader, AdaptiveDpr, Grid } from '@react-three/drei'
 import * as THREE from 'three'
 import { Detector } from './scene/Detector'
 import { SceneEnvironment } from './scene/Environment'
+import { Player } from './player/Player'
 import { Hud } from './ui/Hud'
+import { useViewer } from './state/store'
 
 export default function App() {
+  const engaged = useViewer((s) => s.lookEngaged)
+
   return (
     <div className="app">
       <Canvas
         shadows
         dpr={[1, 2]}
         gl={{ antialias: true, powerPreference: 'high-performance' }}
-        camera={{ position: [14, 9, 14], fov: 55, near: 0.1, far: 5000 }}
+        camera={{ position: [0, 2, 22], fov: 60, near: 0.1, far: 5000 }}
         onCreated={({ gl }) => {
           // Filmic look to match the Blender scene's AgX view transform.
           gl.toneMapping = THREE.AgXToneMapping
@@ -23,26 +27,42 @@ export default function App() {
         }}
       >
         <color attach="background" args={['#0c0f15']} />
-        <fog attach="fog" args={['#0c0f15', 60, 220]} />
+        <fog attach="fog" args={['#0c0f15', 70, 260]} />
 
         <Suspense fallback={null}>
           <SceneEnvironment />
           <Detector />
         </Suspense>
 
-        {/* Placeholder navigation — replaced by the third-person controller next. */}
-        <OrbitControls
-          makeDefault
-          target={[0, 3, 0]}
-          minDistance={2}
-          maxDistance={120}
-          maxPolarAngle={Math.PI / 1.9}
-          enableDamping
+        <Grid
+          args={[600, 600]}
+          cellSize={1}
+          cellThickness={0.5}
+          cellColor="#1b2740"
+          sectionSize={10}
+          sectionThickness={1.1}
+          sectionColor="#2a4d80"
+          fadeDistance={140}
+          fadeStrength={1.5}
+          followCamera={false}
+          infiniteGrid
+          position={[0, 0, 0]}
         />
+
+        <Player />
         <AdaptiveDpr pixelated />
       </Canvas>
 
       <Loader />
+      {!engaged && (
+        <div className="lookhint">
+          <div className="lookhint-title">click to look around</div>
+          <div className="lookhint-keys">
+            <kbd>WASD</kbd> move · <kbd>Shift</kbd> run · <kbd>Space</kbd> jump ·{' '}
+            <kbd>F</kbd> fly · scroll zoom · <kbd>Esc</kbd> release
+          </div>
+        </div>
+      )}
       <Hud />
     </div>
   )

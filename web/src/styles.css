@@ -167,3 +167,51 @@ kbd {
   padding: 1px 6px;
   margin-right: 4px;
 }
+
+/* ---- mode chip ---- */
+.mode-chip {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: #04111f;
+  background: var(--accent);
+  border: none;
+  border-radius: 999px;
+  padding: 3px 11px;
+  cursor: pointer;
+}
+
+.mode-chip--fly {
+  background: #ffcf5a;
+}
+
+/* ---- click-to-look overlay ---- */
+.lookhint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+  text-align: center;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
+}
+
+.lookhint-title {
+  font-size: 17px;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  padding: 9px 20px;
+  background: rgba(14, 18, 26, 0.55);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+}
+
+.lookhint-keys {
+  font-size: 12px;
+  color: var(--text-dim);
+}
