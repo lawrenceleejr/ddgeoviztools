@@ -2601,7 +2601,7 @@ def _add_god_ray_spot(
 # World shader — dark space background + volumetric mist
 # ---------------------------------------------------------------------------
 
-def _setup_world(volume_density: float = 2.5e-6):
+def _setup_world(volume_density: float = 0.0):
     """
     Configure the world shader for realistic detector visualisation.
 
@@ -2698,6 +2698,11 @@ def _setup_world(volume_density: float = 2.5e-6):
     #   5e-5   : OD ≈ 0.5                         →  clearly visible god rays
     #   1e-4   : OD ≈ 1                           →  strong fog
     #   5e-4+  : OD >> 1                          →  heavy mist, can fog out the detector
+    if volume_density <= 0.0:
+        print("  [WORLD] Background only (volume scatter disabled — "
+              "matches reference scene)", flush=True)
+        return
+
     print(f"  [WORLD] Volume scatter density: {volume_density:.1e} per mm "
           f"(≈ {volume_density * 1000:.3f} per m)", flush=True)
 
@@ -3180,8 +3185,8 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
 
     for attr, val in (("max_bounces", 12),
                       ("diffuse_bounces", 4),
-                      ("glossy_bounces", 8),
-                      ("transmission_bounces", 8)):
+                      ("glossy_bounces", 4),
+                      ("transmission_bounces", 12)):
         try:
             setattr(scene.cycles, attr, val)
         except (AttributeError, TypeError):
@@ -3217,11 +3222,11 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
     except (AttributeError, TypeError):
         pass
 
-    # --- Caustics: the brushed nozzles + world volume make caustic moments
-    #     where a reflective/refractive caustic path adds real photoreal
-    #     detail.  Negligible cost at 256 samples + adaptive.
-    for attr, val in (("caustics_reflective", True),
-                      ("caustics_refractive", True)):
+    # --- Caustics OFF: matches the reference scene and avoids noise on the
+    #     dim caustic paths that would otherwise eat sample budget on every
+    #     reflective surface.  Re-enable if you specifically need them.
+    for attr, val in (("caustics_reflective", False),
+                      ("caustics_refractive", False)):
         try:
             setattr(scene.cycles, attr, val)
         except (AttributeError, TypeError):
@@ -3259,18 +3264,29 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
     except Exception as exc:
         print(f"  [RENDER] View-layer pass setup failed: {exc}", flush=True)
 
-    # Volume transport — applies to BOTH world-level volume (5.0+) and
-    # mesh-based volume sphere (4.x).  These are pure int / float properties
-    # that don't load any plugins, so they are safe to set on all versions.
+    # Volume transport — matches the reference scene's lighter touch
+    # (2 bounces, step_rate=1.0).  Step_rate=0.5 was producing oversampled
+    # volumetric god rays that we then had to cut anyway.
     try:
-        scene.cycles.volume_bounces    = 4
-        scene.cycles.volume_step_rate  = 0.5    # finer step → cleaner shafts
+        scene.cycles.volume_bounces    = 2
+        scene.cycles.volume_step_rate  = 1.0
         scene.cycles.volume_max_steps  = 1024
         print(f"  [RENDER] Volume transport: bounces={scene.cycles.volume_bounces}  "
               f"step_rate={scene.cycles.volume_step_rate}  "
               f"max_steps={scene.cycles.volume_max_steps}", flush=True)
     except (AttributeError, TypeError) as exc:
         print(f"  [RENDER] Volume transport unavailable: {exc}", flush=True)
+
+    # Cycles film_exposure — the reference scene's secret sauce.  +0.9 EV
+    # applied INSIDE Cycles' film stage (before tone-map), which pushes
+    # highlights into AgX's roll-off curve in a way that no view-settings
+    # exposure tweak can replicate.  This is the single biggest reason
+    # the reference image reads as warm and luxe instead of dim and flat.
+    try:
+        scene.cycles.film_exposure = 0.9
+        print("  [RENDER] Cycles film_exposure: 0.9", flush=True)
+    except (AttributeError, TypeError):
+        pass
 
     # Colour management — cinematic tone mapping.
     # Blender 4.x uses "Filmic"; Blender 5.0+ replaced it with "AgX".
@@ -3289,26 +3305,22 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
         print("  [RENDER] WARNING: Could not set view transform (Filmic/AgX)",
               flush=True)
 
-    # Exposure: -2 EV.  Combined with the now-reduced light power and the
-    # manual bright-pass bloom in the compositor, this lands the highlights
-    # bright enough to show real specular drama while keeping the AgX
-    # tone-map comfortably inside its linear range.
+    # View-settings exposure: 0.  Brightness is now driven by cycles.
+    # film_exposure (+0.9 EV above) which the reference scene uses; doubling
+    # up with view_settings exposure produces over-bright results.
     try:
-        scene.view_settings.exposure = -2.0
+        scene.view_settings.exposure = 0.0
     except Exception:
         pass
 
-    # Contrast look — try AgX-style names first, then Filmic.
-    # "Medium High Contrast" gives slightly punchier shadows than "Medium",
-    # which suits the high key-to-fill ratio of the new lighting rig.
-    for look in ("Medium High Contrast", "AgX - Medium High Contrast",
-                 "Medium Contrast", "Base Contrast"):
-        try:
-            scene.view_settings.look = look
-            print(f"  [RENDER] Look: {look}", flush=True)
-            break
-        except (TypeError, Exception):
-            continue
+    # Look: None.  The reference scene uses AgX with no contrast look
+    # applied — the contrast comes from the lighting ratio + film_exposure.
+    # Adding "Medium High Contrast" on top was crushing midtones.
+    try:
+        scene.view_settings.look = "None"
+        print("  [RENDER] Look: None (AgX baseline)", flush=True)
+    except (TypeError, Exception):
+        pass
 
     # Freestyle — draw edge lines on every visible mesh edge so that
     # adjacent coplanar faces remain distinguishable and the cutaway
@@ -3351,29 +3363,46 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
         print("  [INFO] Freestyle skipped (Blender 5.0+ removed linestyle support).",
               flush=True)
 
-    # --- Compositor: Hollywood post chain (bloom, fog glow, emission
-    #     streaks, lens distortion, teal/orange grade, vignette).  Built
-    #     by _build_compositor_graph so the wiring rules (terminate at
-    #     Composite, every link complete) stay in one place.
-    ctree = _get_compositor_tree(scene)
-    if ctree is None:
-        print("  [WARN] Could not access compositor node tree; skipping post chain.",
-              flush=True)
-        return
-    try:
-        _build_compositor_graph(scene, ctree)
-        print("  [RENDER] Compositor: post chain built", flush=True)
-    except Exception as exc:
-        # If anything goes sideways, fall back to a minimal graph that
-        # still terminates at Composite — never leave a half-wired tree
-        # in the saved file (that's the documented save_as_mainfile crash
-        # mode on Blender 5.0+).
-        print(f"  [RENDER] Post chain build failed ({exc}); using minimal graph.",
-              flush=True)
-        ctree.nodes.clear()
-        rl = ctree.nodes.new("CompositorNodeRLayers")
-        rl.location = (-200, 0)
-        _add_compositor_output(ctree, rl.outputs["Image"])
+    # --- Compositor: OFF by default.  Inspection of the reference scene
+    #     showed its compositor is empty (just RLayers → output); all the
+    #     visual richness comes from Cycles + AgX + film_exposure, not
+    #     from post-processing.  Our previous bloom/glare/grade chain
+    #     was actually competing with AgX and producing washed-out
+    #     midtones.  Re-enable for diagnostics or experimentation via
+    #     DDGEOVIZTOOLS_COMPOSITOR=1.
+    if os.environ.get("DDGEOVIZTOOLS_COMPOSITOR", "0") != "0":
+        ctree = _get_compositor_tree(scene)
+        if ctree is None:
+            print("  [WARN] Could not access compositor node tree; skipping.",
+                  flush=True)
+            return
+        try:
+            _build_compositor_graph(scene, ctree)
+            print("  [RENDER] Compositor: post chain built (env var enabled)",
+                  flush=True)
+        except Exception as exc:
+            print(f"  [RENDER] Post chain build failed ({exc}); minimal graph.",
+                  flush=True)
+            ctree.nodes.clear()
+            rl = ctree.nodes.new("CompositorNodeRLayers")
+            rl.location = (-200, 0)
+            _add_compositor_output(ctree, rl.outputs["Image"])
+    else:
+        # Build a trivial compositor graph (RLayers → output) so the .blend
+        # has a valid tree on save without any post-processing applied.
+        ctree = _get_compositor_tree(scene)
+        if ctree is not None:
+            try:
+                ctree.nodes.clear()
+                rl = ctree.nodes.new("CompositorNodeRLayers")
+                rl.location = (-200, 0)
+                _add_compositor_output(ctree, rl.outputs["Image"])
+                print("  [RENDER] Compositor: pass-through "
+                      "(DDGEOVIZTOOLS_COMPOSITOR=1 to add post chain)",
+                      flush=True)
+            except Exception as exc:
+                print(f"  [RENDER] Pass-through compositor failed ({exc})",
+                      flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -3382,8 +3411,9 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
 
 def _make_camera(name: str, location: tuple, target: tuple,
                  ortho: bool = True, ortho_scale: float = 10000.0,
-                 dof_fstop: float = 0.5,
-                 focal_length: float = 50.0):
+                 dof_fstop: float = 1.2,
+                 focal_length: float = 15.0,
+                 aperture_blades: int = 5):
     """
     Create a camera with depth of field enabled (strong bokeh by default).
 
@@ -3430,9 +3460,11 @@ def _make_camera(name: str, location: tuple, target: tuple,
         cam_data.dof.use_dof          = True
         cam_data.dof.aperture_fstop   = float(dof_fstop)
         cam_data.dof.focus_distance   = max(1.0, focus_distance)
-        # Round aperture blades produce circular bokeh.  6 blades gives a
-        # subtly hexagonal "cinematic" highlight; 0 = perfect circle.
-        cam_data.dof.aperture_blades  = 6
+        # 5 aperture blades — pentagonal bokeh, matching the reference scene.
+        # The pentagon reads as a softer cinematic shape than the hexagon
+        # you'd get from a 6-blade aperture, and it's the canonical "anamorphic
+        # prime" look.
+        cam_data.dof.aperture_blades  = aperture_blades
         cam_data.dof.aperture_rotation = 0.0
         cam_data.dof.aperture_ratio   = 1.0
         print(f"  [CAMERA] {name}: DOF f/{dof_fstop:.1f}  "
@@ -3643,7 +3675,7 @@ def create_blender_scene(
     bevel_width_mm:  float = 0.2,
     no_bevel:        bool  = False,
     no_env_sphere:   bool  = False,
-    volume_density:  float = 2.5e-6,
+    volume_density:  float = 0.0,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
@@ -4033,25 +4065,23 @@ def create_blender_scene(
     # detector scale, which is the whole point of normalize=False with
     # proportional sizing.
     #
-    # Targets — chosen for "well-lit studio at 0 EV with AgX tone mapping":
-    #     Key      ~50 W/m² at subject   → density ≈ E / 0.10 ≈ 500 W/m²
-    #     Fill     ~6  W/m² (1:8 to key) →               ≈ 60  W/m²
-    #     Rim      ~45 W/m² (small/hot)  →               ≈ 3000 W/m²
-    #     Kicker   ~30 W/m² (under-lift) →               ≈ 300 W/m²
-    #
-    # These are ~8–10× lower than the previous calibration.  Sum of
-    # contributions from all four lights at the detector centre is
-    # roughly 130 W/m², which sits well inside Filmic/AgX's linear
-    # range without clipping.
-    # Previously calibrated values were dialled down ~0.6× across the
-    # board after the volumetric medium was added: the world Volume
-    # Scatter adds an apparent brightness boost (scattered light reaches
-    # the camera even in shadow regions), so the surface lighting needs
-    # less direct contribution to land at the same final intensity.
-    KEY_W_PER_M2     =   37.0
-    FILL_W_PER_M2    =   10.0
-    RIM_W_PER_M2     =  400.0
-    KICKER_W_PER_M2  =   45.0
+    # Targets — chosen to match the reference Muon Collider scene, which
+    # bathes everything in a strong amber sodium-lamp light at ~2200 K.
+    # All four lights use the SAME warm colour so the scene reads as a
+    # single coherent "tungsten golden hour" environment rather than the
+    # earlier multi-temperature studio rig.  The Fill is intentionally
+    # not cool — the reference rig is all-warm.  cycles.film_exposure=0.9
+    # bumps the rendered image into AgX's roll-off, so densities here
+    # are higher than they would be at 0 EV.
+    KEY_W_PER_M2     =  1000.0
+    FILL_W_PER_M2    =   250.0
+    RIM_W_PER_M2     =  2000.0
+    KICKER_W_PER_M2  =   500.0
+
+    # Sodium-amber warm temperature shared across the entire rig.
+    # 2200 K corresponds roughly to RGB (0.88, 0.46, 0.10) — the
+    # reference scene's exact light colour.
+    WARM_KELVIN = 2200.0
 
     # --- Point-light intensities (W/sr) — scale with r² for falloff ---
     # Irradiance at distance d (metres) from a point of intensity I is
@@ -4062,57 +4092,54 @@ def create_blender_scene(
     SPOT_W_PER_SR_FACTOR     = 12.0e-6   # decoupled — god-ray beam (visible drama)
     point_base = r * r                   # r in mm
 
-    # Key light — warm tungsten/golden-hour at 3200 K, raked from above the
-    # camera, slightly to the +X side.  Positioned relative to the detector
-    # centre so asymmetric geometry stays correctly lit.
+    # Key light — sodium-amber at 2200 K (matching the reference scene
+    # exactly), raked from above the camera, slightly to the +X side.
     key_obj = _area_light_with_temperature(
-        "Light_Key_Golden",
+        "Light_Key_Amber",
         location=(centre[0] + r * 0.50,
                   centre[1] + r * 1.10,
                   centre[2] + r * 0.95),
         target=centre,
         size=r * 0.55,
         energy=KEY_W_PER_M2,
-        temp_kelvin=3200.0,
+        temp_kelvin=WARM_KELVIN,
     )
 
-    # Fill light — cool overcast skylight on the opposite side from the key.
-    # 1:8 ratio with key for chiaroscuro emphasis on form.
+    # Fill light — same warm colour as key (the reference rig is all-warm).
+    # Larger area for softer shadows on the camera-opposite side.
     fill_obj = _area_light_with_temperature(
-        "Light_Fill_Sky",
+        "Light_Fill_Amber",
         location=(centre[0] - r * 0.55,
                   centre[1] + r * 0.65,
                   centre[2] - r * 1.05),
         target=centre,
         size=r * 0.85,
         energy=FILL_W_PER_M2,
-        temp_kelvin=6500.0,
+        temp_kelvin=WARM_KELVIN,
     )
 
-    # Rim — small + hot backlight behind the detector, picks out the silhouette
-    # against the gradient sky background.
+    # Rim — small + hot backlight behind the detector, picks out the silhouette.
     rim_obj = _area_light_with_temperature(
-        "Light_Rim_Warm",
+        "Light_Rim_Amber",
         location=(centre[0] - r * 1.30,
                   centre[1] + r * 0.40,
                   centre[2] + r * 0.30),
         target=centre,
         size=r * 0.30,
         energy=RIM_W_PER_M2,
-        temp_kelvin=4200.0,
+        temp_kelvin=WARM_KELVIN,
     )
 
-    # Kicker — placed below + behind to lift under-side reflections out of
-    # full shadow.  Neutral 5000 K so it reads as ambient bounce.
+    # Kicker — below + behind for under-lift.  Same warm hue.
     kicker_obj = _area_light_with_temperature(
-        "Light_Kicker",
+        "Light_Kicker_Amber",
         location=(centre[0] + r * 0.20,
                   centre[1] - r * 0.90,
                   centre[2] + r * 0.40),
         target=centre,
         size=r * 0.50,
         energy=KICKER_W_PER_M2,
-        temp_kelvin=5000.0,
+        temp_kelvin=WARM_KELVIN,
     )
 
     # Interior fill — point light placed inside the phi-cut opening so it
@@ -4128,7 +4155,7 @@ def create_blender_scene(
         energy=interior_energy,
         color_rgb=(1.0, 0.97, 0.92),
         soft_size=r * 0.50,
-        temp_kelvin=3800.0,
+        temp_kelvin=WARM_KELVIN,
     )
 
     # Emissive accent at the interaction point — a tiny self-illuminated
@@ -4155,8 +4182,26 @@ def create_blender_scene(
         soft_size=r * 0.30,
     )
 
+    # Sun light — warm directional source for tasteful cast shadows and
+    # the subtle "sunlight through a high window" feel that helps the
+    # reference scene read as a real photographed environment rather than
+    # studio-lit CG.  Energy 1.0 (Blender's standard Sun is in W/m² of
+    # parallel irradiance), colour matching the reference Sun.
+    sun_data = bpy.data.lights.new("Light_Sun_Amber", type="SUN")
+    sun_data.energy = 1.0
+    sun_data.color  = (0.8798, 0.7270, 0.5557)
+    sun_obj = bpy.data.objects.new("Light_Sun_Amber", sun_data)
+    bpy.data.scenes[0].collection.objects.link(sun_obj)
+    sun_obj.location = (centre[0] - r * 0.8, centre[1] - r * 0.7, centre[2] + r * 1.0)
+    # Rotate so the sun's rays come from above-left at a low angle —
+    # matches the reference scene's directional cast.
+    sun_obj.rotation_euler = (math.radians(-30.0),
+                              math.radians(-15.0),
+                              math.radians(35.0))
+
     # Move all lights into the Lights collection
-    for light_obj in (key_obj, fill_obj, rim_obj, kicker_obj, interior_obj, ip_obj):
+    for light_obj in (key_obj, fill_obj, rim_obj, kicker_obj,
+                      interior_obj, ip_obj, sun_obj):
         if light_obj is not None:
             _link_to_collection(light_obj, col_lights)
 
