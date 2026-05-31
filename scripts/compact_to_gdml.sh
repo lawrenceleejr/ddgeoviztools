@@ -163,9 +163,9 @@ for cmd in setup_mucoll key4hep_nightly key4hep_release; do
     fi
 done
 
-# 0b) Diagnostic: dump the key library-path env vars that DD4hep's plugin
-#     loader consults.  If geoConverter later fails with "bad any_cast" /
-#     "No factory" this dump shows exactly what was reachable.
+# 0b) Diagnostic: dump the key library-path env vars that the DD4hep
+#     plugin loader consults.  If geoConverter later fails with "bad
+#     any_cast" / "No factory" this dump shows what was reachable.
 echo "    LD_LIBRARY_PATH:"
 echo "${LD_LIBRARY_PATH:-}" | tr ":" "\n" | sed "s/^/        /"
 echo "    DD4HEP_LIBRARY_PATH:"
