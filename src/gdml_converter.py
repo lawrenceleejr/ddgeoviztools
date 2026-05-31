@@ -272,15 +272,44 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
             # Try to force a rebuild now that nslice is updated.  If
             # pyg4ometry's mesher uses self.nslice this rebuilds the
             # cached mesh at the new resolution; if it doesn't, no harm.
+            rebuilt_mesh = None
+            rebuilt_method = None
             for method_name in ("pycsgmesh", "mesh", "_mesh_from_polygons",
                                 "_construct", "build_mesh"):
                 fn = getattr(s, method_name, None)
                 if callable(fn):
                     try:
-                        fn()
+                        rebuilt_mesh = fn()
+                        rebuilt_method = method_name
+                        # Cache the rebuilt mesh on the solid under
+                        # common cache attr names — if addLogicalVolume
+                        # reads from a cache, we want it to see our
+                        # post-bump version.
+                        if rebuilt_mesh is not None:
+                            for cache_a in MESH_CACHE_ATTRS:
+                                try:
+                                    setattr(s, cache_a, rebuilt_mesh)
+                                except Exception:
+                                    pass
                         break
                     except Exception:
                         pass
+
+            # Log the rebuilt mesh size on the first sample — proves
+            # whether mesh() actually honours self.nslice or not.
+            if not sample_logged and rebuilt_mesh is not None:
+                try:
+                    polys = getattr(rebuilt_mesh, "polygons", None)
+                    n_polys = len(polys) if polys is not None else "?"
+                    n_verts = getattr(rebuilt_mesh, "nvertices",
+                                      lambda: "?")() if hasattr(
+                                          rebuilt_mesh, "nvertices") else "?"
+                    print(f"  [TESSELLATION] sample via .{rebuilt_method}(): "
+                          f"{n_polys} polygons, expected ~{4 * nslice}",
+                          flush=True)
+                except Exception as exc:
+                    print(f"  [TESSELLATION] sample mesh inspect failed: {exc}",
+                          flush=True)
             bumped_by[cls] += 1
             # Log the first bumped sample so we can confirm the
             # attribute actually stuck (and what the live value is).
@@ -302,9 +331,13 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
                 # hint at tessellation knobs.  Surfaces what we need to
                 # set instead if self.nslice isn't enough.
                 try:
+                    cls_t = type(s)
+                    print(f"  [TESSELLATION] sample class: "
+                          f"{cls_t.__module__}.{cls_t.__name__}",
+                          flush=True)
                     inst_keys = sorted(k for k in vars(s).keys()
                                        if not k.startswith("__"))
-                    cls_attrs = sorted(a for a in dir(type(s))
+                    cls_attrs = sorted(a for a in dir(cls_t)
                                        if any(t in a.lower() for t in
                                               ("slice","slic","segment",
                                                "side","sub","mesh","poly","tess")))
