@@ -12,11 +12,17 @@
 #
 # Options:
 #   -o, --out DIR        Output directory for PNGs (default: <blend-dir>/renders/).
-#       --samples N      Cycles samples (default: 32).
-#       --width  W       Render width  in pixels (default: 1280).
-#       --height H       Render height in pixels (default: 720).
+#       --samples N      Cycles samples (default: 32, or 256 with --hq).
+#       --width  W       Render width  in pixels (default: 1280, or 1920 with --hq).
+#       --height H       Render height in pixels (default: 720,  or 1080 with --hq).
 #       --device CPU|GPU Cycles device (default: CPU; GPU needs the NVIDIA
 #                        Container Toolkit and adds --gpus all).
+#       --hq             High-quality preset: 256 samples at 1920x1080.
+#                        Equivalent to --samples 256 --width 1920 --height 1080.
+#                        Explicit --samples / --width / --height flags still win.
+#       --4k             4K hero preset: 512 samples at 3840x2160.  Slow on CPU
+#                        (typically several minutes per camera); pair with
+#                        --device GPU when you can.
 #       --no-compositor  Bypass the scene's compositor (raw Cycles output).
 #                        Useful for diagnosing whether the post chain is
 #                        blowing out the image vs. the underlying scene.
@@ -26,7 +32,9 @@
 #
 # Examples:
 #   scripts/quick_render.sh /tmp/scene.blend
-#   scripts/quick_render.sh scene.blend --samples 64 --width 1920 --height 1080
+#   scripts/quick_render.sh scene.blend --hq
+#   scripts/quick_render.sh scene.blend --4k --device GPU
+#   scripts/quick_render.sh scene.blend --hq --width 3840 --height 2160
 #   scripts/quick_render.sh scene.blend --no-compositor -o /tmp/raw_check
 
 set -euo pipefail
@@ -51,15 +59,26 @@ IMAGE="ddgeoviztools"
 DO_BUILD=1
 BLEND=""
 
+# Quality preset: 0=preview, 1=hq, 2=4k.  Selected by --hq / --4k.  After
+# arg parsing we apply the preset's defaults to any setting the user
+# didn't explicitly override (so e.g. `--hq --width 3840` keeps the user
+# width but takes the HQ sample count).
+QUALITY_PRESET=0
+SAMPLES_EXPLICIT=0
+WIDTH_EXPLICIT=0
+HEIGHT_EXPLICIT=0
+
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)        usage 0 ;;
         -o|--out)         OUT="$2"; shift 2 ;;
-        --samples)        SAMPLES="$2"; shift 2 ;;
-        --width)          WIDTH="$2"; shift 2 ;;
-        --height)         HEIGHT="$2"; shift 2 ;;
+        --samples)        SAMPLES="$2"; SAMPLES_EXPLICIT=1; shift 2 ;;
+        --width)          WIDTH="$2"; WIDTH_EXPLICIT=1; shift 2 ;;
+        --height)         HEIGHT="$2"; HEIGHT_EXPLICIT=1; shift 2 ;;
         --device)         DEVICE="$2"; shift 2 ;;
+        --hq)             QUALITY_PRESET=1; shift ;;
+        --4k)             QUALITY_PRESET=2; shift ;;
         --no-compositor)  NO_COMP=1; shift ;;
         --image)          IMAGE="$2"; shift 2 ;;
         --no-build)       DO_BUILD=0; shift ;;
@@ -76,6 +95,25 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# --- Apply quality preset (after parsing, so explicit flags still win) ---
+case "$QUALITY_PRESET" in
+    1)  # --hq
+        [[ "$SAMPLES_EXPLICIT" == 0 ]] && SAMPLES=256
+        [[ "$WIDTH_EXPLICIT"   == 0 ]] && WIDTH=1920
+        [[ "$HEIGHT_EXPLICIT"  == 0 ]] && HEIGHT=1080
+        QUALITY_LABEL="HQ"
+        ;;
+    2)  # --4k
+        [[ "$SAMPLES_EXPLICIT" == 0 ]] && SAMPLES=512
+        [[ "$WIDTH_EXPLICIT"   == 0 ]] && WIDTH=3840
+        [[ "$HEIGHT_EXPLICIT"  == 0 ]] && HEIGHT=2160
+        QUALITY_LABEL="4K"
+        ;;
+    *)
+        QUALITY_LABEL="preview"
+        ;;
+esac
 
 if [[ -z "$BLEND" ]]; then
     echo "error: missing .blend path" >&2
@@ -161,6 +199,7 @@ MOUNTS=(
 echo "==> Rendering stationary cameras in $BLEND_HOST"
 echo "    image      : $IMAGE"
 echo "    out dir    : $OUT_HOST"
+echo "    quality    : $QUALITY_LABEL"
 echo "    samples    : $SAMPLES"
 echo "    resolution : ${WIDTH}x${HEIGHT}"
 echo "    device     : $DEVICE"
