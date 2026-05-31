@@ -234,8 +234,12 @@ echo "    geoConverter at: $(command -v geoConverter)"
 # to exec /bin/bash as a script.
 exec docker run --rm \
     --entrypoint /bin/bash \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
     "${MOUNTS[@]}" \
     -w /compact \
     "$IMAGE" \
     -lc "$INIT_BLOCK
-geoConverter -compact2gdml -input /compact/$COMPACT_NAME -output /out/$OUT_NAME"
+geoConverter -compact2gdml -input /compact/$COMPACT_NAME -output /out/$OUT_NAME
+echo '--- /out contents after conversion ---'
+ls -la /out"
