@@ -141,6 +141,11 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
     numSide changes the *geometry* (a 128-sided polyhedron is a
     different solid than a 16-sided one), but for visualisation the
     closer-to-cylinder shape is what we want.
+
+    Also (a) sets pyg4ometry's global SolidDefaults so any solids
+    created after this point also pick up the higher resolution, and
+    (b) invalidates any cached mesh on already-created solids so the
+    next mesh call rebuilds at the new resolution.
     """
     import os as _os
     from collections import Counter
@@ -151,14 +156,46 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
             nslice = _DEFAULT_NSLICE
     nstack = max(16, nslice // 4)
 
+    # --- Set pyg4ometry's global tessellation defaults (best-effort).
+    # Different pyg4ometry versions expose this under different paths;
+    # we try each and silently skip if not present.
+    try:
+        import pyg4ometry as _pg4
+        for path in ("config.SolidDefaults", "geant4.solid._config"):
+            obj = _pg4
+            for piece in path.split("."):
+                obj = getattr(obj, piece, None)
+                if obj is None:
+                    break
+            if obj is None:
+                continue
+            for solid_name in ("Tubs", "Tube", "Cons", "Cone", "Polycone",
+                               "Polyhedra", "Sphere", "Orb", "Torus",
+                               "EllipticalTube"):
+                inner = getattr(obj, solid_name, None)
+                if inner is None:
+                    continue
+                for attr, val in (("nslice", nslice), ("nstack", nstack)):
+                    try:
+                        setattr(inner, attr, val)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     # Attribute names pyg4ometry uses across different solid types.
     SLICE_ATTRS = ("nslice", "nSlice")
     STACK_ATTRS = ("nstack", "nStack")
     SIDE_ATTRS  = ("numSide", "nside", "nSide", "pNumSide")
+    # Cached mesh attribute names; clearing forces the next mesh call to
+    # rebuild at the post-bump resolution.
+    MESH_CACHE_ATTRS = ("_mesh", "_csgmesh", "_pycsgmesh", "mesh_cache",
+                        "_mesh_built")
 
     by_type    = Counter()
     bumped_by  = Counter()
 
+    sample_logged = False
     for s in reg.solidDict.values():
         cls = type(s).__name__
         by_type[cls] += 1
@@ -195,19 +232,38 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
                         break
                     except Exception:
                         pass
+
+        # Invalidate any cached mesh so the next pycsgmesh() call sees
+        # the new resolution instead of returning the pre-bump mesh.
         if touched:
+            for a in MESH_CACHE_ATTRS:
+                if hasattr(s, a):
+                    try:
+                        delattr(s, a)
+                    except (AttributeError, TypeError):
+                        pass
             bumped_by[cls] += 1
+            # Log the first bumped sample so we can confirm the
+            # attribute actually stuck (and what the live value is).
+            if not sample_logged:
+                for a in SLICE_ATTRS:
+                    if hasattr(s, a):
+                        try:
+                            live = getattr(s, a)
+                            name = getattr(s, "name", "?")
+                            print(f"  [TESSELLATION] verify: {cls} "
+                                  f"'{name}'.{a} = {live}", flush=True)
+                            sample_logged = True
+                            break
+                        except Exception:
+                            pass
 
     total = sum(bumped_by.values())
-    if total:
-        per_type = ", ".join(f"{k}={v}" for k, v in sorted(bumped_by.items()))
-        print(f"  [TESSELLATION] nslice={nslice} nstack={nstack} "
-              f"applied to {total}/{sum(by_type.values())} solid(s) "
-              f"[{per_type}]", flush=True)
-    else:
-        types_seen = ", ".join(f"{k}={v}" for k, v in sorted(by_type.items()))
-        print(f"  [TESSELLATION] no curved solids in registry "
-              f"(types seen: {types_seen})", flush=True)
+    all_types    = ", ".join(f"{k}={v}" for k, v in sorted(by_type.items()))
+    bumped_types = ", ".join(f"{k}={v}" for k, v in sorted(bumped_by.items())) or "none"
+    print(f"  [TESSELLATION] registry: [{all_types}]", flush=True)
+    print(f"  [TESSELLATION] bumped {total}/{sum(by_type.values())} "
+          f"nslice={nslice} nstack={nstack} [{bumped_types}]", flush=True)
     return total
 
 _TRACKER_RESPLIT_KEYS = (
