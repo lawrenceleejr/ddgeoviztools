@@ -531,12 +531,13 @@ This uses the raw GLTFs with real-time studio lighting — no Blender required.
 
 ### Lighting
 
-The metal reads through **real-time image-based lighting** (an HDRI-style
-environment + AgX tone-mapping + bloom + soft shadows) — the correct way to render
-metal, whose look is view-dependent and *cannot* be baked. On top of that, Blender
-**Cycles bakes the soft, ray-traced ambient occlusion** into the geometry (vertex
-colours / glTF `COLOR_0`), which is view-independent and adds the soft
-contact-shadow feel. The AO bake is headless and lives in the deploy pipeline:
+The viewer uses a soft matte **"clay" look**: each sub-detector gets a distinct
+soft colour under even, soft image-based lighting (Khronos PBR Neutral
+tone-mapping + bloom + soft shadows), multiplied by **Cycles-baked ambient
+occlusion** for the soft, ray-traced contact shadows. (Full metallic lighting
+*can't* be baked — it's view-dependent and bakes to near-black — so AO, which is
+view-independent, is the part that bakes cleanly.) The AO bake is headless and
+lives in the deploy pipeline:
 
 ```
 committed GLTF  ->  blender-scene (.blend)  ->  Cycles AO bake  ->  detector_baked.glb

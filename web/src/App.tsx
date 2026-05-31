@@ -57,8 +57,9 @@ export default function App() {
         <Player />
 
         <EffectComposer multisampling={0} enableNormalPass={false}>
-          <Bloom mipmapBlur luminanceThreshold={1.0} luminanceSmoothing={0.3} intensity={0.7} />
-          <ToneMapping mode={ToneMappingMode.AGX} />
+          <Bloom mipmapBlur luminanceThreshold={1.05} luminanceSmoothing={0.3} intensity={0.4} />
+          {/* Khronos PBR Neutral preserves the distinct clay colours (AgX desaturates them). */}
+          <ToneMapping mode={ToneMappingMode.NEUTRAL} />
           <SMAA />
           <Vignette offset={0.25} darkness={0.55} eskil={false} />
         </EffectComposer>

@@ -8,26 +8,21 @@ import { useViewer } from '../state/store'
 // Preload every sub-detector so the whole assembly pops in together.
 MANIFEST.forEach((m) => useGLTF.preload(modelUrl(m.file)))
 
-function cloneMaterial(m: THREE.Material, envMapIntensity: number): THREE.Material {
-  const c = m.clone() as THREE.MeshStandardMaterial
-  if ('envMapIntensity' in c) c.envMapIntensity = envMapIntensity
-  c.needsUpdate = true
-  return c
-}
-
 function prepare(root: THREE.Object3D, part: SubDetector) {
+  // Soft matte "clay" material per sub-detector (no bake here — the raw dev path).
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(part.clay),
+    metalness: 0.0,
+    roughness: 0.9,
+    envMapIntensity: 0.35,
+  })
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh
     if (!mesh.isMesh) return
     mesh.castShadow = true
     mesh.receiveShadow = true
     mesh.userData.subdetector = part.name
-    // Clone materials so per-part tweaks don't leak into the shared useGLTF cache.
-    if (Array.isArray(mesh.material)) {
-      mesh.material = mesh.material.map((m) => cloneMaterial(m, part.envMapIntensity))
-    } else if (mesh.material) {
-      mesh.material = cloneMaterial(mesh.material, part.envMapIntensity)
-    }
+    mesh.material = mat
   })
 }
 

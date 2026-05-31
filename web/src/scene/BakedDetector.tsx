@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
-import { MANIFEST } from './manifest'
+import { MANIFEST, clayFor } from './manifest'
 import { fitToGround, signalReady } from './fit'
 import { useViewer } from '../state/store'
 
@@ -35,14 +35,17 @@ export function BakedDetector() {
       if (!mesh.isMesh) return
       mesh.castShadow = true
       mesh.receiveShadow = true
-      mesh.userData.subdetector = matchSubdetector(mesh.name) ?? matchSubdetector(mesh.parent?.name ?? '')
-      // The GLB carries the palette PBR materials + baked AO (COLOR_0, auto-multiplied
-      // by three.js). Boost env reflections so the metal reads under the HDRI.
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-      for (const m of mats) {
-        const std = m as THREE.MeshStandardMaterial
-        if ('envMapIntensity' in std) std.envMapIntensity = 1.25
-      }
+      const sd = matchSubdetector(mesh.name) ?? matchSubdetector(mesh.parent?.name ?? '')
+      mesh.userData.subdetector = sd
+      // Soft matte clay colour multiplied by the baked Cycles AO carried in the
+      // GLB's COLOR_0 (vertexColors). This is the fully-baked soft-occlusion look.
+      mesh.material = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(clayFor(sd)),
+        metalness: 0.0,
+        roughness: 0.9,
+        vertexColors: true,
+        envMapIntensity: 0.35,
+      })
     })
     return clone
   }, [scene])
