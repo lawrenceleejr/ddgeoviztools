@@ -104,9 +104,15 @@ if [[ "$DO_PULL" == 1 ]]; then
 fi
 
 # --- Run ---
+#   /compact (ro)  the directory containing the compact XML (+ XIncludes)
+#   /out           writable output dir for the produced GDML
+# The ``:Z`` suffix tells Docker to relabel the bind mount for SELinux —
+# essential on RHEL/CentOS/Alma 9, no-op elsewhere.  Without it the
+# container appears to write the GDML successfully but the bytes go to
+# its overlay layer and never reach the host directory.
 MOUNTS=(
-    -v "$COMPACT_DIR:/compact:ro"
-    -v "$OUT_DIR:/out"
+    -v "$COMPACT_DIR:/compact:ro,Z"
+    -v "$OUT_DIR:/out:Z"
 )
 
 if [[ "$DROP_SHELL" == 1 ]]; then
