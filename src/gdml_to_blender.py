@@ -3620,35 +3620,28 @@ def _make_hero_camera(centre, r,
 
     # Final animated pose lands 10 frames before the end so the last 10
     # frames are a held shot of the vertex / IP region.  User-specified
-    # constraint: final camera Z (along the beam axis) = 400 mm in
-    # world coords.  At yaw=70°, pitch=12° the spherical formula gives
-    # Z_offset = dist · cos(pitch) · sin(yaw), so we solve for dist to
-    # land on the requested Z and keep the same approach angle.
+    # final world position: (200, 200, 400) mm.  Focus distance is the
+    # straight-line distance from that point to the detector centre so
+    # the IP stays in focus on the close-up.
     final_frame = max(frame_start + 1, frame_end - 10)
-    final_yaw, final_pitch = 70.0, 12.0
-    _final_target_z_world = 400.0
-    _y_rad = math.radians(final_yaw)
-    _p_rad = math.radians(final_pitch)
-    _z_per_dist = math.cos(_p_rad) * math.sin(_y_rad)
-    if abs(_z_per_dist) > 1e-6:
-        final_dist = (_final_target_z_world - cz) / _z_per_dist
-        # If centre is past the target (z_offset <= 0) fall back to a
-        # close-in default so we don't end up with a negative distance.
-        if final_dist <= 0:
-            final_dist = r * 0.10
-    else:
-        final_dist = r * 0.10
-    poses = [
-        (frame_start,                          35.0, 25.0, r * 3.0,  r * 3.0),
-        ((frame_start + final_frame) // 2,     55.0, 18.0, r * 1.5,  r * 1.5),
-        (final_frame,                          final_yaw, final_pitch, final_dist, final_dist),
-        (frame_end,                            final_yaw, final_pitch, final_dist, final_dist),
-    ]
-    print(f"  [HERO] Final pose: dist={final_dist:.0f} mm, "
-          f"world Z target={_final_target_z_world:.0f} mm", flush=True)
+    final_loc   = Vector((200.0, 200.0, 400.0))
+    final_focus = (final_loc - Vector((cx, cy, cz))).length
 
-    for (frame, yaw, pitch, dist, focus) in poses:
-        cam_obj.location = _loc_from_spherical(yaw, pitch, dist)
+    # Each pose: (frame, camera world-location Vector, focus_distance).
+    # Earlier (orbit / dolly) poses are still built from spherical coords;
+    # the final two are explicit XYZ so the camera lands exactly where
+    # the user wants it.
+    poses = [
+        (frame_start,                          _loc_from_spherical(35.0, 25.0, r * 3.0), r * 3.0),
+        ((frame_start + final_frame) // 2,     _loc_from_spherical(55.0, 18.0, r * 1.5), r * 1.5),
+        (final_frame,                          final_loc, final_focus),
+        (frame_end,                            final_loc, final_focus),
+    ]
+    print(f"  [HERO] Final pose: world=({final_loc.x:.0f},{final_loc.y:.0f},"
+          f"{final_loc.z:.0f}) mm  focus={final_focus:.0f} mm", flush=True)
+
+    for (frame, loc, focus) in poses:
+        cam_obj.location = loc
         cam_data.dof.focus_distance = focus
         cam_obj.keyframe_insert(data_path="location", frame=frame)
         cam_data.dof.keyframe_insert(data_path="focus_distance", frame=frame)
