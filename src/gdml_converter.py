@@ -156,11 +156,31 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
             nslice = _DEFAULT_NSLICE
     nstack = max(16, nslice // 4)
 
-    # --- Set pyg4ometry's global tessellation defaults (best-effort).
-    # Different pyg4ometry versions expose this under different paths;
-    # we try each and silently skip if not present.
+    # --- Patch pyg4ometry tessellation defaults at the class level.
+    # The introspection dump showed `nslice` is a class-level property
+    # descriptor on Tubs (the instance backs to `_nslice`).  The
+    # mesher likely reads from the class descriptor's default — so we
+    # have to replace the descriptor with a plain int at the class
+    # level to make our new value win everywhere.  Also try the
+    # documented config paths in case different pyg4ometry versions
+    # expose a SolidDefaults config object.
     try:
         import pyg4ometry as _pg4
+        for solid_name in ("Tubs", "Tube", "Cons", "Cone", "Polycone",
+                           "Polyhedra", "Sphere", "Orb", "Torus",
+                           "EllipticalTube"):
+            try:
+                cls = getattr(_pg4.geant4.solid, solid_name, None)
+            except Exception:
+                cls = None
+            if cls is None:
+                continue
+            for attr, val in (("nslice", nslice), ("nstack", nstack)):
+                try:
+                    setattr(cls, attr, val)
+                except Exception:
+                    pass
+        # Also try the documented config paths in case they exist.
         for path in ("config.SolidDefaults", "geant4.solid._config"):
             obj = _pg4
             for piece in path.split("."):
@@ -184,8 +204,13 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
         pass
 
     # Attribute names pyg4ometry uses across different solid types.
-    SLICE_ATTRS = ("nslice", "nSlice")
-    STACK_ATTRS = ("nstack", "nStack")
+    # _nslice / _nstack (with underscore) are the *backing* storage on
+    # the instance — introspection showed the public `nslice` is a
+    # class-level property that reads/writes the underscored form.
+    # Setting both belt-and-braces ensures mesh code wins regardless
+    # of which form it reads.
+    SLICE_ATTRS = ("nslice", "_nslice", "nSlice")
+    STACK_ATTRS = ("nstack", "_nstack", "nStack")
     SIDE_ATTRS  = ("numSide", "nside", "nSide", "pNumSide")
     # Cached mesh attribute names; clearing forces the next mesh call to
     # rebuild at the post-bump resolution.
@@ -201,19 +226,21 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
         by_type[cls] += 1
 
         touched = False
+        # Set every matching attribute (don't break) so both the
+        # public property AND the underscored backing storage get the
+        # bump.  Belt-and-braces in case pyg4ometry's mesher reads
+        # from one but not the other.
         for a in SLICE_ATTRS:
             if hasattr(s, a):
                 try:
                     setattr(s, a, nslice)
                     touched = True
-                    break
                 except Exception:
                     pass
         for a in STACK_ATTRS:
             if hasattr(s, a):
                 try:
                     setattr(s, a, nstack)
-                    break
                 except Exception:
                     pass
         # Polyhedra: numSide is the geometric segment count.  Bumping it
