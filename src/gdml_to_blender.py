@@ -2435,14 +2435,22 @@ def _add_ip_emissive_disk(
     nt.links.new(emit.outputs["Emission"], out.inputs["Surface"])
     obj.data.materials.append(mat)
 
-    # Suppress shadow contribution — the disk is meant to GLOW, not block.
+    # Ray visibility:
+    #   - shadow:  OFF — the disk is meant to GLOW, not block.
+    #   - camera:  OFF — we want to see the light it casts on nearby
+    #              surfaces, NOT the sphere itself (the user explicitly
+    #              asked for the bare-light look).  Diffuse / glossy /
+    #              transmission stay ON so the emission still lights
+    #              everything indirectly.
+    for attr in ("visible_shadow", "visible_camera"):
+        try:
+            setattr(obj, attr, False)
+        except (AttributeError, TypeError):
+            pass
     try:
-        obj.visible_shadow = False
-    except (AttributeError, TypeError):
-        pass
-    try:
-        # Cycles ray-visibility on the object (5.0+ keeps these as properties)
+        # Older Blender API (3.x) keeps these under cycles_visibility.
         obj.cycles_visibility.shadow = False
+        obj.cycles_visibility.camera = False
     except (AttributeError, TypeError):
         pass
 
