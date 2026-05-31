@@ -121,7 +121,7 @@ Then ask Claude (it will use the mcp-unreal tools):
 
 - **Example character model:** add the **Third Person** feature pack (*Content Browser → Add →
   Add Feature or Content Pack → Third Person*) so `/Game/Characters/Mannequins/*` exists; the
-  character auto-binds `SKM_Manny_Simple` + `ABP_Manny` on the next compile.
+  character auto-binds `SKM_Quinn_Simple` + `ABP_Quinn` on the next compile.
 - **WBP_Options / WBP_DetectorRow:** the builder creates the widget *assets*; build their visual
   layout + button wiring in the UMG designer per `UE5_SETUP.md` §7.
 - **IMC_VR:** desktop input is fully built; some XR controller bindings may need finishing by

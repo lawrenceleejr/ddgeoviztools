@@ -40,7 +40,7 @@ AColliderVisCharacter::AColliderVisCharacter()
 	FollowCamera->SetFieldOfView(DefaultFOV);
 
 	// ── Example third-person model ──────────────────────────────────────────
-	// Use the UE "Third Person" feature-pack Mannequin (Manny) as the playable
+	// Use the UE "Third Person" feature-pack Mannequin (Quinn) as the playable
 	// avatar, if that content is present in the project
 	// (/Game/Characters/Mannequins/...).  All lookups are guarded by .Succeeded()
 	// so the character stays playable (just invisible) when the pack hasn't been
@@ -52,18 +52,18 @@ AColliderVisCharacter::AColliderVisCharacter()
 		MeshComp->SetRelativeLocationAndRotation(
 			FVector(0.f, 0.f, -89.f), FRotator(0.f, -90.f, 0.f));
 
-		static ConstructorHelpers::FObjectFinder<USkeletalMesh> MannequinMesh(
-			TEXT("/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
-		if (MannequinMesh.Succeeded())
+		static ConstructorHelpers::FObjectFinder<USkeletalMesh> QuinnMesh(
+			TEXT("/Game/Characters/Mannequins/Meshes/SKM_Quinn_Simple.SKM_Quinn_Simple"));
+		if (QuinnMesh.Succeeded())
 		{
-			MeshComp->SetSkeletalMesh(MannequinMesh.Object);
+			MeshComp->SetSkeletalMesh(QuinnMesh.Object);
 		}
 
-		static ConstructorHelpers::FClassFinder<UAnimInstance> MannequinAnim(
-			TEXT("/Game/Characters/Mannequins/Animations/ABP_Manny"));
-		if (MannequinAnim.Succeeded())
+		static ConstructorHelpers::FClassFinder<UAnimInstance> QuinnAnim(
+			TEXT("/Game/Characters/Mannequins/Animations/ABP_Quinn"));
+		if (QuinnAnim.Succeeded())
 		{
-			MeshComp->SetAnimInstanceClass(MannequinAnim.Class);
+			MeshComp->SetAnimInstanceClass(QuinnAnim.Class);
 		}
 	}
 

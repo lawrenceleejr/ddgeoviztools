@@ -795,14 +795,14 @@ def stage_blueprints(report, event_cfg):
                 _warn("%s: %s" % (nm, e))
                 st["status"] = "warn"
 
-        # The third-person character uses the UE Mannequin (an example model). The
-        # C++ AColliderVisCharacter auto-binds it from /Game/Characters/Mannequins/
+        # The third-person character uses the UE Mannequin Quinn (an example model).
+        # The C++ AColliderVisCharacter auto-binds it from /Game/Characters/Mannequins/
         # when that content exists. Flag if the Third Person feature pack is missing.
-        if not _exists("/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple"):
+        if not _exists("/Game/Characters/Mannequins/Meshes/SKM_Quinn_Simple"):
             report.todo("Add the example character model: Editor → Add (Content Browser) → "
                         "'Add Feature or Content Pack' → Blueprint/C++ → 'Third Person', then "
                         "recompile. This imports /Game/Characters/Mannequins/* which the "
-                        "character auto-binds (SKM_Manny_Simple + ABP_Manny). Until then the "
+                        "character auto-binds (SKM_Quinn_Simple + ABP_Quinn). Until then the "
                         "character is playable but invisible.")
 
         # Widget stubs (parents must resolve so C++ LoadClass succeeds; visual layout manual).

@@ -14,8 +14,8 @@ job is to wire up the input assets, materials, and packaging settings described 
 > Lighting now comes from your **Blender scene** (imported as light actors), not the
 > hardcoded C++ rig — that legacy rig is gated behind
 > `AColliderVisGameMode::bSpawnDefaultLighting` (default off).
-> The third-person character uses the UE **Mannequin** (add the *Third Person*
-> feature pack); **hold RMB to zoom** the camera in (boom + FOV) for detail.
+> The third-person character uses the UE **Mannequin (Quinn)** (add the *Third
+> Person* feature pack); **hold RMB to zoom** the camera in (boom + FOV) for detail.
 > The sections below remain the reference for anything you tune by hand.
 
 ---

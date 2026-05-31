@@ -77,7 +77,7 @@ The builder reports these as TODOs (they can't be reliably scripted):
 
 1. **Example character model** — add the **Third Person** feature pack
    (*Content Browser → Add → Add Feature or Content Pack → Third Person*). The character
-   auto-binds `SKM_Manny_Simple` + `ABP_Manny` on the next compile.
+   auto-binds `SKM_Quinn_Simple` + `ABP_Quinn` on the next compile.
 2. **WBP_Options / WBP_DetectorRow** — build the UMG layout + button wiring (UE5_SETUP §7).
 3. **IMC_VR** — finish any XR controller bindings your VR plugins require (UE5_SETUP §3c).
 
