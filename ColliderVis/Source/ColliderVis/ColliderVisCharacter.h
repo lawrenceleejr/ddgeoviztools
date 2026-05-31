@@ -20,7 +20,8 @@ class ADetectorVisibilityManager;
  *
  * Tab         — toggles between third-person follow camera and orbit camera
  *               (fixed pivot at world origin / detector centre, mouse rotates).
- * RMB (held)  — zooms the third-person spring arm in toward the character.
+ * Mouse click — hold either mouse button to dynamically zoom the camera in
+ *               (spring arm pulls in + FOV narrows) so the user can see detail.
  */
 UCLASS(BlueprintType, Blueprintable)
 class COLLIDERVIS_API AColliderVisCharacter : public ACharacter
@@ -80,7 +81,7 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
 	UInputAction* ToggleDetectorMenuAction;
 
-	/** RMB — zoom in while in third-person mode */
+	/** Mouse click (held) — zoom in while in third-person mode */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (AllowPrivateAccess = "true"))
 	UInputAction* ZoomAction;
 
@@ -104,8 +105,8 @@ private:
 
 	bool bOrbitMode = false;
 
-	// ---- Third-person Zoom (RMB) ----
-	// Holding the zoom button pulls the spring arm in AND narrows the camera FOV,
+	// ---- Third-person Zoom (mouse click) ----
+	// Holding a mouse button pulls the spring arm in AND narrows the camera FOV,
 	// so the user can lean in to inspect detector / event detail.  Tick() smoothly
 	// interpolates both back and forth.
 

@@ -615,6 +615,8 @@ def stage_input(report):
             _add_mapping(imc, actions.get("IA_Look"), _key("Mouse2D"))
             _add_mapping(imc, actions.get("IA_Jump"), _key("SpaceBar"))
             _add_mapping(imc, actions.get("IA_SwitchMode"), _key("Tab"))
+            # Click-to-zoom: both mouse buttons zoom the camera in for detail.
+            _add_mapping(imc, actions.get("IA_Zoom"), _key("LeftMouseButton"))
             _add_mapping(imc, actions.get("IA_Zoom"), _key("RightMouseButton"))
             _add_mapping(imc, actions.get("IA_NextEvent"), _key("N"))
             _add_mapping(imc, actions.get("IA_OpenMenu"), _key("Escape"))
