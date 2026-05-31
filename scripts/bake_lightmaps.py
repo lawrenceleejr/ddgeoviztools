@@ -159,17 +159,31 @@ def add_bake_targets(obj, image):
         nt.nodes.active = node
 
 
-def emission_material(name, image):
+def baked_material(name, image):
+    """Principled BSDF with black base + full emission of the baked texture, so it
+    shows the Cycles result regardless of runtime lights. glTF export maps this to a
+    three.js emissive material reliably (more so than a bare Emission node)."""
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     nt = mat.node_tree
     nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputMaterial")
-    emit = nt.nodes.new("ShaderNodeEmission")
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
     tex = nt.nodes.new("ShaderNodeTexImage")
     tex.image = image
-    nt.links.new(tex.outputs["Color"], emit.inputs["Color"])
-    nt.links.new(emit.outputs["Emission"], out.inputs["Surface"])
+    if "Base Color" in bsdf.inputs:
+        bsdf.inputs["Base Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    if "Roughness" in bsdf.inputs:
+        bsdf.inputs["Roughness"].default_value = 1.0
+    # Emission input renamed across Blender versions ("Emission" -> "Emission Color").
+    emis = bsdf.inputs.get("Emission Color") or bsdf.inputs.get("Emission")
+    if emis is not None:
+        nt.links.new(tex.outputs["Color"], emis)
+    if "Emission Strength" in bsdf.inputs:
+        bsdf.inputs["Emission Strength"].default_value = 1.0
+    nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
     return mat
 
 
@@ -231,8 +245,12 @@ def main():
             # Reload as a FILE image so the GLB embeds a concrete texture.
             disp = bpy.data.images.load(png, check_existing=False)
             disp.colorspace_settings.name = "sRGB"
-            obj.data.materials.clear()
-            obj.data.materials.append(emission_material(f"{name}_baked", disp))
+            mesh = obj.data
+            mesh.materials.clear()
+            mesh.materials.append(baked_material(f"{name}_baked", disp))
+            # Collapsing to one slot: repoint every face at it.
+            for poly in mesh.polygons:
+                poly.material_index = 0
 
             manifest["objects"].append({"name": name, "texture": f"{name}.png"})
             baked.append(obj)
