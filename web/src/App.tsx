@@ -1,6 +1,8 @@
 import { Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { Loader, AdaptiveDpr, Grid } from '@react-three/drei'
+import { Loader, AdaptiveDpr, Grid, SoftShadows } from '@react-three/drei'
+import { EffectComposer, Bloom, ToneMapping, SMAA, Vignette } from '@react-three/postprocessing'
+import { ToneMappingMode } from 'postprocessing'
 import * as THREE from 'three'
 import { Detector } from './scene/Detector'
 import { BakedDetector } from './scene/BakedDetector'
@@ -17,18 +19,20 @@ export default function App() {
       <Canvas
         shadows
         dpr={[1, 2]}
-        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        gl={{ antialias: false, powerPreference: 'high-performance' }}
         camera={{ position: [0, 2, 22], fov: 60, near: 0.1, far: 5000 }}
         onCreated={({ gl }) => {
-          // Filmic look to match the Blender scene's AgX view transform.
-          gl.toneMapping = THREE.AgXToneMapping
-          gl.toneMappingExposure = 1.15
-          // Enable per-material clipping for the phi cutaway (wired in a later step).
+          // Tone mapping is applied by the post-processing AgX pass below.
+          gl.toneMapping = THREE.NoToneMapping
+          // Per-material clipping for the phi cutaway (wired in a later step).
           gl.localClippingEnabled = true
         }}
       >
         <color attach="background" args={['#0c0f15']} />
         <fog attach="fog" args={['#0c0f15', 70, 260]} />
+
+        {/* Softens all shadow-map edges for the ray-traced look. */}
+        <SoftShadows size={28} samples={12} focus={0.7} />
 
         <Suspense fallback={null}>
           <SceneEnvironment />
@@ -51,6 +55,13 @@ export default function App() {
         />
 
         <Player />
+
+        <EffectComposer multisampling={0} enableNormalPass={false}>
+          <Bloom mipmapBlur luminanceThreshold={1.0} luminanceSmoothing={0.3} intensity={0.7} />
+          <ToneMapping mode={ToneMappingMode.AGX} />
+          <SMAA />
+          <Vignette offset={0.25} darkness={0.55} eskil={false} />
+        </EffectComposer>
         <AdaptiveDpr pixelated />
       </Canvas>
 

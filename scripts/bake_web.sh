@@ -19,8 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${DDGEOVIZ_IMAGE:-ddgeoviztools}"
-RES="${BAKE_RESOLUTION:-1024}"
-SAMPLES="${BAKE_SAMPLES:-256}"
+SAMPLES="${BAKE_SAMPLES:-128}"
 MODELS="${1:-web/public/models}"
 
 mkdir -p "$ROOT/build/baked" "$ROOT/web/public/baked"
@@ -36,12 +35,12 @@ echo "==> blender-scene from $MODELS"
 docker run --rm -e DDGEOVIZTOOLS_DENOISE=0 -v "$ROOT:/data" -w /data "$IMAGE" \
   blender-scene "/data/$MODELS" --output /data/build/scene.blend --format gltf
 
-# 3. Cycles bake -> build/baked/{*.png, detector_baked.glb, manifest.json}
-echo "==> bake lightmaps (${RES}px @ ${SAMPLES} samples)"
+# 3. Cycles AO bake -> build/baked/{detector_baked.glb, manifest.json}
+echo "==> bake Cycles ambient occlusion (${SAMPLES} samples)"
 docker run --rm --entrypoint blender -v "$ROOT:/data" -w /data "$IMAGE" \
   --background /data/build/scene.blend --python-exit-code 1 \
   --python /data/scripts/bake_lightmaps.py -- \
-  --output-dir /data/build/baked --resolution "$RES" --samples "$SAMPLES"
+  --output-dir /data/build/baked --samples "$SAMPLES"
 
 # 4. Publish only the self-contained GLB + manifest into the web public dir.
 cp "$ROOT/build/baked/detector_baked.glb" "$ROOT/web/public/baked/"

@@ -1,30 +1,26 @@
 #!/usr/bin/env python3
 """
-bake_lightmaps.py — bake Cycles lighting into per-sub-detector textures and
+bake_lightmaps.py — bake Cycles **ambient occlusion** into per-vertex colours and
 export one self-contained GLB for the web viewer.
 
 Run headlessly inside the ddgeoviztools image (Blender + trimesh), against a
-scene built by `blender-scene` (materials + 5-light rig + phi cutaway):
+scene built by `blender-scene`:
 
     blender --background scene.blend --python-exit-code 1 \
         --python scripts/bake_lightmaps.py -- \
-        --output-dir build/baked --resolution 1024 --samples 256
+        --output-dir build/baked --samples 128 [--preview build/preview.png]
 
-Pipeline per sub-detector (objects of the "Detector" collection):
-  1. apply modifiers (weld / bevel / phi-cutaway) so baked geometry is final
-  2. Smart-UV unwrap into a dedicated 'BakeUV' (the active-render UV -> glTF UV0)
-  3. Cycles COMBINED bake (diffuse+glossy+emit, direct+indirect) into an image
-  4. save the image and rebuild the material as an Emission of that image
-
-Finally every baked object is exported to <output-dir>/detector_baked.glb plus
-a manifest.json. The web app shows the GLB *unlit* — i.e. as the Blender render
-— while AgX tone mapping is applied in three.js. The bake stores raw (scene
-linear) light; it is NOT view-transformed here, so three.js does the grading.
+Why AO (not full lighting): the detector is metallic, and a full-lighting bake of
+metal is view-dependent — it bakes to near-black and looks nothing like the render
+(verified extensively). The stunning metal look therefore comes from real-time
+HDRI reflections in three.js. What *does* bake cleanly and view-independently is
+ambient occlusion — the soft, ray-traced contact shadows / crevice darkening. We
+bake that to vertex colours (glTF COLOR_0), keep the scene's PBR materials, and the
+web app multiplies the AO under live image-based lighting.
 """
 
 import argparse
 import json
-import math
 import os
 import sys
 
@@ -37,11 +33,9 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output-dir", required=True)
     p.add_argument("--collection", default="Detector")
-    p.add_argument("--resolution", type=int, default=1024)
-    p.add_argument("--samples", type=int, default=256)
-    p.add_argument("--margin", type=int, default=6)
-    p.add_argument("--uv-angle-limit", type=float, default=66.0, help="Smart-UV angle limit (deg)")
-    p.add_argument("--uv-island-margin", type=float, default=0.02)
+    p.add_argument("--samples", type=int, default=128)
+    p.add_argument("--draco-level", type=int, default=6)
+    p.add_argument("--preview", default=None, help="optional: render the baked AO to this PNG")
     return p.parse_args(rest)
 
 
@@ -63,36 +57,19 @@ def get_objects(collection_name):
     ]
 
 
-def setup_cycles(scene, samples, margin):
+def setup_cycles(scene, samples):
     scene.render.engine = "CYCLES"
     try:
         scene.cycles.device = "CPU"  # CI has no GPU
     except Exception as e:  # noqa: BLE001
         log(f"cycles.device: {e}")
     scene.cycles.samples = samples
-    # Denoise off: the CI image may ship without OIDN shared libs (see
-    # blender-render.yml DDGEOVIZTOOLS_DENOISE=0).
-    for obj in (scene.cycles, getattr(scene, "cycles_curves", None)):
-        if obj is not None and hasattr(obj, "use_denoising"):
-            try:
-                obj.use_denoising = False
-            except Exception:  # noqa: BLE001
-                pass
-
-    bake = scene.render.bake
-    bake.use_selected_to_active = False
-    bake.margin = margin
-    bake.use_clear = True
-    for attr, val in [
-        ("use_pass_direct", True),
-        ("use_pass_indirect", True),
-        ("use_pass_diffuse", True),
-        ("use_pass_glossy", True),
-        ("use_pass_transmission", False),
-        ("use_pass_emit", True),
-    ]:
-        if hasattr(bake, attr):
-            setattr(bake, attr, val)
+    if hasattr(scene.cycles, "use_denoising"):
+        try:
+            scene.cycles.use_denoising = False  # CI image may lack OIDN
+        except Exception:  # noqa: BLE001
+            pass
+    scene.render.bake.target = "VERTEX_COLORS"
 
 
 def object_mode():
@@ -112,160 +89,118 @@ def select_only(obj):
     bpy.context.view_layer.objects.active = obj
 
 
-def apply_modifiers(obj):
+def bake_ao(obj):
+    """Bake AO into a CORNER FLOAT_COLOR attribute named 'Bake' (exported as COLOR_0).
+    Keeps the object's existing PBR materials so the GLB carries the palette."""
     select_only(obj)
     if obj.modifiers:
         try:
-            bpy.ops.object.convert(target="MESH")  # applies enabled modifiers, keeps UVs/materials
+            bpy.ops.object.convert(target="MESH")  # apply weld / phi-cut, keep materials
         except RuntimeError as e:
-            log(f"  convert (apply modifiers) failed on {obj.name}: {e}")
-
-
-def smart_unwrap(obj, angle_limit_deg, island_margin):
+            log(f"  convert failed on {obj.name}: {e}")
     mesh = obj.data
-    uv = mesh.uv_layers.get("BakeUV") or mesh.uv_layers.new(name="BakeUV")
-    mesh.uv_layers.active = uv
-    # Export this UV as glTF TEXCOORD_0.
-    for layer in mesh.uv_layers:
-        layer.active_render = layer.name == "BakeUV"
-    select_only(obj)
-    bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.smart_project(
-        angle_limit=math.radians(angle_limit_deg),
-        island_margin=island_margin,
+    ca = mesh.color_attributes.get("Bake") or mesh.color_attributes.new(
+        name="Bake", type="FLOAT_COLOR", domain="CORNER"
     )
-    bpy.ops.object.mode_set(mode="OBJECT")
+    try:
+        mesh.color_attributes.active_color = ca
+    except Exception:  # noqa: BLE001
+        mesh.attributes.active_color_index = list(mesh.color_attributes).index(ca)
+    select_only(obj)
+    bpy.ops.object.bake(type="AO")
+    return ca.name
 
 
-def add_bake_targets(obj, image):
-    """Give every material an active image-texture node so the bake has a target."""
-    if not obj.material_slots:
-        mat = bpy.data.materials.new(name=f"{obj.name}_mat")
-        mat.use_nodes = True
-        obj.data.materials.append(mat)
-    for slot in obj.material_slots:
-        mat = slot.material
-        if mat is None:
-            mat = bpy.data.materials.new(name=f"{obj.name}_mat")
-            slot.material = mat
-        if not mat.use_nodes:
-            mat.use_nodes = True
-        nt = mat.node_tree
-        node = nt.nodes.new("ShaderNodeTexImage")
-        node.image = image
-        node.label = "BAKE_TARGET"
-        node.select = True
-        nt.nodes.active = node
-
-
-def baked_material(name, image):
-    """Principled BSDF with black base + full emission of the baked texture, so it
-    shows the Cycles result regardless of runtime lights. glTF export maps this to a
-    three.js emissive material reliably (more so than a bare Emission node)."""
+def vertex_ao_preview_material(name, attr_name):
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     nt = mat.node_tree
     nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputMaterial")
-    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
-    tex = nt.nodes.new("ShaderNodeTexImage")
-    tex.image = image
-    if "Base Color" in bsdf.inputs:
-        bsdf.inputs["Base Color"].default_value = (0.0, 0.0, 0.0, 1.0)
-    if "Metallic" in bsdf.inputs:
-        bsdf.inputs["Metallic"].default_value = 0.0
-    if "Roughness" in bsdf.inputs:
-        bsdf.inputs["Roughness"].default_value = 1.0
-    # Emission input renamed across Blender versions ("Emission" -> "Emission Color").
-    emis = bsdf.inputs.get("Emission Color") or bsdf.inputs.get("Emission")
-    if emis is not None:
-        nt.links.new(tex.outputs["Color"], emis)
-    if "Emission Strength" in bsdf.inputs:
-        bsdf.inputs["Emission Strength"].default_value = 1.0
-    nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    emit = nt.nodes.new("ShaderNodeEmission")
+    try:
+        vc = nt.nodes.new("ShaderNodeVertexColor")
+        vc.layer_name = attr_name
+    except Exception:  # noqa: BLE001
+        vc = nt.nodes.new("ShaderNodeColorAttribute")
+        vc.layer_name = attr_name
+    nt.links.new(vc.outputs["Color"], emit.inputs["Color"])
+    nt.links.new(emit.outputs["Emission"], out.inputs["Surface"])
     return mat
 
 
-def export_glb(objects, path):
+def export_glb(objects, path, draco_level):
     object_mode()
     bpy.ops.object.select_all(action="DESELECT")
     for o in objects:
         o.select_set(True)
     bpy.context.view_layer.objects.active = objects[0]
-    bpy.ops.export_scene.gltf(
+    kw = dict(
         filepath=path,
         export_format="GLB",
         use_selection=True,
         export_materials="EXPORT",
-        export_yup=True,
-        export_apply=False,  # modifiers already applied
+        # Scene physics-up is Blender +Y already -> pass axes through unchanged.
+        export_yup=False,
+        export_apply=False,
         export_normals=True,
-        export_texcoords=True,
         export_animations=False,
+        export_draco_mesh_compression_enable=True,
+        export_draco_mesh_compression_level=draco_level,
         check_existing=False,
     )
+    props = bpy.ops.export_scene.gltf.get_rna_type().properties
+    if "export_vertex_color" in props:
+        kw["export_vertex_color"] = "ACTIVE"
+    bpy.ops.export_scene.gltf(**kw)
 
 
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
     scene = bpy.context.scene
-    setup_cycles(scene, args.samples, args.margin)
+    setup_cycles(scene, args.samples)
 
     objects = get_objects(args.collection)
     if not objects:
         log("ERROR: no mesh objects found to bake")
         sys.exit(1)
-    log(f"{len(objects)} sub-detector(s); {args.resolution}px @ {args.samples} samples")
+    log(f"{len(objects)} sub-detector(s) @ {args.samples} samples (AO vertex bake)")
 
-    manifest = {"glb": "detector_baked.glb", "objects": []}
+    manifest = {"glb": "detector_baked.glb", "mode": "ao_vertex_colors", "objects": []}
     baked = []
     for obj in objects:
-        name = obj.name
-        log(f"-- {name}")
+        log(f"-- {obj.name}")
         try:
-            apply_modifiers(obj)
-            smart_unwrap(obj, args.uv_angle_limit, args.uv_island_margin)
-
-            bake_img = bpy.data.images.new(
-                f"bake_{name}", width=args.resolution, height=args.resolution, alpha=False
-            )
-            bake_img.colorspace_settings.name = "sRGB"
-            add_bake_targets(obj, bake_img)
-
-            select_only(obj)
-            bpy.ops.object.bake(type="COMBINED")
-
-            png = os.path.join(args.output_dir, f"{name}.png")
-            bake_img.filepath_raw = png
-            bake_img.file_format = "PNG"
-            bake_img.save()
-
-            # Reload as a FILE image so the GLB embeds a concrete texture.
-            disp = bpy.data.images.load(png, check_existing=False)
-            disp.colorspace_settings.name = "sRGB"
-            mesh = obj.data
-            mesh.materials.clear()
-            mesh.materials.append(baked_material(f"{name}_baked", disp))
-            # Collapsing to one slot: repoint every face at it.
-            for poly in mesh.polygons:
-                poly.material_index = 0
-
-            manifest["objects"].append({"name": name, "texture": f"{name}.png"})
+            attr = bake_ao(obj)
+            if args.preview:
+                obj.data.materials.clear()
+                obj.data.materials.append(vertex_ao_preview_material(f"{obj.name}_ao", attr))
+            manifest["objects"].append({"name": obj.name})
             baked.append(obj)
         except Exception as e:  # noqa: BLE001
-            log(f"  FAILED {name}: {e}")
+            log(f"  FAILED {obj.name}: {e}")
 
     if not baked:
-        log("ERROR: nothing baked successfully")
+        log("ERROR: nothing baked")
         sys.exit(1)
 
     glb = os.path.join(args.output_dir, "detector_baked.glb")
-    export_glb(baked, glb)
+    export_glb(baked, glb, args.draco_level)
     with open(os.path.join(args.output_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
-    log(f"done: {glb} ({len(baked)}/{len(objects)} objects)")
+    log(f"exported {glb} ({len(baked)}/{len(objects)} objects)")
+
+    if args.preview:
+        cam = bpy.data.objects.get("Cam_Transverse") or scene.camera
+        if cam:
+            scene.camera = cam
+        scene.view_settings.view_transform = "Standard"
+        scene.render.resolution_x, scene.render.resolution_y = 1280, 960
+        scene.render.image_settings.file_format = "PNG"
+        scene.render.filepath = args.preview
+        bpy.ops.render.render(write_still=True)
+        log(f"preview -> {args.preview}")
 
 
 if __name__ == "__main__":

@@ -529,23 +529,26 @@ npm run dev          # http://localhost:5173/ddgeoviztools/
 
 This uses the raw GLTFs with real-time studio lighting — no Blender required.
 
-### Bake the Cycles lighting (the beautiful path)
+### Lighting
 
-The "looks like a render" lighting is produced headlessly by Blender Cycles and
-baked into the geometry, then shown unlit in the browser:
+The metal reads through **real-time image-based lighting** (an HDRI-style
+environment + AgX tone-mapping + bloom + soft shadows) — the correct way to render
+metal, whose look is view-dependent and *cannot* be baked. On top of that, Blender
+**Cycles bakes the soft, ray-traced ambient occlusion** into the geometry (vertex
+colours / glTF `COLOR_0`), which is view-independent and adds the soft
+contact-shadow feel. The AO bake is headless and lives in the deploy pipeline:
 
 ```
-committed GLTF  ->  blender-scene (.blend)  ->  Cycles bake  ->  detector_baked.glb
+committed GLTF  ->  blender-scene (.blend)  ->  Cycles AO bake  ->  detector_baked.glb
 ```
 
 ```bash
 # from web/ (needs Docker; builds the ddgeoviztools image on first run)
-npm run bake         # -> web/public/baked/detector_baked.glb
-npm run dev          # the viewer now shows the baked lighting
+npm run bake         # -> web/public/baked/detector_baked.glb (palette PBR + baked AO)
+npm run dev          # the viewer now uses the baked geometry + AO
 ```
 
-Tune with `BAKE_RESOLUTION` (default 1024) and `BAKE_SAMPLES` (default 256), e.g.
-`BAKE_RESOLUTION=2048 BAKE_SAMPLES=512 npm run bake`.
+Tune samples with `BAKE_SAMPLES` (default 128), e.g. `BAKE_SAMPLES=256 npm run bake`.
 
 ### Build / deploy
 
@@ -559,9 +562,9 @@ Environments → github-pages**). The site serves at
 
 ### How the bake reaches the browser
 
-`scripts/bake_lightmaps.py` applies modifiers, Smart-UV-unwraps each
-sub-detector, Cycles-bakes a COMBINED pass into a per-object texture, and rebuilds
-each material as an emission of that texture before exporting one self-contained
-`detector_baked.glb`. The web build sets a `__BAKED__` flag when
-`web/public/baked/manifest.json` is present; if it is absent (e.g. plain
-`npm run dev`), the viewer falls back to the raw GLTFs with real-time lighting.
+`scripts/bake_lightmaps.py` applies modifiers and Cycles-bakes ambient occlusion
+into each sub-detector's vertex colours, keeping the scene's PBR materials, then
+exports one Draco-compressed `detector_baked.glb` (decoded by the decoder shipped in
+`public/draco/`). The web build sets `__BAKED__` when `web/public/baked/manifest.json`
+is present; if absent (e.g. plain `npm run dev` with no bake), the viewer falls back
+to the raw GLTFs with the same real-time lighting.
