@@ -118,6 +118,58 @@ _MAX_RESPLIT_DEPTH = 3
 # this many recursion levels for names containing tracker-related keywords.
 _MAX_RESPLIT_DEPTH_TRACKER = 6
 
+# Default azimuthal segmentation applied to curved solids (Tubs, Cons,
+# Polycone, Sphere, …) before pyg4ometry tessellates them.  Overridable
+# at runtime via the DDGEOVIZTOOLS_NSLICE env var or the --nslice CLI flag.
+# 128 segments keeps the polygonal silhouette inside ~1 pixel at 4K
+# render resolution for typical detector framings.
+_DEFAULT_NSLICE = 128
+
+
+def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
+    """
+    Bump nslice (azimuthal segments) and nstack (polar segments) on every
+    curved solid in *reg* so the tessellated mesh has enough segments to
+    look smooth at 4K render resolution.
+
+    Returns the number of solids that were bumped.
+
+    pyg4ometry's default nslice is ~16, which produces a visibly faceted
+    cylinder.  Skips solids whose polygonality is geometrically meaningful
+    (Polyhedra) so we don't accidentally change the geometry shape itself.
+    """
+    import os as _os
+    if nslice is None:
+        try:
+            nslice = int(_os.environ.get("DDGEOVIZTOOLS_NSLICE", _DEFAULT_NSLICE))
+        except (TypeError, ValueError):
+            nslice = _DEFAULT_NSLICE
+    nstack = max(16, nslice // 4)
+
+    bumped = 0
+    for s in reg.solidDict.values():
+        cls = type(s).__name__
+        # Polyhedra / GenericPolyhedra are intentionally polygonal: their
+        # numSide attribute is part of the geometry definition, not a
+        # rendering knob — leave them alone.
+        if cls in ("Polyhedra", "GenericPolyhedra"):
+            continue
+        if hasattr(s, "nslice"):
+            try:
+                s.nslice = nslice
+                bumped += 1
+            except (AttributeError, TypeError):
+                pass
+        if hasattr(s, "nstack"):
+            try:
+                s.nstack = nstack
+            except (AttributeError, TypeError):
+                pass
+    if bumped:
+        print(f"  [TESSELLATION] nslice={nslice} nstack={nstack} "
+              f"applied to {bumped} curved solid(s)", flush=True)
+    return bumped
+
 _TRACKER_RESPLIT_KEYS = (
     "tracker", "trk", "tpc", "silicon", "vertex", "inner_tracker",
     "outer_tracker", "barrel_tracker", "endcap_tracker",
@@ -2066,6 +2118,15 @@ def _convert_single(
         n_volumes = len(reg.logicalVolumeDict)
         print(f"  [{_ts()}] Read done ({_elapsed(t0)}) — {n_volumes} logical volumes",
               flush=True)
+
+        # ---- Bump azimuthal / polar resolution on curved solids ----
+        # pyg4ometry's default nslice (≈16) tessellates a cylinder into a
+        # visible 16-gon at any rendering distance.  Bumping to a high
+        # value here yields perceptually-smooth silhouettes at 4K render
+        # resolution.  Cost: ~nslice/16× face count on every Tubs / Cone /
+        # Sphere / Polycone — usually negligible since the Blender import
+        # pipeline caps each mesh at 30K faces anyway.
+        _bump_curved_solid_resolution(reg)
 
         # ---- Build scene ----
         t0 = time.monotonic()
