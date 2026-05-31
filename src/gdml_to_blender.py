@@ -3541,8 +3541,10 @@ def _make_hero_camera(centre, r,
     constraint.up_axis    = "UP_Y"
 
     # Spherical-coordinate keyframes (yaw_deg, pitch_deg, distance, focus)
-    # The frame layout is start → mid → end with bezier ease for cinematic
-    # acceleration / deceleration.
+    # The frame layout is start → mid → final → hold with bezier ease for
+    # cinematic acceleration / deceleration.  The "final" pose is reached
+    # 10 frames before the timeline ends and then held — duplicate
+    # keyframe at frame_end keeps the camera stationary on the held shot.
     def _loc_from_spherical(yaw_deg, pitch_deg, dist):
         y = math.radians(yaw_deg)
         p = math.radians(pitch_deg)
@@ -3552,10 +3554,18 @@ def _make_hero_camera(centre, r,
             cz + dist * math.cos(p) * math.sin(y),
         ))
 
+    # Final animated pose lands 10 frames before the end so the last 10
+    # frames are a held shot of the vertex / IP region.  Distance r*0.30
+    # frames the inner ~28% of the detector — vertex detector detail and
+    # the area around the collision point are clearly visible.
+    final_frame = max(frame_start + 1, frame_end - 10)
+    final_yaw, final_pitch = 70.0, 12.0
+    final_dist  = r * 0.30
     poses = [
-        (frame_start,                       35.0, 25.0, r * 3.0, r * 3.0),
-        ((frame_start + frame_end) // 2,    55.0, 18.0, r * 2.0, r * 2.0),
-        (frame_end,                         70.0, 12.0, r * 1.1, r * 1.1),
+        (frame_start,                          35.0, 25.0, r * 3.0,  r * 3.0),
+        ((frame_start + final_frame) // 2,     55.0, 18.0, r * 1.5,  r * 1.5),
+        (final_frame,                          final_yaw, final_pitch, final_dist, final_dist),
+        (frame_end,                            final_yaw, final_pitch, final_dist, final_dist),
     ]
 
     for (frame, yaw, pitch, dist, focus) in poses:
