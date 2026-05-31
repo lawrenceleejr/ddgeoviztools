@@ -118,6 +118,320 @@ _MAX_RESPLIT_DEPTH = 3
 # this many recursion levels for names containing tracker-related keywords.
 _MAX_RESPLIT_DEPTH_TRACKER = 6
 
+# Default azimuthal segmentation applied to curved solids (Tubs, Cons,
+# Polycone, Sphere, …) before pyg4ometry tessellates them.  Overridable
+# at runtime via the DDGEOVIZTOOLS_NSLICE env var or the --nslice CLI flag.
+# 128 segments keeps the polygonal silhouette inside ~1 pixel at 4K
+# render resolution for typical detector framings.
+_DEFAULT_NSLICE = 128
+
+
+def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
+    """
+    Bump tessellation resolution on every solid in *reg* whose mesh
+    quality depends on a slice/segment count, so the rendered geometry
+    looks smooth at 4K render resolution.
+
+    Returns the number of solids that were bumped.
+
+    pyg4ometry's default nslice is ~16 (a visibly faceted cylinder).
+    We also raise ``numSide`` on Polyhedra solids — DD4hep sometimes
+    models cylindrical pieces as a low-side Polyhedra for simulation
+    performance, which then renders as an obvious polygon.  Bumping
+    numSide changes the *geometry* (a 128-sided polyhedron is a
+    different solid than a 16-sided one), but for visualisation the
+    closer-to-cylinder shape is what we want.
+
+    Also (a) sets pyg4ometry's global SolidDefaults so any solids
+    created after this point also pick up the higher resolution, and
+    (b) invalidates any cached mesh on already-created solids so the
+    next mesh call rebuilds at the new resolution.
+    """
+    import os as _os
+    from collections import Counter
+    if nslice is None:
+        try:
+            nslice = int(_os.environ.get("DDGEOVIZTOOLS_NSLICE", _DEFAULT_NSLICE))
+        except (TypeError, ValueError):
+            nslice = _DEFAULT_NSLICE
+    nstack = max(16, nslice // 4)
+
+    # --- Patch pyg4ometry tessellation defaults at the class level.
+    # The introspection dump showed `nslice` is a class-level property
+    # descriptor on Tubs (the instance backs to `_nslice`).  The
+    # mesher likely reads from the class descriptor's default — so we
+    # have to replace the descriptor with a plain int at the class
+    # level to make our new value win everywhere.  Also try the
+    # documented config paths in case different pyg4ometry versions
+    # expose a SolidDefaults config object.
+    try:
+        import pyg4ometry as _pg4
+        for solid_name in ("Tubs", "Tube", "Cons", "Cone", "Polycone",
+                           "Polyhedra", "Sphere", "Orb", "Torus",
+                           "EllipticalTube"):
+            try:
+                cls = getattr(_pg4.geant4.solid, solid_name, None)
+            except Exception:
+                cls = None
+            if cls is None:
+                continue
+            for attr, val in (("nslice", nslice), ("nstack", nstack)):
+                try:
+                    setattr(cls, attr, val)
+                except Exception:
+                    pass
+        # Also try the documented config paths in case they exist.
+        for path in ("config.SolidDefaults", "geant4.solid._config"):
+            obj = _pg4
+            for piece in path.split("."):
+                obj = getattr(obj, piece, None)
+                if obj is None:
+                    break
+            if obj is None:
+                continue
+            for solid_name in ("Tubs", "Tube", "Cons", "Cone", "Polycone",
+                               "Polyhedra", "Sphere", "Orb", "Torus",
+                               "EllipticalTube"):
+                inner = getattr(obj, solid_name, None)
+                if inner is None:
+                    continue
+                for attr, val in (("nslice", nslice), ("nstack", nstack)):
+                    try:
+                        setattr(inner, attr, val)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # Attribute names pyg4ometry uses across different solid types.
+    # _nslice / _nstack (with underscore) are the *backing* storage on
+    # the instance — introspection showed the public `nslice` is a
+    # class-level property that reads/writes the underscored form.
+    # Setting both belt-and-braces ensures mesh code wins regardless
+    # of which form it reads.
+    SLICE_ATTRS = ("nslice", "_nslice", "nSlice")
+    STACK_ATTRS = ("nstack", "_nstack", "nStack")
+    SIDE_ATTRS  = ("numSide", "nside", "nSide", "pNumSide")
+    # Cached mesh attribute names; clearing forces the next mesh call to
+    # rebuild at the post-bump resolution.
+    MESH_CACHE_ATTRS = ("_mesh", "_csgmesh", "_pycsgmesh", "mesh_cache",
+                        "_mesh_built")
+
+    by_type    = Counter()
+    bumped_by  = Counter()
+
+    sample_logged = False
+    for s in reg.solidDict.values():
+        cls = type(s).__name__
+        by_type[cls] += 1
+
+        touched = False
+        # Set every matching attribute (don't break) so both the
+        # public property AND the underscored backing storage get the
+        # bump.  Belt-and-braces in case pyg4ometry's mesher reads
+        # from one but not the other.
+        for a in SLICE_ATTRS:
+            if hasattr(s, a):
+                try:
+                    setattr(s, a, nslice)
+                    touched = True
+                except Exception:
+                    pass
+        for a in STACK_ATTRS:
+            if hasattr(s, a):
+                try:
+                    setattr(s, a, nstack)
+                except Exception:
+                    pass
+        # Polyhedra: numSide is the geometric segment count.  Bumping it
+        # for visualisation is intentional even though it changes the
+        # represented solid.  Skip if it's already large.
+        for a in SIDE_ATTRS:
+            if hasattr(s, a):
+                try:
+                    current = int(getattr(s, a) or 0)
+                except (TypeError, ValueError):
+                    current = 0
+                if current < nslice:
+                    try:
+                        setattr(s, a, nslice)
+                        touched = True
+                        break
+                    except Exception:
+                        pass
+
+        # Invalidate any cached mesh so the next pycsgmesh() call sees
+        # the new resolution instead of returning the pre-bump mesh.
+        if touched:
+            for a in MESH_CACHE_ATTRS:
+                if hasattr(s, a):
+                    try:
+                        delattr(s, a)
+                    except (AttributeError, TypeError):
+                        pass
+            # Try to force a rebuild now that nslice is updated.  If
+            # pyg4ometry's mesher uses self.nslice this rebuilds the
+            # cached mesh at the new resolution; if it doesn't, no harm.
+            rebuilt_mesh = None
+            rebuilt_method = None
+            for method_name in ("pycsgmesh", "mesh", "_mesh_from_polygons",
+                                "_construct", "build_mesh"):
+                fn = getattr(s, method_name, None)
+                if callable(fn):
+                    try:
+                        rebuilt_mesh = fn()
+                        rebuilt_method = method_name
+                        # Cache the rebuilt mesh on the solid under
+                        # common cache attr names — if addLogicalVolume
+                        # reads from a cache, we want it to see our
+                        # post-bump version.
+                        if rebuilt_mesh is not None:
+                            for cache_a in MESH_CACHE_ATTRS:
+                                try:
+                                    setattr(s, cache_a, rebuilt_mesh)
+                                except Exception:
+                                    pass
+                        break
+                    except Exception:
+                        pass
+
+            # Log the rebuilt mesh size on the first sample — proves
+            # whether mesh() actually honours self.nslice or not.
+            if not sample_logged and rebuilt_mesh is not None:
+                try:
+                    polys = getattr(rebuilt_mesh, "polygons", None)
+                    n_polys = len(polys) if polys is not None else "?"
+                    n_verts = getattr(rebuilt_mesh, "nvertices",
+                                      lambda: "?")() if hasattr(
+                                          rebuilt_mesh, "nvertices") else "?"
+                    print(f"  [TESSELLATION] sample via .{rebuilt_method}(): "
+                          f"{n_polys} polygons, expected ~{4 * nslice}",
+                          flush=True)
+                except Exception as exc:
+                    print(f"  [TESSELLATION] sample mesh inspect failed: {exc}",
+                          flush=True)
+            bumped_by[cls] += 1
+            # Log the first bumped sample so we can confirm the
+            # attribute actually stuck (and what the live value is).
+            # Also dump its full instance dict + class-level attrs so
+            # we can see what other tessellation knobs exist.
+            if not sample_logged:
+                for a in SLICE_ATTRS:
+                    if hasattr(s, a):
+                        try:
+                            live = getattr(s, a)
+                            name = getattr(s, "name", "?")
+                            print(f"  [TESSELLATION] verify: {cls} "
+                                  f"'{name}'.{a} = {live}", flush=True)
+                            sample_logged = True
+                            break
+                        except Exception:
+                            pass
+                # Deep introspection: instance + class attrs whose names
+                # hint at tessellation knobs.  Surfaces what we need to
+                # set instead if self.nslice isn't enough.
+                try:
+                    cls_t = type(s)
+                    print(f"  [TESSELLATION] sample class: "
+                          f"{cls_t.__module__}.{cls_t.__name__}",
+                          flush=True)
+                    inst_keys = sorted(k for k in vars(s).keys()
+                                       if not k.startswith("__"))
+                    cls_attrs = sorted(a for a in dir(cls_t)
+                                       if any(t in a.lower() for t in
+                                              ("slice","slic","segment",
+                                               "side","sub","mesh","poly","tess")))
+                    print(f"  [TESSELLATION] sample vars: {inst_keys}",
+                          flush=True)
+                    print(f"  [TESSELLATION] sample class tessellation-ish "
+                          f"attrs: {cls_attrs}", flush=True)
+                except Exception:
+                    pass
+
+    total = sum(bumped_by.values())
+    all_types    = ", ".join(f"{k}={v}" for k, v in sorted(by_type.items()))
+    bumped_types = ", ".join(f"{k}={v}" for k, v in sorted(bumped_by.items())) or "none"
+    print(f"  [TESSELLATION] registry: [{all_types}]", flush=True)
+    print(f"  [TESSELLATION] bumped {total}/{sum(by_type.values())} "
+          f"nslice={nslice} nstack={nstack} [{bumped_types}]", flush=True)
+
+    # --- Now rebuild every LogicalVolume's cached mesh.
+    # pyg4ometry's VtkViewer.addLogicalVolume reads from logical.mesh
+    # (an LV-level cache built at LV construction time, when the solid's
+    # nslice was still the default 16).  Without this rebuild step the
+    # solid-level bump above is invisible to the viewer.
+    _rebuild_lv_meshes(reg)
+
+    return total
+
+
+def _rebuild_lv_meshes(reg) -> int:
+    """
+    Replace each LogicalVolume's cached ``.mesh`` with a freshly-built
+    one so the post-bump nslice on the solids actually reaches the
+    visualisation pipeline.
+
+    Tries the documented Mesh constructor signatures in order; logs
+    which one took.  Skips assemblies / LVs without a solid attribute.
+    Returns the number of LVs rebuilt.
+    """
+    try:
+        from pyg4ometry.visualisation import Mesh as _VisMesh
+    except Exception as exc:
+        print(f"  [TESSELLATION] cannot import pyg4ometry.visualisation.Mesh: "
+              f"{exc} (LV mesh rebuild skipped)", flush=True)
+        return 0
+
+    # Try each constructor signature in priority order.  The first
+    # signature that doesn't raise TypeError is the one in use.
+    ctor_attempts = (
+        lambda lv: _VisMesh(lv.solid),
+        lambda lv: _VisMesh(lv.solid, lv=lv),
+        lambda lv: _VisMesh(lv.solid, registry=lv.registry),
+        lambda lv: _VisMesh(lv),
+    )
+
+    rebuilt = 0
+    failed  = 0
+    sample_logged = False
+    lvs = getattr(reg, "logicalVolumeDict", {}) or {}
+    for lv_name, lv in list(lvs.items()):
+        if not hasattr(lv, "solid"):
+            continue
+        new_mesh = None
+        last_err = None
+        for ctor in ctor_attempts:
+            try:
+                new_mesh = ctor(lv)
+                break
+            except TypeError as exc:
+                last_err = exc
+                continue
+            except Exception as exc:
+                last_err = exc
+                # constructor signature matched but build failed — stop trying
+                break
+        if new_mesh is None:
+            failed += 1
+            if not sample_logged:
+                print(f"  [TESSELLATION] LV mesh rebuild failed for "
+                      f"'{lv_name}': {last_err}", flush=True)
+                sample_logged = True
+            continue
+        try:
+            lv.mesh = new_mesh
+            rebuilt += 1
+        except Exception as exc:
+            failed += 1
+            if not sample_logged:
+                print(f"  [TESSELLATION] LV mesh assign failed for "
+                      f"'{lv_name}': {exc}", flush=True)
+                sample_logged = True
+
+    print(f"  [TESSELLATION] LV meshes rebuilt: {rebuilt} "
+          f"(failed: {failed}, total LVs: {len(lvs)})", flush=True)
+    return rebuilt
+
 _TRACKER_RESPLIT_KEYS = (
     "tracker", "trk", "tpc", "silicon", "vertex", "inner_tracker",
     "outer_tracker", "barrel_tracker", "endcap_tracker",
@@ -2066,6 +2380,15 @@ def _convert_single(
         n_volumes = len(reg.logicalVolumeDict)
         print(f"  [{_ts()}] Read done ({_elapsed(t0)}) — {n_volumes} logical volumes",
               flush=True)
+
+        # ---- Bump azimuthal / polar resolution on curved solids ----
+        # pyg4ometry's default nslice (≈16) tessellates a cylinder into a
+        # visible 16-gon at any rendering distance.  Bumping to a high
+        # value here yields perceptually-smooth silhouettes at 4K render
+        # resolution.  Cost: ~nslice/16× face count on every Tubs / Cone /
+        # Sphere / Polycone — usually negligible since the Blender import
+        # pipeline caps each mesh at 30K faces anyway.
+        _bump_curved_solid_resolution(reg)
 
         # ---- Build scene ----
         t0 = time.monotonic()

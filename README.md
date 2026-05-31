@@ -44,6 +44,66 @@ Place `MAIA_260226.gdml` in your working directory (or any directory you
 prefer — just `cd` there first). All paths inside the container start with
 `/data`, which maps to your current directory on the host.
 
+### 0. (Optional) Generate the GDML from a DD4hep compact XML
+
+If you only have the DD4hep compact description and not the flattened
+GDML, `scripts/compact_to_gdml.sh` runs DD4hep's `geoConverter` inside a
+Docker container — no local DD4hep / ROOT / Geant4 install needed. The
+default image is the legacy Muon Collider simulation stack
+(`ghcr.io/muoncollidersoft/mucoll-sim-alma9:legacy-2.x`), which ships
+DD4hep + the MuC detector model pre-configured and provides the legacy
+`_o1_v0X` detector plugin variants MAIA's compact still references.
+The newer `mucoll-sim-ubuntu24:v2.11-amd64` image is faster but has
+ABI mismatches against MAIA's older plugin set.
+
+```bash
+# Default output: alongside the compact, .xml → .gdml
+./scripts/compact_to_gdml.sh /path/to/MAIA/compact/MAIA.xml
+
+# Custom output path
+./scripts/compact_to_gdml.sh MAIA.xml -o /tmp/MAIA_260226.gdml
+
+# Use a different DD4hep image (e.g. plain AIDASoft DD4hep)
+./scripts/compact_to_gdml.sh MAIA.xml \
+    --image ghcr.io/aidasoft/dd4hep:latest
+
+# Pull the image first (e.g. to refresh to the latest tag)
+./scripts/compact_to_gdml.sh MAIA.xml --pull
+
+# Debug XInclude / plugin errors interactively
+./scripts/compact_to_gdml.sh MAIA.xml --shell
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-o`, `--out PATH` | `<compact>.gdml` | Output GDML path |
+| `--image NAME` | `ghcr.io/muoncollidersoft/mucoll-sim-alma9:legacy-2.x` | Docker image with DD4hep |
+| `--pull` | off | `docker pull` the image before running |
+| `--shell` | off | Drop into bash inside the container with the mounts in place |
+
+These HEP images need a per-image init script sourced before `geoConverter`
+is on `PATH`. The script searches common paths in this order:
+
+1. `$DDGDML_INIT` (host env var — overrides everything)
+2. `/opt/ilcsoft/muonc/init_ilcsoft.sh` (Muon Collider stack)
+3. `/opt/setup.sh`, `/setup.sh`
+4. `/opt/spack-environments/*/activate.sh`, `/opt/*/setup.sh`
+
+If your image puts its init somewhere else, set `DDGDML_INIT=/path/in/container`
+on the host and re-run.
+
+The script bind-mounts the compact file's parent directory as `/compact`
+(read-only) so the XInclude'd materials / segmentations / sub-detector
+XMLs resolve, and writes the GDML to a `/out` mount.
+
+If your compact includes files from **outside** that parent directory,
+either copy them in first or use `--shell` to set up custom mounts by
+hand. `geoConverter` inside the container is invoked as:
+
+```
+geoConverter -compact2gdml -input /compact/<input.xml> -output /out/<output.gdml>
+```
+
 ### 1. Split into sub-detector GDMLs
 
 ```bash

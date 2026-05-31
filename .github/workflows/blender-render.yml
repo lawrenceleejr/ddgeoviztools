@@ -1,0 +1,67 @@
+name: Blender render
+
+# Build the Blender scene and render every stationary camera headlessly,
+# then publish the resulting images as build artifacts. Runs on every push.
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The Dockerfile installs Blender 5.0, the Python deps, and trimesh into
+      # Blender's bundled interpreter — exactly what blender-scene needs.
+      - name: Build Docker image
+        run: docker build -t ddgeoviztools .
+
+      # Build the .blend from the pre-converted sub-detector meshes shipped in
+      # test/ (the blender-scene step only needs bpy + trimesh, no VTK).
+      # DDGEOVIZTOOLS_DENOISE=0 keeps OIDN off during the headless save —
+      # the plugin loader can crash save_as_mainfile on a Blender 5.0+
+      # build without OIDN shared libs.  Shipped .blends opened on a
+      # workstation default to denoise ON.
+      - name: Build Blender scene
+        run: |
+          mkdir -p ci_render/renders
+          docker run --rm -v "$PWD:/data" -w /data \
+            -e DDGEOVIZTOOLS_DENOISE=0 \
+            ddgeoviztools \
+            blender-scene /data/test \
+            --output /data/ci_render/scene.blend \
+            --format gltf
+
+      # Render each stationary camera (Cam_Transverse, Cam_Side,
+      # Cam_Perspective) headlessly on CPU. The animated Cam_Hero is skipped.
+      - name: Render stationary cameras
+        run: |
+          docker run --rm --entrypoint blender -v "$PWD:/data" -w /data \
+            ddgeoviztools \
+            --background /data/ci_render/scene.blend \
+            --python-exit-code 1 \
+            --python /data/scripts/render_cameras.py -- \
+            --out /data/ci_render/renders \
+            --samples 32 --width 1280 --height 720 --device CPU
+
+      - name: Verify renders were produced
+        run: |
+          shopt -s nullglob
+          imgs=(ci_render/renders/*.png)
+          if [ ${#imgs[@]} -eq 0 ]; then
+            echo "No rendered images found!" >&2
+            exit 1
+          fi
+          echo "Rendered ${#imgs[@]} image(s):"
+          ls -l ci_render/renders/
+
+      - name: Upload render artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-camera-renders
+          path: ci_render/renders/*.png
+          if-no-files-found: error

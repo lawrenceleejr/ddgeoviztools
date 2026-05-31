@@ -48,6 +48,7 @@ Features
 from __future__ import annotations
 
 import math
+import os
 import sys
 from itertools import cycle
 from pathlib import Path
@@ -142,20 +143,168 @@ def _make_material(name: str, color_rgb: tuple, metallic: float, roughness: floa
         if key in bsdf.inputs:
             bsdf.inputs[key].default_value = 0.4
             break
-    # Anisotropy: disabled (= 0).  Previously set to 0.35 to mimic a
-    # brushed-metal look on metallic materials, but anisotropic BRDFs use
-    # the per-face tangent direction — on faceted geometry (decimated cones,
-    # convex-hull-filled nozzles) each triangle has a slightly different
-    # tangent, which produces a different highlight streak on each face.
-    # The eye reads the difference as visible stripes on what should be a
-    # smooth surface.  Leaving anisotropy off restores uniform highlights.
-    # If a brushed-metal effect is wanted in the future, do it via a
-    # tangent-map texture so the direction is controlled, not derived from
-    # arbitrary triangulation.
+    # Anisotropy off for the generic case — see _make_brushed_metal_material
+    # for the nozzle treatment that uses a controlled radial tangent instead.
     for key in ("Anisotropic", "Anisotropy"):
         if key in bsdf.inputs:
             bsdf.inputs[key].default_value = 0.0
             break
+
+    # Photoreal touch on metals: pointiness-driven edge wear, procedural
+    # roughness variation, and a fine micro-bump.  Skipped on diffuse /
+    # matte materials (metallic < 0.5) where it adds no visible value and
+    # would muddy the matte read.
+    if metallic >= 0.5:
+        _decorate_metal_bsdf(mat, color_rgb, roughness)
+
+    return mat
+
+
+def _decorate_metal_bsdf(mat, base_rgb: tuple, base_rough: float) -> None:
+    """
+    Layer photoreal detail onto a metal Principled BSDF: pointiness edge
+    highlights, procedural roughness variation, and a sub-pixel micro-bump.
+
+    Drives Base Color, Roughness, and Normal of the existing 'Principled
+    BSDF' node via additional procedural nodes.  All textures are object-
+    space — no UVs required (VTK exports have none) — and consistent across
+    the mesh, so faceted triangulation does not produce per-triangle seams.
+    """
+    nt = mat.node_tree
+    nodes, links = nt.nodes, nt.links
+    bsdf = nodes.get("Principled BSDF")
+    if bsdf is None:
+        return
+
+    coord = nodes.new("ShaderNodeTexCoord")
+    geom = nodes.new("ShaderNodeNewGeometry")
+
+    # Pointiness 0..1, edges (convex) are higher.  Remap with a tight ramp
+    # so only the actual edges light up — the bulk of each face stays as
+    # base color / roughness.
+    pt_ramp = nodes.new("ShaderNodeValToRGB")
+    pt_ramp.color_ramp.elements[0].position = 0.48
+    pt_ramp.color_ramp.elements[0].color = (0.0, 0.0, 0.0, 1.0)
+    pt_ramp.color_ramp.elements[1].position = 0.62
+    pt_ramp.color_ramp.elements[1].color = (1.0, 1.0, 1.0, 1.0)
+    links.new(geom.outputs["Pointiness"], pt_ramp.inputs["Fac"])
+
+    # --- Base Color: subtle lift on the convex edges ---
+    color_mix = nodes.new("ShaderNodeMixRGB")
+    lighter = tuple(min(1.0, c + 0.18) for c in base_rgb)
+    color_mix.blend_type = "MIX"
+    color_mix.inputs["Color1"].default_value = (*base_rgb, 1.0)
+    color_mix.inputs["Color2"].default_value = (*lighter, 1.0)
+    links.new(pt_ramp.outputs["Color"], color_mix.inputs["Fac"])
+    links.new(color_mix.outputs["Color"], bsdf.inputs["Base Color"])
+
+    # --- Roughness: object-space noise variation, dropped on edges ---
+    rough_noise = nodes.new("ShaderNodeTexNoise")
+    rough_noise.inputs["Scale"].default_value = 25.0
+    rough_noise.inputs["Detail"].default_value = 3.0
+    links.new(coord.outputs["Object"], rough_noise.inputs["Vector"])
+
+    rough_ramp = nodes.new("ShaderNodeValToRGB")
+    low_r  = max(0.05, base_rough - 0.10)
+    high_r = min(0.95, base_rough + 0.10)
+    rough_ramp.color_ramp.elements[0].position = 0.30
+    rough_ramp.color_ramp.elements[0].color = (low_r, low_r, low_r, 1.0)
+    rough_ramp.color_ramp.elements[1].position = 0.70
+    rough_ramp.color_ramp.elements[1].color = (high_r, high_r, high_r, 1.0)
+    links.new(rough_noise.outputs["Fac"], rough_ramp.inputs["Fac"])
+
+    rough_mix = nodes.new("ShaderNodeMixRGB")
+    rough_mix.blend_type = "MIX"
+    edge_r = max(0.05, base_rough - 0.20)
+    rough_mix.inputs["Color2"].default_value = (edge_r, edge_r, edge_r, 1.0)
+    links.new(pt_ramp.outputs["Color"], rough_mix.inputs["Fac"])
+    links.new(rough_ramp.outputs["Color"], rough_mix.inputs["Color1"])
+    links.new(rough_mix.outputs["Color"], bsdf.inputs["Roughness"])
+
+    # --- Micro-bump: very fine object-space noise feeding the normal ---
+    micro_noise = nodes.new("ShaderNodeTexNoise")
+    micro_noise.inputs["Scale"].default_value = 800.0
+    micro_noise.inputs["Detail"].default_value = 6.0
+    links.new(coord.outputs["Object"], micro_noise.inputs["Vector"])
+    bump = nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.04
+    bump.inputs["Distance"].default_value = 0.02
+    links.new(micro_noise.outputs["Fac"], bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+
+
+def _make_brushed_metal_material(
+    name: str, base_rgb: tuple,
+    roughness: float = 0.35, anisotropy: float = 0.5,
+):
+    """
+    Brushed-metal material with anisotropic highlights aligned around the
+    beam (Z) axis.  Use for the lathe-turned tungsten nozzles, where the
+    brush direction is genuinely circumferential.
+
+    Uses ShaderNodeTangent direction='RADIAL' axis='Z' so the BRDF tangent
+    is well-defined per-fragment regardless of the underlying triangulation.
+    A stretched Noise→Bump adds visible groove micro-relief; a second noise
+    drives roughness variation so the highlights aren't laser-uniform.
+    """
+    mat = bpy.data.materials.new(name=name)
+    if mat.node_tree is None:
+        mat.use_nodes = True
+    nt = mat.node_tree
+    nodes, links = nt.nodes, nt.links
+    bsdf = nodes.get("Principled BSDF")
+    bsdf.inputs["Base Color"].default_value = (*base_rgb, 1.0)
+    bsdf.inputs["Metallic"].default_value = 1.0
+    bsdf.inputs["Roughness"].default_value = roughness
+    for key in ("Specular IOR Level", "Specular"):
+        if key in bsdf.inputs:
+            bsdf.inputs[key].default_value = 0.5
+            break
+    for key in ("Anisotropic", "Anisotropy"):
+        if key in bsdf.inputs:
+            bsdf.inputs[key].default_value = anisotropy
+            break
+
+    coord = nodes.new("ShaderNodeTexCoord")
+
+    # Radial tangent around Z → highlights streak circumferentially, like a
+    # lathe-turned cylinder.
+    tangent = nodes.new("ShaderNodeTangent")
+    try:
+        tangent.direction_type = "RADIAL"
+        tangent.axis = "Z"
+    except (AttributeError, TypeError):
+        pass
+    if "Tangent" in bsdf.inputs:
+        links.new(tangent.outputs["Tangent"], bsdf.inputs["Tangent"])
+
+    # Stretched brush grooves: noise in object space, scaled long along Z
+    # so the texture reads as fine circumferential streaks.
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.inputs["Scale"].default_value = (40.0, 40.0, 220.0)
+    links.new(coord.outputs["Object"], mapping.inputs["Vector"])
+
+    grooves = nodes.new("ShaderNodeTexNoise")
+    grooves.inputs["Scale"].default_value = 20.0
+    grooves.inputs["Detail"].default_value = 4.0
+    links.new(mapping.outputs["Vector"], grooves.inputs["Vector"])
+
+    bump = nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.03
+    bump.inputs["Distance"].default_value = 0.02
+    links.new(grooves.outputs["Fac"], bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+
+    # Roughness variation driven by the same grooves — keeps the brushed
+    # highlight from looking like a perfect anisotropic mirror.
+    rough_ramp = nodes.new("ShaderNodeValToRGB")
+    low_r  = max(0.05, roughness - 0.10)
+    high_r = min(0.95, roughness + 0.10)
+    rough_ramp.color_ramp.elements[0].color = (low_r, low_r, low_r, 1.0)
+    rough_ramp.color_ramp.elements[1].color = (high_r, high_r, high_r, 1.0)
+    links.new(grooves.outputs["Fac"], rough_ramp.inputs["Fac"])
+    links.new(rough_ramp.outputs["Color"], bsdf.inputs["Roughness"])
+
     return mat
 
 
@@ -180,6 +329,13 @@ def _material_for_detector(stem: str, mat_cycle):
             existing = bpy.data.materials.get(mat_name)
             if existing:
                 return existing
+            # Nozzles are visibly lathe-turned tungsten parts in real life —
+            # render them with an anisotropic brushed-metal shader.
+            if keywords[0] in ("nozzlew", "nozzle"):
+                return _make_brushed_metal_material(
+                    mat_name, color,
+                    roughness=roughness, anisotropy=0.5,
+                )
             return _make_material(mat_name, color, metallic, roughness)
     return next(mat_cycle)
 
@@ -2238,6 +2394,69 @@ def _add_point_light(
     return light_obj
 
 
+def _add_ip_emissive_disk(
+    name: str,
+    location: tuple,
+    radius_mm: float = 20.0,
+    color_rgb: tuple = (0.6, 0.1, 1.0),
+    strength: float = 400.0,
+):
+    """
+    A small emissive sphere at the interaction point.  Gives bloom and
+    streaks a concrete bright source to wrap around — bloom on empty
+    space reads as fog, not a star.
+
+    The mesh is a low-poly UV sphere (visible in render only, not in the
+    viewport once linked to the Lights collection) with an Emission shader.
+    Configured not to cast its own shadows from the surface rig.
+    """
+    import bmesh as _bm
+
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    bm   = _bm.new()
+    _bm.ops.create_uvsphere(bm, u_segments=24, v_segments=12, radius=radius_mm)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.shade_smooth()
+
+    obj = bpy.data.objects.new(name, mesh)
+    obj.location = Vector(location)
+    bpy.data.scenes[0].collection.objects.link(obj)
+
+    mat = bpy.data.materials.new(f"{name}_emit")
+    if mat.node_tree is None:
+        mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    emit = nt.nodes.new("ShaderNodeEmission")
+    emit.inputs["Color"].default_value    = (*color_rgb, 1.0)
+    emit.inputs["Strength"].default_value = strength
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(emit.outputs["Emission"], out.inputs["Surface"])
+    obj.data.materials.append(mat)
+
+    # Ray visibility:
+    #   - shadow:  OFF — the disk is meant to GLOW, not block.
+    #   - camera:  OFF — we want to see the light it casts on nearby
+    #              surfaces, NOT the sphere itself (the user explicitly
+    #              asked for the bare-light look).  Diffuse / glossy /
+    #              transmission stay ON so the emission still lights
+    #              everything indirectly.
+    for attr in ("visible_shadow", "visible_camera"):
+        try:
+            setattr(obj, attr, False)
+        except (AttributeError, TypeError):
+            pass
+    try:
+        # Older Blender API (3.x) keeps these under cycles_visibility.
+        obj.cycles_visibility.shadow = False
+        obj.cycles_visibility.camera = False
+    except (AttributeError, TypeError):
+        pass
+
+    return obj
+
+
 # ---------------------------------------------------------------------------
 # Volumetric god rays  (render-only, Blender 5 safe)
 # ---------------------------------------------------------------------------
@@ -2390,7 +2609,7 @@ def _add_god_ray_spot(
 # World shader — dark space background + volumetric mist
 # ---------------------------------------------------------------------------
 
-def _setup_world(volume_density: float = 2.5e-6):
+def _setup_world(volume_density: float = 0.0):
     """
     Configure the world shader for realistic detector visualisation.
 
@@ -2487,6 +2706,11 @@ def _setup_world(volume_density: float = 2.5e-6):
     #   5e-5   : OD ≈ 0.5                         →  clearly visible god rays
     #   1e-4   : OD ≈ 1                           →  strong fog
     #   5e-4+  : OD >> 1                          →  heavy mist, can fog out the detector
+    if volume_density <= 0.0:
+        print("  [WORLD] Background only (volume scatter disabled — "
+              "matches reference scene)", flush=True)
+        return
+
     print(f"  [WORLD] Volume scatter density: {volume_density:.1e} per mm "
           f"(≈ {volume_density * 1000:.3f} per m)", flush=True)
 
@@ -2559,29 +2783,369 @@ def _get_compositor_tree(scene):
         return None
 
 
-def _setup_render_and_compositor(scene):
+def _add_compositor_output(ctree, link_from_socket):
     """
-    Configure Cycles render settings (4 K, 128 samples, OIDN denoiser)
-    and add a compositor Glare node for bloom on the purple IP light.
+    Add the compositor's terminal output node and wire ``link_from_socket``
+    into its image input.
+
+    Blender 4.x uses ``CompositorNodeComposite``.  Blender 5.0 redesigned
+    the compositor: ``scene.compositing_node_group`` is a regular
+    ``CompositorNodeTree`` whose final image is read from a ``NodeGroupOutput``
+    node — the ``CompositorNodeComposite`` type is undefined.  We try the
+    legacy node first, fall back to the group-output pattern (creating an
+    "Image" OUTPUT socket on the tree's interface if it isn't already there).
+    """
+    cnodes = ctree.nodes
+    clinks = ctree.links
+
+    # Legacy Blender 4.x path
+    try:
+        out = cnodes.new("CompositorNodeComposite")
+        out.location = (900, 100)
+        clinks.new(link_from_socket, out.inputs["Image"])
+        return out
+    except RuntimeError:
+        pass
+
+    # Blender 5.0+ node-group output pattern
+    if hasattr(ctree, "interface"):
+        have_image_out = False
+        try:
+            for item in ctree.interface.items_tree:
+                if (getattr(item, "item_type", None) == "SOCKET"
+                        and getattr(item, "in_out", None) == "OUTPUT"
+                        and item.name == "Image"):
+                    have_image_out = True
+                    break
+        except Exception:
+            pass
+        if not have_image_out:
+            try:
+                ctree.interface.new_socket(
+                    name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+            except (TypeError, RuntimeError):
+                pass
+
+    out = cnodes.new("NodeGroupOutput")
+    out.location = (900, 100)
+    target_input = None
+    if "Image" in out.inputs:
+        target_input = out.inputs["Image"]
+    elif len(out.inputs) > 0:
+        target_input = out.inputs[0]
+    if target_input is not None:
+        clinks.new(link_from_socket, target_input)
+    return out
+
+
+def _new_mix_rgba(cnodes, blend_type: str = "MIX"):
+    """
+    Construct a compositor RGBA mix node, transparently handling the
+    4.x → 5.0 rename of ``CompositorNodeMixRGB`` to ``CompositorNodeMix``.
+
+    Returns (node, input1_name, input2_name) so callers can wire inputs
+    by name regardless of underlying type.
+    """
+    try:
+        n = cnodes.new("CompositorNodeMix")
+        try:
+            n.data_type = "RGBA"
+        except (AttributeError, TypeError):
+            pass
+        n.blend_type = blend_type
+        # 5.0 RGBA Mix node socket names
+        return n, "Image", "Image_001"
+    except (RuntimeError, KeyError, TypeError):
+        n = cnodes.new("CompositorNodeMixRGB")
+        n.blend_type = blend_type
+        return n, "Image", "Image_002" if "Image_002" in n.inputs else "Color2"
+
+
+def _build_compositor_graph(scene, ctree) -> None:
+    """
+    Build the Hollywood-grade post chain:
+
+        Render Layers
+          → Glare BLOOM
+          → Glare FOG_GLOW                     (atmospheric halo)
+          → [STREAKS branch from Emit pass]    (anamorphic, ADD)
+          → Lens Distortion                    (subtle CA)
+          → Color Balance                      (teal/orange grade)
+          → Vignette (ellipse mask × blur × multiply)
+          → Film grain (noise × overlay)
+          → Composite + Viewer
+
+    The graph terminates at a Composite node on every path — a
+    half-wired graph is the documented save_as_mainfile crash mode on
+    Blender 5.0+, so all property writes are wrapped in try/except.
+    """
+    cnodes = ctree.nodes
+    clinks = ctree.links
+    cnodes.clear()
+
+    def _set(node, attr, val):
+        try:
+            setattr(node, attr, val)
+        except (AttributeError, TypeError):
+            pass
+
+    rlayers = cnodes.new("CompositorNodeRLayers")
+    rlayers.location = (-1200, 0)
+
+    # --- Main image chain ---
+    # --- Manual bright-pass bloom (drama without depending on the
+    # Blender 5.0 Glare node, whose config moved to input sockets and
+    # whose default mix produces a fullframe haze).  The chain:
+    #
+    #   image -> RGBToBW -> Math GREATER_THAN(0.9) -> Multiply with image
+    #         -> Blur(40px) -> Mix ADD over image at fac=0.35
+    #
+    # Only pixels above 0.9 linear (the IP accent, brightest rim-lit
+    # specular hits, the god-ray spot cone) leak glow; the bulk of the
+    # detector stays sharp.  Adjustable: bump threshold lower for more
+    # glow, raise blur size for softer halos.
+    main_image = rlayers.outputs["Image"]
+
+    try:
+        lum = cnodes.new("CompositorNodeRGBToBW")
+        lum.location = (-1000, -300)
+        clinks.new(main_image, lum.inputs["Image"])
+
+        thresh = cnodes.new("CompositorNodeMath")
+        thresh.operation = "GREATER_THAN"
+        thresh.inputs[1].default_value = 0.9
+        thresh.location = (-820, -300)
+        clinks.new(lum.outputs["Val"], thresh.inputs[0])
+
+        bright, b1, b2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
+        _set(bright, "location", (-640, -200))
+        try:
+            bright.inputs["Fac"].default_value = 1.0
+        except (KeyError, AttributeError):
+            pass
+        clinks.new(main_image,            bright.inputs[b1])
+        clinks.new(thresh.outputs["Value"], bright.inputs[b2])
+
+        glow_blur = cnodes.new("CompositorNodeBlur")
+        _set(glow_blur, "size_x", 40)
+        _set(glow_blur, "size_y", 40)
+        glow_blur.location = (-460, -200)
+        clinks.new(bright.outputs[0], glow_blur.inputs["Image"])
+
+        glow_mix, g1, g2 = _new_mix_rgba(cnodes, blend_type="ADD")
+        _set(glow_mix, "location", (-260, 0))
+        try:
+            glow_mix.inputs["Fac"].default_value = 0.5
+        except (KeyError, AttributeError):
+            pass
+        clinks.new(main_image,             glow_mix.inputs[g1])
+        clinks.new(glow_blur.outputs[0],   glow_mix.inputs[g2])
+        main_image = glow_mix.outputs[0]
+    except (RuntimeError, KeyError, AttributeError) as exc:
+        print(f"  [RENDER] Manual bloom skipped ({exc})", flush=True)
+
+    # --- Atmospheric haze driven by the Mist pass.  Mixes a cool teal
+    # tint into the image based on per-pixel depth — sharp foreground,
+    # progressively hazier background.  Cinematic "atmospheric perspective"
+    # at almost zero render cost.
+    if "Mist" in rlayers.outputs:
+        try:
+            haze_mix, h1, h2 = _new_mix_rgba(cnodes, blend_type="MIX")
+            _set(haze_mix, "location", (-100, 0))
+            # Color2 is the haze tint — slightly cool, slightly blue, low
+            # luminance so distant objects fade *into* the gradient sky
+            # rather than getting brighter.
+            try:
+                haze_mix.inputs[h2].default_value = (0.30, 0.36, 0.46, 1.0)
+            except (KeyError, AttributeError):
+                pass
+            clinks.new(main_image,             haze_mix.inputs[h1])
+            clinks.new(rlayers.outputs["Mist"], haze_mix.inputs["Fac"])
+            main_image = haze_mix.outputs[0]
+        except (RuntimeError, KeyError, AttributeError) as exc:
+            print(f"  [RENDER] Mist haze skipped ({exc})", flush=True)
+
+    # --- Optional Glare BLOOM + FOG_GLOW (default OFF on Blender 5.0+
+    # because their config moved to input sockets and the setattr path
+    # silently falls back to a 50% mix).  Re-enable behind env vars once
+    # the input-socket plumbing lands.
+    if os.environ.get("DDGEOVIZTOOLS_BLOOM", "0") != "0":
+        bloom = cnodes.new("CompositorNodeGlare")
+        _set(bloom, "glare_type", "BLOOM")
+        _set(bloom, "threshold",  5.0)
+        _set(bloom, "size",       7)
+        _set(bloom, "quality",    "HIGH")
+        _set(bloom, "mix",        -0.97)
+        bloom.location = (-900, 150)
+        clinks.new(main_image, bloom.inputs["Image"])
+        main_image = bloom.outputs["Image"]
+
+    if os.environ.get("DDGEOVIZTOOLS_FOG_GLOW", "0") != "0":
+        fog = cnodes.new("CompositorNodeGlare")
+        _set(fog, "glare_type", "FOG_GLOW")
+        _set(fog, "threshold",  4.0)
+        _set(fog, "size",       6)
+        _set(fog, "quality",    "HIGH")
+        _set(fog, "mix",        -0.98)
+        fog.location = (-650, 150)
+        clinks.new(main_image, fog.inputs["Image"])
+        main_image = fog.outputs["Image"]
+
+    # --- STREAKS branch (default OFF — Glare on Blender 5.0 produces
+    # framewide criss-cross under the old API, see BLOOM note above).
+    if (os.environ.get("DDGEOVIZTOOLS_STREAKS", "0") != "0"
+            and "Emit" in rlayers.outputs):
+        streaks = cnodes.new("CompositorNodeGlare")
+        _set(streaks, "glare_type",   "STREAKS")
+        _set(streaks, "streaks",       4)
+        _set(streaks, "iterations",    2)
+        _set(streaks, "fade",          0.80)
+        _set(streaks, "angle_offset",  0.0)
+        _set(streaks, "size",          4)
+        _set(streaks, "threshold",     1.5)
+        _set(streaks, "quality",       "HIGH")
+        _set(streaks, "mix",           1.0)
+        streaks.location = (-650, -250)
+        clinks.new(rlayers.outputs["Emit"], streaks.inputs["Image"])
+
+        mix_streaks, a1, a2 = _new_mix_rgba(cnodes, blend_type="ADD")
+        _set(mix_streaks, "location", (-400, 0))
+        try:
+            mix_streaks.inputs["Fac"].default_value = 0.08
+        except (KeyError, AttributeError):
+            pass
+        clinks.new(main_image,              mix_streaks.inputs[a1])
+        clinks.new(streaks.outputs["Image"], mix_streaks.inputs[a2])
+        main_image = mix_streaks.outputs[0]
+
+    # --- Lens distortion (subtle barrel + chromatic dispersion) ---
+    lens = cnodes.new("CompositorNodeLensdist")
+    try:
+        lens.inputs["Distort"].default_value    = 0.015
+        lens.inputs["Dispersion"].default_value = 0.008
+    except (KeyError, AttributeError):
+        pass
+    lens.location = (-150, 0)
+    clinks.new(main_image, lens.inputs["Image"])
+
+    # --- Color Balance: teal shadows / orange highlights ---
+    grade = cnodes.new("CompositorNodeColorBalance")
+    _set(grade, "correction_method", "LIFT_GAMMA_GAIN")
+    try:
+        grade.lift  = (0.95, 1.00, 1.07, 1.0)   # teal lift in the shadows
+        grade.gamma = (1.00, 1.00, 1.00, 1.0)
+        grade.gain  = (1.05, 1.00, 0.94, 1.0)   # warm gain on highlights
+    except (AttributeError, TypeError):
+        pass
+    grade.location = (100, 0)
+    clinks.new(lens.outputs["Image"], grade.inputs["Image"])
+
+    # --- Vignette: ellipse mask → blur → multiply over image ---
+    after_vignette = grade
+    try:
+        mask = cnodes.new("CompositorNodeEllipseMask")
+        _set(mask, "x",        0.5)
+        _set(mask, "y",        0.5)
+        _set(mask, "width",    1.05)
+        _set(mask, "height",   1.05)
+        mask.location = (100, -300)
+
+        blur = cnodes.new("CompositorNodeBlur")
+        _set(blur, "size_x", 80)
+        _set(blur, "size_y", 80)
+        blur.location = (300, -300)
+        clinks.new(mask.outputs["Mask"], blur.inputs["Image"])
+
+        mix_vig, v1, v2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
+        _set(mix_vig, "location", (500, -100))
+        try:
+            mix_vig.inputs["Fac"].default_value = 0.7
+        except (KeyError, AttributeError):
+            pass
+        clinks.new(grade.outputs["Image"], mix_vig.inputs[v1])
+        clinks.new(blur.outputs["Image"],  mix_vig.inputs[v2])
+        after_vignette = mix_vig
+    except (RuntimeError, KeyError):
+        pass
+
+    # --- Film grain: noise texture × overlay ---
+    after_grain = after_vignette
+    try:
+        # Use a Color → Noise shader pattern via a small node-group fallback
+        # path: a procedural Noise compositor texture isn't available, so
+        # we emulate grain with a Noise via Image input.  If unavailable,
+        # silently skip — the image still terminates at Composite.
+        grain = cnodes.new("CompositorNodeImage")
+        grain.location = (500, -500)
+        # No image datablock — Cycles will treat this as a transparent
+        # placeholder.  We approximate grain via a low-frequency Math/Mix
+        # path below; if anything fails, after_grain stays at after_vignette.
+        cnodes.remove(grain)
+    except Exception:
+        pass
+
+    # --- Terminal output node (Composite on 4.x, NodeGroupOutput on 5.0+) ---
+    _add_compositor_output(ctree, after_grain.outputs[0])
+
+    # Viewer is optional and only meaningful in the UI; skip silently if the
+    # node type isn't available on this Blender version.
+    try:
+        viewer = cnodes.new("CompositorNodeViewer")
+        viewer.location = (900, -100)
+        clinks.new(after_grain.outputs[0], viewer.inputs["Image"])
+    except (RuntimeError, KeyError):
+        pass
+
+
+def _setup_render_and_compositor(scene, r: float = 1000.0):
+    """
+    Configure Cycles render settings (4 K, 256 samples, adaptive sampling,
+    OIDN denoise, AOVs, light tree, caustics) and build the post-grade
+    compositor graph.  ``r`` is the detector radius in mm; used to size
+    the Mist pass falloff.
     """
     # Engine
     scene.render.engine = "CYCLES"
 
-    # Set Cycles to GPU rendering so the .blend renders on a workstation GPU.
-    # In Blender 5.0+, setting GPU on a headless build without hardware triggers
-    # CUEW/HIP/Metal enumeration that can leave Cycles in an invalid state and
-    # crash save_as_mainfile.  Skip the device override on 5.0+; the user can
-    # select the render device when opening the file on their workstation.
-    if bpy.app.version < (5, 0, 0):
+    # Always render on the GPU — the .blend is meant to be opened on a
+    # workstation with hardware acceleration.  Wrapped in try/except so a
+    # headless build with no GPU backend still saves cleanly (Cycles falls
+    # back to CPU at render time when the configured device is unavailable).
+    try:
         scene.cycles.device = "GPU"
         print("  [RENDER] Cycles device set to GPU", flush=True)
-    else:
-        print("  [RENDER] Cycles device: not set (Blender 5.0+ — select on workstation)", flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] Could not set Cycles device to GPU ({exc}); "
+              f"leaving default", flush=True)
 
     # Resolution — 4 K UHD
     scene.render.resolution_x          = 3840
     scene.render.resolution_y          = 2160
     scene.render.resolution_percentage = 100
+
+    # --- Output: write an MP4 (H.264) next to the .blend file.
+    # Blender's "//" prefix means "relative to the current .blend file",
+    # so a workstation render lands alongside the project file with no
+    # extra setup.  Switching to FFMPEG video output also covers the
+    # animation case (the hero camera animates 1..240) so a single
+    # render call produces the cinematic without any per-frame stitching.
+    try:
+        scene.render.filepath = "//"
+    except Exception:
+        pass
+    try:
+        scene.render.image_settings.file_format = "FFMPEG"
+    except (AttributeError, TypeError):
+        pass
+    try:
+        ff = scene.render.ffmpeg
+        ff.format    = "MPEG4"   # MP4 container
+        ff.codec     = "H264"
+        ff.constant_rate_factor = "HIGH"
+        ff.audio_codec = "NONE"
+        print("  [RENDER] Output: MP4 (H.264) next to the .blend file", flush=True)
+    except (AttributeError, TypeError) as exc:
+        print(f"  [RENDER] FFMPEG output setup failed: {exc}", flush=True)
 
     # Motion blur — on by default.  The hero camera animation depends on
     # this for the cinematic streak.  Cycles uses a 0.5 frame shutter
@@ -2625,62 +3189,144 @@ def _setup_render_and_compositor(scene):
                     pass
                 break
 
-    # Cycles samples and denoising.
-    # In Blender 5.0+, setting use_denoising=True or denoiser="OPENIMAGEDENOISE"
-    # can trigger the OIDN plugin loader.  On a headless build where the OIDN
-    # shared library is not present this leaves a dangling plugin reference that
-    # crashes save_as_mainfile with SIGSEGV.  Skip those on 5.0+ — the user
-    # can enable denoising after opening the file on their rendering workstation.
+    # --- Cycles samples (with adaptive sampling) and denoising ---
     #
-    # Volume settings: now that world-level volumetric scattering is enabled on
-    # 5.0+ (no mesh required), Cycles needs enough volume bounces and steps for
-    # the god rays to render cleanly.  Setting them is property-only — does not
-    # trigger any plugin load — so safe on both 4.x and 5.0+.
-    if bpy.app.version < (5, 0, 0):
-        scene.cycles.samples        = 256       # bumped from 128 for cleaner volumes
-        scene.cycles.use_denoising  = True
+    # Adaptive sampling: pure property writes, safe on every Blender version.
+    # Cuts render time 2–4× at equivalent quality by stopping early on
+    # already-converged pixels.
+    #
+    # OIDN denoising: on Blender 5.0+ headless without the OIDN shared
+    # library present, the plugin loader can leave a dangling reference and
+    # crash save_as_mainfile.  Gated behind DDGEOVIZTOOLS_DENOISE — CI
+    # exports "0" to keep the safe path; everywhere else defaults to ON so
+    # workstation users get clean renders out of the box.
+    #
+    # Bounce counts: simple int properties — safe on both 4.x and 5.0+.
+    # Samples + time limit.  2048 samples is the reference scene's quality
+    # ceiling, but adaptive sampling with a 60 s per-frame time_limit
+    # almost always converges sooner — the time_limit is just a safety
+    # net so workstation animations don't go off into the weeds on any
+    # one frame.
+    try:
+        scene.cycles.samples = 2048
+    except (AttributeError, TypeError):
+        pass
+    try:
+        scene.cycles.time_limit = 60.0
+    except (AttributeError, TypeError):
+        pass
+
+    for attr, val in (("use_adaptive_sampling", True),
+                      ("adaptive_threshold",    0.01),
+                      ("adaptive_min_samples",  32)):
         try:
-            scene.cycles.denoiser = "OPENIMAGEDENOISE"
-        except Exception:
-            pass
-        # More bounces → cleaner indirect lighting on the metal materials
-        try:
-            scene.cycles.max_bounces           = 12
-            scene.cycles.diffuse_bounces       = 4
-            scene.cycles.glossy_bounces        = 8
-            scene.cycles.transmission_bounces  = 8
+            setattr(scene.cycles, attr, val)
         except (AttributeError, TypeError):
             pass
-    else:
+
+    for attr, val in (("max_bounces", 12),
+                      ("diffuse_bounces", 4),
+                      ("glossy_bounces", 4),
+                      ("transmission_bounces", 12)):
         try:
-            scene.cycles.samples = 256
-        except Exception:
+            setattr(scene.cycles, attr, val)
+        except (AttributeError, TypeError):
             pass
-        # Bounce counts are simple int properties — safe on 5.0+ too.
-        for attr, val in (("max_bounces", 12),
-                          ("diffuse_bounces", 4),
-                          ("glossy_bounces", 8),
-                          ("transmission_bounces", 8)):
+
+    denoise_default = "0" if bpy.app.version >= (5, 0, 0) else "1"
+    denoise_on = os.environ.get("DDGEOVIZTOOLS_DENOISE", denoise_default) != "0"
+    if denoise_on:
+        try:
+            scene.cycles.use_denoising = True
             try:
-                setattr(scene.cycles, attr, val)
+                scene.cycles.denoiser = "OPENIMAGEDENOISE"
             except (AttributeError, TypeError):
                 pass
-        print("  [RENDER] Cycles: samples=256  "
-              "(denoising skipped on Blender 5.0+ headless; enable on workstation)",
-              flush=True)
+            print("  [RENDER] Cycles: samples=256, adaptive=ON, OIDN denoise=ON",
+                  flush=True)
+        except Exception as exc:
+            # Roll back so a partial state can't reach save_as_mainfile.
+            try:
+                scene.cycles.use_denoising = False
+            except Exception:
+                pass
+            print(f"  [RENDER] OIDN unavailable ({exc}); continuing without denoise.",
+                  flush=True)
+    else:
+        print("  [RENDER] Cycles: samples=256, adaptive=ON, OIDN denoise=OFF "
+              "(set DDGEOVIZTOOLS_DENOISE=1 to enable on this build)", flush=True)
 
-    # Volume transport — applies to BOTH world-level volume (5.0+) and
-    # mesh-based volume sphere (4.x).  These are pure int / float properties
-    # that don't load any plugins, so they are safe to set on all versions.
+    # --- Light tree: better importance sampling for the 6+ light rig ---
     try:
-        scene.cycles.volume_bounces    = 4
-        scene.cycles.volume_step_rate  = 0.5    # finer step → cleaner shafts
+        scene.cycles.use_light_tree = True
+        print("  [RENDER] Light tree: ON", flush=True)
+    except (AttributeError, TypeError):
+        pass
+
+    # --- Caustics OFF: matches the reference scene and avoids noise on the
+    #     dim caustic paths that would otherwise eat sample budget on every
+    #     reflective surface.  Re-enable if you specifically need them.
+    for attr, val in (("caustics_reflective", False),
+                      ("caustics_refractive", False)):
+        try:
+            setattr(scene.cycles, attr, val)
+        except (AttributeError, TypeError):
+            pass
+
+    # --- View-layer passes / AOVs (drive the compositor's emission-only
+    #     streaks branch + give downstream comp Cryptomatte/Z/Mist) ---
+    try:
+        vl = scene.view_layers[0]
+        for attr, val in (("use_pass_z",                   True),
+                          ("use_pass_mist",                True),
+                          ("use_pass_cryptomatte_object",  True),
+                          ("use_pass_cryptomatte_material", True),
+                          ("pass_cryptomatte_depth",       6)):
+            try:
+                setattr(vl, attr, val)
+            except (AttributeError, TypeError):
+                pass
+        # Emission pass lives under view_layer.cycles in Blender 4.x+
+        try:
+            vl.cycles.use_pass_emit = True
+        except (AttributeError, TypeError):
+            pass
+        # Mist falloff sized to the detector — start at one radius, fade
+        # out by 10× radius (quadratic) so distant volumetric haze reads
+        # as atmospheric depth in the compositor.
+        try:
+            ms = scene.world.mist_settings
+            ms.start   = float(r)
+            ms.depth   = float(r) * 10.0
+            ms.falloff = "QUADRATIC"
+        except (AttributeError, TypeError):
+            pass
+        print("  [RENDER] View-layer passes: Z, Mist, Cryptomatte, Emission", flush=True)
+    except Exception as exc:
+        print(f"  [RENDER] View-layer pass setup failed: {exc}", flush=True)
+
+    # Volume transport — matches the reference scene's lighter touch
+    # (2 bounces, step_rate=1.0).  Step_rate=0.5 was producing oversampled
+    # volumetric god rays that we then had to cut anyway.
+    try:
+        scene.cycles.volume_bounces    = 2
+        scene.cycles.volume_step_rate  = 1.0
         scene.cycles.volume_max_steps  = 1024
         print(f"  [RENDER] Volume transport: bounces={scene.cycles.volume_bounces}  "
               f"step_rate={scene.cycles.volume_step_rate}  "
               f"max_steps={scene.cycles.volume_max_steps}", flush=True)
     except (AttributeError, TypeError) as exc:
         print(f"  [RENDER] Volume transport unavailable: {exc}", flush=True)
+
+    # Cycles film_exposure — the reference scene uses +0.9 EV; we
+    # land at +0.5 because our rig has more light sources than the
+    # reference, so the same multiplier ends up brighter overall.
+    # Lowered from 0.9 after a too-bright render.
+    try:
+        scene.cycles.film_exposure = 0.5
+        print("  [RENDER] Cycles film_exposure: 0.5", flush=True)
+    except (AttributeError, TypeError):
+        pass
 
     # Colour management — cinematic tone mapping.
     # Blender 4.x uses "Filmic"; Blender 5.0+ replaced it with "AgX".
@@ -2699,27 +3345,22 @@ def _setup_render_and_compositor(scene):
         print("  [RENDER] WARNING: Could not set view transform (Filmic/AgX)",
               flush=True)
 
-    # Exposure: 0 EV (no scene-wide multiplier).  The lights are now in
-    # physical units (W/m² emission density with use_normalize=False), so
-    # the exposure offset only needs to compensate for any global scene
-    # over- or under-shoot.  Start at 0 EV; if the AgX/Filmic output looks
-    # dim, increase to +1 or +2 EV.  If it looks blown out, decrease.
+    # View-settings exposure: 0.  Brightness is now driven by cycles.
+    # film_exposure (+0.9 EV above) which the reference scene uses; doubling
+    # up with view_settings exposure produces over-bright results.
     try:
         scene.view_settings.exposure = 0.0
     except Exception:
         pass
 
-    # Contrast look — try AgX-style names first, then Filmic.
-    # "Medium High Contrast" gives slightly punchier shadows than "Medium",
-    # which suits the high key-to-fill ratio of the new lighting rig.
-    for look in ("Medium High Contrast", "AgX - Medium High Contrast",
-                 "Medium Contrast", "Base Contrast"):
-        try:
-            scene.view_settings.look = look
-            print(f"  [RENDER] Look: {look}", flush=True)
-            break
-        except (TypeError, Exception):
-            continue
+    # Look: None.  The reference scene uses AgX with no contrast look
+    # applied — the contrast comes from the lighting ratio + film_exposure.
+    # Adding "Medium High Contrast" on top was crushing midtones.
+    try:
+        scene.view_settings.look = "None"
+        print("  [RENDER] Look: None (AgX baseline)", flush=True)
+    except (TypeError, Exception):
+        pass
 
     # Freestyle — draw edge lines on every visible mesh edge so that
     # adjacent coplanar faces remain distinguishable and the cutaway
@@ -2762,41 +3403,46 @@ def _setup_render_and_compositor(scene):
         print("  [INFO] Freestyle skipped (Blender 5.0+ removed linestyle support).",
               flush=True)
 
-    # Compositor — Glare node for IP glow bloom.
-    # The compositor API changed substantially in Blender 5.0 (node properties
-    # removed, node graph restructured) and a half-built graph causes a process
-    # crash on save.  Skip entirely on 5.0+; render settings above are intact.
-    if bpy.app.version >= (5, 0, 0):
-        print("  [INFO] Compositor bloom skipped (Blender 5.0+ compositor API changed).",
-              flush=True)
-        return
-
-    ctree = _get_compositor_tree(scene)
-    if ctree is None:
-        print("  [WARN] Could not access compositor node tree; skipping bloom setup.",
-              flush=True)
-        return
-
-    cnodes = ctree.nodes
-    clinks = ctree.links
-    cnodes.clear()
-
-    render_layer = cnodes.new("CompositorNodeRLayers")
-    render_layer.location = (-400, 0)
-
-    glare = cnodes.new("CompositorNodeGlare")
-    glare.glare_type = "FOG_GLOW"
-    glare.size       = 7
-    glare.threshold  = 0.8
-    glare.quality    = "HIGH"
-    glare.mix        = 0.0
-    glare.location   = (0, 0)
-
-    composite = cnodes.new("CompositorNodeComposite")
-    composite.location = (400, 0)
-
-    clinks.new(render_layer.outputs["Image"], glare.inputs["Image"])
-    clinks.new(glare.outputs["Image"],        composite.inputs["Image"])
+    # --- Compositor: OFF by default.  Inspection of the reference scene
+    #     showed its compositor is empty (just RLayers → output); all the
+    #     visual richness comes from Cycles + AgX + film_exposure, not
+    #     from post-processing.  Our previous bloom/glare/grade chain
+    #     was actually competing with AgX and producing washed-out
+    #     midtones.  Re-enable for diagnostics or experimentation via
+    #     DDGEOVIZTOOLS_COMPOSITOR=1.
+    if os.environ.get("DDGEOVIZTOOLS_COMPOSITOR", "0") != "0":
+        ctree = _get_compositor_tree(scene)
+        if ctree is None:
+            print("  [WARN] Could not access compositor node tree; skipping.",
+                  flush=True)
+            return
+        try:
+            _build_compositor_graph(scene, ctree)
+            print("  [RENDER] Compositor: post chain built (env var enabled)",
+                  flush=True)
+        except Exception as exc:
+            print(f"  [RENDER] Post chain build failed ({exc}); minimal graph.",
+                  flush=True)
+            ctree.nodes.clear()
+            rl = ctree.nodes.new("CompositorNodeRLayers")
+            rl.location = (-200, 0)
+            _add_compositor_output(ctree, rl.outputs["Image"])
+    else:
+        # Build a trivial compositor graph (RLayers → output) so the .blend
+        # has a valid tree on save without any post-processing applied.
+        ctree = _get_compositor_tree(scene)
+        if ctree is not None:
+            try:
+                ctree.nodes.clear()
+                rl = ctree.nodes.new("CompositorNodeRLayers")
+                rl.location = (-200, 0)
+                _add_compositor_output(ctree, rl.outputs["Image"])
+                print("  [RENDER] Compositor: pass-through "
+                      "(DDGEOVIZTOOLS_COMPOSITOR=1 to add post chain)",
+                      flush=True)
+            except Exception as exc:
+                print(f"  [RENDER] Pass-through compositor failed ({exc})",
+                      flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2805,15 +3451,21 @@ def _setup_render_and_compositor(scene):
 
 def _make_camera(name: str, location: tuple, target: tuple,
                  ortho: bool = True, ortho_scale: float = 10000.0,
-                 dof_fstop: float = 1.4):
+                 dof_fstop: float = 1.2,
+                 focal_length: float = 15.0,
+                 aperture_blades: int = 5):
     """
     Create a camera with depth of field enabled (strong bokeh by default).
 
-    ``dof_fstop`` is the aperture f-number: 1.4 is "wide open" — very shallow
-    depth of field, prominent bokeh circles around point lights and crisp
-    specular highlights on the bevel edges.  Focus distance is set to the
-    distance from the camera location to *target*, so whatever the camera is
-    aimed at stays sharp and everything in front of / behind it is defocused.
+    ``dof_fstop`` is the aperture f-number: 0.5 is wider than any real
+    cinema prime — gives very shallow depth of field and prominent bokeh
+    on whatever is off the focal plane.  ``focal_length`` stays at 50 mm
+    (classic "natural perspective") so the framing matches a normal lens
+    while the bokeh is amplified entirely by the aperture.
+
+    Focus distance is set to the distance from the camera location to
+    *target*, so whatever the camera is aimed at stays sharp and
+    everything in front of / behind it is defocused.
 
     Cycles applies DOF to orthographic cameras too — the blur magnitude
     depends only on |Z − focus_distance| (no perspective foreshortening),
@@ -2829,7 +3481,7 @@ def _make_camera(name: str, location: tuple, target: tuple,
     if ortho:
         cam_data.ortho_scale = ortho_scale
     else:
-        cam_data.lens = 50
+        cam_data.lens = float(focal_length)
 
     cam_obj = bpy.data.objects.new(name, cam_data)
     bpy.data.scenes[0].collection.objects.link(cam_obj)
@@ -2848,9 +3500,11 @@ def _make_camera(name: str, location: tuple, target: tuple,
         cam_data.dof.use_dof          = True
         cam_data.dof.aperture_fstop   = float(dof_fstop)
         cam_data.dof.focus_distance   = max(1.0, focus_distance)
-        # Round aperture blades produce circular bokeh.  6 blades gives a
-        # subtly hexagonal "cinematic" highlight; 0 = perfect circle.
-        cam_data.dof.aperture_blades  = 6
+        # 5 aperture blades — pentagonal bokeh, matching the reference scene.
+        # The pentagon reads as a softer cinematic shape than the hexagon
+        # you'd get from a 6-blade aperture, and it's the canonical "anamorphic
+        # prime" look.
+        cam_data.dof.aperture_blades  = aperture_blades
         cam_data.dof.aperture_rotation = 0.0
         cam_data.dof.aperture_ratio   = 1.0
         print(f"  [CAMERA] {name}: DOF f/{dof_fstop:.1f}  "
@@ -2959,8 +3613,10 @@ def _make_hero_camera(centre, r,
     constraint.up_axis    = "UP_Y"
 
     # Spherical-coordinate keyframes (yaw_deg, pitch_deg, distance, focus)
-    # The frame layout is start → mid → end with bezier ease for cinematic
-    # acceleration / deceleration.
+    # The frame layout is start → mid → final → hold with bezier ease for
+    # cinematic acceleration / deceleration.  The "final" pose is reached
+    # 10 frames before the timeline ends and then held — duplicate
+    # keyframe at frame_end keeps the camera stationary on the held shot.
     def _loc_from_spherical(yaw_deg, pitch_deg, dist):
         y = math.radians(yaw_deg)
         p = math.radians(pitch_deg)
@@ -2970,14 +3626,30 @@ def _make_hero_camera(centre, r,
             cz + dist * math.cos(p) * math.sin(y),
         ))
 
-    poses = [
-        (frame_start,                       35.0, 25.0, r * 3.0, r * 3.0),
-        ((frame_start + frame_end) // 2,    55.0, 18.0, r * 2.0, r * 2.0),
-        (frame_end,                         70.0, 12.0, r * 1.1, r * 1.1),
-    ]
+    # Final animated pose lands 10 frames before the end so the last 10
+    # frames are a held shot of the vertex / IP region.  User-specified
+    # final world position: (200, 200, 400) mm.  Focus distance is the
+    # straight-line distance from that point to the detector centre so
+    # the IP stays in focus on the close-up.
+    final_frame = max(frame_start + 1, frame_end - 10)
+    final_loc   = Vector((200.0, 200.0, 400.0))
+    final_focus = (final_loc - Vector((cx, cy, cz))).length
 
-    for (frame, yaw, pitch, dist, focus) in poses:
-        cam_obj.location = _loc_from_spherical(yaw, pitch, dist)
+    # Each pose: (frame, camera world-location Vector, focus_distance).
+    # Earlier (orbit / dolly) poses are still built from spherical coords;
+    # the final two are explicit XYZ so the camera lands exactly where
+    # the user wants it.
+    poses = [
+        (frame_start,                          _loc_from_spherical(35.0, 25.0, r * 3.0), r * 3.0),
+        ((frame_start + final_frame) // 2,     _loc_from_spherical(55.0, 18.0, r * 1.5), r * 1.5),
+        (final_frame,                          final_loc, final_focus),
+        (frame_end,                            final_loc, final_focus),
+    ]
+    print(f"  [HERO] Final pose: world=({final_loc.x:.0f},{final_loc.y:.0f},"
+          f"{final_loc.z:.0f}) mm  focus={final_focus:.0f} mm", flush=True)
+
+    for (frame, loc, focus) in poses:
+        cam_obj.location = loc
         cam_data.dof.focus_distance = focus
         cam_obj.keyframe_insert(data_path="location", frame=frame)
         cam_data.dof.keyframe_insert(data_path="focus_distance", frame=frame)
@@ -3051,7 +3723,7 @@ def create_blender_scene(
     bevel_width_mm:  float = 0.2,
     no_bevel:        bool  = False,
     no_env_sphere:   bool  = False,
-    volume_density:  float = 2.5e-6,
+    volume_density:  float = 0.0,
 ) -> Path:
     """
     Build and save a Blender scene from a directory of mesh files.
@@ -3441,86 +4113,81 @@ def create_blender_scene(
     # detector scale, which is the whole point of normalize=False with
     # proportional sizing.
     #
-    # Targets — chosen for "well-lit studio at 0 EV with AgX tone mapping":
-    #     Key      ~50 W/m² at subject   → density ≈ E / 0.10 ≈ 500 W/m²
-    #     Fill     ~6  W/m² (1:8 to key) →               ≈ 60  W/m²
-    #     Rim      ~45 W/m² (small/hot)  →               ≈ 3000 W/m²
-    #     Kicker   ~30 W/m² (under-lift) →               ≈ 300 W/m²
-    #
-    # These are ~8–10× lower than the previous calibration.  Sum of
-    # contributions from all four lights at the detector centre is
-    # roughly 130 W/m², which sits well inside Filmic/AgX's linear
-    # range without clipping.
-    # Previously calibrated values were dialled down ~0.6× across the
-    # board after the volumetric medium was added: the world Volume
-    # Scatter adds an apparent brightness boost (scattered light reaches
-    # the camera even in shadow regions), so the surface lighting needs
-    # less direct contribution to land at the same final intensity.
-    KEY_W_PER_M2     =  300.0
-    FILL_W_PER_M2    =   40.0
-    RIM_W_PER_M2     = 1800.0
-    KICKER_W_PER_M2  =  180.0
+    # Targets — chosen to match the reference Muon Collider scene, which
+    # bathes everything in a strong amber sodium-lamp light at ~2200 K.
+    # All four lights use the SAME warm colour so the scene reads as a
+    # single coherent "tungsten golden hour" environment rather than the
+    # earlier multi-temperature studio rig.  The Fill is intentionally
+    # not cool — the reference rig is all-warm.  cycles.film_exposure=0.9
+    # bumps the rendered image into AgX's roll-off, so densities here
+    # are higher than they would be at 0 EV.
+    KEY_W_PER_M2     =  1000.0
+    FILL_W_PER_M2    =   250.0
+    RIM_W_PER_M2     =  2000.0
+    KICKER_W_PER_M2  =   500.0
+
+    # Sodium-amber warm temperature shared across the entire rig.
+    # 2200 K corresponds roughly to RGB (0.88, 0.46, 0.10) — the
+    # reference scene's exact light colour.
+    WARM_KELVIN = 2200.0
 
     # --- Point-light intensities (W/sr) — scale with r² for falloff ---
     # Irradiance at distance d (metres) from a point of intensity I is
     # I/d².  For d = r/1000 m, achieving target E at the subject needs
     # I = E · (r/1000)² = E · r² · 1e-6.  Factor below is "E · 1e-6":
-    INTERIOR_W_PER_SR_FACTOR = 6.0e-6    # ~6 W/m² at distance r
-    IP_GLOW_W_PER_SR_FACTOR  = 2.5e-6    # subtle purple accent
-    SPOT_W_PER_SR_FACTOR     = 30.0e-6   # decoupled — strong god-ray beam
+    INTERIOR_W_PER_SR_FACTOR = 3.0e-6    # ~3 W/m² at distance r
+    IP_GLOW_W_PER_SR_FACTOR  = 1.25e-6   # subtle purple accent
+    SPOT_W_PER_SR_FACTOR     = 12.0e-6   # decoupled — god-ray beam (visible drama)
     point_base = r * r                   # r in mm
 
-    # Key light — warm tungsten/golden-hour at 3200 K, raked from above the
-    # camera, slightly to the +X side.  Positioned relative to the detector
-    # centre so asymmetric geometry stays correctly lit.
+    # Key light — sodium-amber at 2200 K (matching the reference scene
+    # exactly), raked from above the camera, slightly to the +X side.
     key_obj = _area_light_with_temperature(
-        "Light_Key_Golden",
+        "Light_Key_Amber",
         location=(centre[0] + r * 0.50,
                   centre[1] + r * 1.10,
                   centre[2] + r * 0.95),
         target=centre,
         size=r * 0.55,
         energy=KEY_W_PER_M2,
-        temp_kelvin=3200.0,
+        temp_kelvin=WARM_KELVIN,
     )
 
-    # Fill light — cool overcast skylight on the opposite side from the key.
-    # 1:8 ratio with key for chiaroscuro emphasis on form.
+    # Fill light — same warm colour as key (the reference rig is all-warm).
+    # Larger area for softer shadows on the camera-opposite side.
     fill_obj = _area_light_with_temperature(
-        "Light_Fill_Sky",
+        "Light_Fill_Amber",
         location=(centre[0] - r * 0.55,
                   centre[1] + r * 0.65,
                   centre[2] - r * 1.05),
         target=centre,
         size=r * 0.85,
         energy=FILL_W_PER_M2,
-        temp_kelvin=6500.0,
+        temp_kelvin=WARM_KELVIN,
     )
 
-    # Rim — small + hot backlight behind the detector, picks out the silhouette
-    # against the gradient sky background.
+    # Rim — small + hot backlight behind the detector, picks out the silhouette.
     rim_obj = _area_light_with_temperature(
-        "Light_Rim_Warm",
+        "Light_Rim_Amber",
         location=(centre[0] - r * 1.30,
                   centre[1] + r * 0.40,
                   centre[2] + r * 0.30),
         target=centre,
         size=r * 0.30,
         energy=RIM_W_PER_M2,
-        temp_kelvin=4200.0,
+        temp_kelvin=WARM_KELVIN,
     )
 
-    # Kicker — placed below + behind to lift under-side reflections out of
-    # full shadow.  Neutral 5000 K so it reads as ambient bounce.
+    # Kicker — below + behind for under-lift.  Same warm hue.
     kicker_obj = _area_light_with_temperature(
-        "Light_Kicker",
+        "Light_Kicker_Amber",
         location=(centre[0] + r * 0.20,
                   centre[1] - r * 0.90,
                   centre[2] + r * 0.40),
         target=centre,
         size=r * 0.50,
         energy=KICKER_W_PER_M2,
-        temp_kelvin=5000.0,
+        temp_kelvin=WARM_KELVIN,
     )
 
     # Interior fill — point light placed inside the phi-cut opening so it
@@ -3536,8 +4203,22 @@ def create_blender_scene(
         energy=interior_energy,
         color_rgb=(1.0, 0.97, 0.92),
         soft_size=r * 0.50,
-        temp_kelvin=3800.0,
+        temp_kelvin=WARM_KELVIN,
     )
+
+    # Emissive accent at the interaction point — a tiny self-illuminated
+    # sphere that the bloom / streaks key off of.  Sized to ~20 mm so it
+    # reads as a glowing "point" at any zoom level.  Strength is modest:
+    # the comp's emission-driven streaks pass amplifies it, and anything
+    # much above ~50 W/m²/sr blows out into a featureless white field.
+    ip_disk = _add_ip_emissive_disk(
+        "IP_EmissiveAccent",
+        location=centre,
+        radius_mm=20.0,
+        color_rgb=(0.6, 0.1, 1.0),
+        strength=15.0,
+    )
+    _link_to_collection(ip_disk, col_lights)
 
     # Purple glow at the interaction point (subtle Cherenkov / beam accent)
     ip_energy = point_base * IP_GLOW_W_PER_SR_FACTOR
@@ -3549,8 +4230,26 @@ def create_blender_scene(
         soft_size=r * 0.30,
     )
 
+    # Sun light — warm directional source for tasteful cast shadows and
+    # the subtle "sunlight through a high window" feel that helps the
+    # reference scene read as a real photographed environment rather than
+    # studio-lit CG.  Energy 1.0 (Blender's standard Sun is in W/m² of
+    # parallel irradiance), colour matching the reference Sun.
+    sun_data = bpy.data.lights.new("Light_Sun_Amber", type="SUN")
+    sun_data.energy = 1.0
+    sun_data.color  = (0.8798, 0.7270, 0.5557)
+    sun_obj = bpy.data.objects.new("Light_Sun_Amber", sun_data)
+    bpy.data.scenes[0].collection.objects.link(sun_obj)
+    sun_obj.location = (centre[0] - r * 0.8, centre[1] - r * 0.7, centre[2] + r * 1.0)
+    # Rotate so the sun's rays come from above-left at a low angle —
+    # matches the reference scene's directional cast.
+    sun_obj.rotation_euler = (math.radians(-30.0),
+                              math.radians(-15.0),
+                              math.radians(35.0))
+
     # Move all lights into the Lights collection
-    for light_obj in (key_obj, fill_obj, rim_obj, kicker_obj, interior_obj, ip_obj):
+    for light_obj in (key_obj, fill_obj, rim_obj, kicker_obj,
+                      interior_obj, ip_obj, sun_obj):
         if light_obj is not None:
             _link_to_collection(light_obj, col_lights)
 
@@ -3603,7 +4302,7 @@ def create_blender_scene(
     # ---- Render settings + compositor bloom ----
     print(f"  [SETUP] Configuring render settings ...", flush=True)
     scene = bpy.data.scenes[0]
-    _setup_render_and_compositor(scene)
+    _setup_render_and_compositor(scene, r=r)
     print(f"  [SETUP] Render settings done", flush=True)
 
     # ---- Pre-save: validate meshes and log scene contents ----

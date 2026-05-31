@@ -118,6 +118,9 @@ def cmd_split(args: argparse.Namespace) -> int:
 
 
 def cmd_convert(args: argparse.Namespace) -> int:
+    import os
+    os.environ["DDGEOVIZTOOLS_NSLICE"] = str(args.nslice)
+
     from gdml_converter import convert_gdml
 
     output_path = Path(args.output)
@@ -163,6 +166,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
 
 def cmd_split_convert(args: argparse.Namespace) -> int:
+    import os
+    os.environ["DDGEOVIZTOOLS_NSLICE"] = str(args.nslice)
+
     from gdml_splitter import split_gdml
 
     fmt           = args.format
@@ -474,6 +480,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Skip chunks whose output file already exists (resume interrupted run)."
         ),
     )
+    p_conv.add_argument(
+        "--nslice", type=int, default=128, metavar="N",
+        help=(
+            "Azimuthal segments used to tessellate curved solids (Tubs, "
+            "Cons, Polycone, Sphere, ...).  Higher = smoother cylinder "
+            "silhouettes at the cost of more triangles.  Default: 128 "
+            "(~1 px silhouette error at 4K).  Try 256 for hero stills."
+        ),
+    )
     p_conv.set_defaults(func=cmd_convert)
 
     # ---- split-convert ----
@@ -560,6 +575,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Skip auto-split chunks whose output file already exists and is "
             "non-empty.  Use this to restart an interrupted run without "
             "re-processing already-completed chunks."
+        ),
+    )
+    p_sc.add_argument(
+        "--nslice", type=int, default=128, metavar="N",
+        help=(
+            "Azimuthal segments used to tessellate curved solids (Tubs, "
+            "Cons, Polycone, Sphere, ...).  Higher = smoother cylinder "
+            "silhouettes at the cost of more triangles.  Default: 128 "
+            "(~1 px silhouette error at 4K).  Try 256 for hero stills."
         ),
     )
     p_sc.set_defaults(func=cmd_split_convert)
