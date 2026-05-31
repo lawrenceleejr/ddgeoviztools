@@ -3115,6 +3115,30 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
     scene.render.resolution_y          = 2160
     scene.render.resolution_percentage = 100
 
+    # --- Output: write an MP4 (H.264) next to the .blend file.
+    # Blender's "//" prefix means "relative to the current .blend file",
+    # so a workstation render lands alongside the project file with no
+    # extra setup.  Switching to FFMPEG video output also covers the
+    # animation case (the hero camera animates 1..240) so a single
+    # render call produces the cinematic without any per-frame stitching.
+    try:
+        scene.render.filepath = "//"
+    except Exception:
+        pass
+    try:
+        scene.render.image_settings.file_format = "FFMPEG"
+    except (AttributeError, TypeError):
+        pass
+    try:
+        ff = scene.render.ffmpeg
+        ff.format    = "MPEG4"   # MP4 container
+        ff.codec     = "H264"
+        ff.constant_rate_factor = "HIGH"
+        ff.audio_codec = "NONE"
+        print("  [RENDER] Output: MP4 (H.264) next to the .blend file", flush=True)
+    except (AttributeError, TypeError) as exc:
+        print(f"  [RENDER] FFMPEG output setup failed: {exc}", flush=True)
+
     # Motion blur — on by default.  The hero camera animation depends on
     # this for the cinematic streak.  Cycles uses a 0.5 frame shutter
     # (≈ 180° equivalent) which matches typical film camera behaviour.
@@ -3170,8 +3194,17 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
     # workstation users get clean renders out of the box.
     #
     # Bounce counts: simple int properties — safe on both 4.x and 5.0+.
+    # Samples + time limit.  2048 samples is the reference scene's quality
+    # ceiling, but adaptive sampling with a 60 s per-frame time_limit
+    # almost always converges sooner — the time_limit is just a safety
+    # net so workstation animations don't go off into the weeds on any
+    # one frame.
     try:
-        scene.cycles.samples = 256
+        scene.cycles.samples = 2048
+    except (AttributeError, TypeError):
+        pass
+    try:
+        scene.cycles.time_limit = 60.0
     except (AttributeError, TypeError):
         pass
 
@@ -3277,14 +3310,13 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
     except (AttributeError, TypeError) as exc:
         print(f"  [RENDER] Volume transport unavailable: {exc}", flush=True)
 
-    # Cycles film_exposure — the reference scene's secret sauce.  +0.9 EV
-    # applied INSIDE Cycles' film stage (before tone-map), which pushes
-    # highlights into AgX's roll-off curve in a way that no view-settings
-    # exposure tweak can replicate.  This is the single biggest reason
-    # the reference image reads as warm and luxe instead of dim and flat.
+    # Cycles film_exposure — the reference scene uses +0.9 EV; we
+    # land at +0.5 because our rig has more light sources than the
+    # reference, so the same multiplier ends up brighter overall.
+    # Lowered from 0.9 after a too-bright render.
     try:
-        scene.cycles.film_exposure = 0.9
-        print("  [RENDER] Cycles film_exposure: 0.9", flush=True)
+        scene.cycles.film_exposure = 0.5
+        print("  [RENDER] Cycles film_exposure: 0.5", flush=True)
     except (AttributeError, TypeError):
         pass
 
@@ -3587,18 +3619,33 @@ def _make_hero_camera(centre, r,
         ))
 
     # Final animated pose lands 10 frames before the end so the last 10
-    # frames are a held shot of the vertex / IP region.  Distance r*0.30
-    # frames the inner ~28% of the detector — vertex detector detail and
-    # the area around the collision point are clearly visible.
+    # frames are a held shot of the vertex / IP region.  User-specified
+    # constraint: final camera Z (along the beam axis) = 400 mm in
+    # world coords.  At yaw=70°, pitch=12° the spherical formula gives
+    # Z_offset = dist · cos(pitch) · sin(yaw), so we solve for dist to
+    # land on the requested Z and keep the same approach angle.
     final_frame = max(frame_start + 1, frame_end - 10)
     final_yaw, final_pitch = 70.0, 12.0
-    final_dist  = r * 0.30
+    _final_target_z_world = 400.0
+    _y_rad = math.radians(final_yaw)
+    _p_rad = math.radians(final_pitch)
+    _z_per_dist = math.cos(_p_rad) * math.sin(_y_rad)
+    if abs(_z_per_dist) > 1e-6:
+        final_dist = (_final_target_z_world - cz) / _z_per_dist
+        # If centre is past the target (z_offset <= 0) fall back to a
+        # close-in default so we don't end up with a negative distance.
+        if final_dist <= 0:
+            final_dist = r * 0.10
+    else:
+        final_dist = r * 0.10
     poses = [
         (frame_start,                          35.0, 25.0, r * 3.0,  r * 3.0),
         ((frame_start + final_frame) // 2,     55.0, 18.0, r * 1.5,  r * 1.5),
         (final_frame,                          final_yaw, final_pitch, final_dist, final_dist),
         (frame_end,                            final_yaw, final_pitch, final_dist, final_dist),
     ]
+    print(f"  [HERO] Final pose: dist={final_dist:.0f} mm, "
+          f"world Z target={_final_target_z_world:.0f} mm", flush=True)
 
     for (frame, yaw, pitch, dist, focus) in poses:
         cam_obj.location = _loc_from_spherical(yaw, pitch, dist)
