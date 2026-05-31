@@ -354,7 +354,83 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
     print(f"  [TESSELLATION] registry: [{all_types}]", flush=True)
     print(f"  [TESSELLATION] bumped {total}/{sum(by_type.values())} "
           f"nslice={nslice} nstack={nstack} [{bumped_types}]", flush=True)
+
+    # --- Now rebuild every LogicalVolume's cached mesh.
+    # pyg4ometry's VtkViewer.addLogicalVolume reads from logical.mesh
+    # (an LV-level cache built at LV construction time, when the solid's
+    # nslice was still the default 16).  Without this rebuild step the
+    # solid-level bump above is invisible to the viewer.
+    _rebuild_lv_meshes(reg)
+
     return total
+
+
+def _rebuild_lv_meshes(reg) -> int:
+    """
+    Replace each LogicalVolume's cached ``.mesh`` with a freshly-built
+    one so the post-bump nslice on the solids actually reaches the
+    visualisation pipeline.
+
+    Tries the documented Mesh constructor signatures in order; logs
+    which one took.  Skips assemblies / LVs without a solid attribute.
+    Returns the number of LVs rebuilt.
+    """
+    try:
+        from pyg4ometry.visualisation import Mesh as _VisMesh
+    except Exception as exc:
+        print(f"  [TESSELLATION] cannot import pyg4ometry.visualisation.Mesh: "
+              f"{exc} (LV mesh rebuild skipped)", flush=True)
+        return 0
+
+    # Try each constructor signature in priority order.  The first
+    # signature that doesn't raise TypeError is the one in use.
+    ctor_attempts = (
+        lambda lv: _VisMesh(lv.solid),
+        lambda lv: _VisMesh(lv.solid, lv=lv),
+        lambda lv: _VisMesh(lv.solid, registry=lv.registry),
+        lambda lv: _VisMesh(lv),
+    )
+
+    rebuilt = 0
+    failed  = 0
+    sample_logged = False
+    lvs = getattr(reg, "logicalVolumeDict", {}) or {}
+    for lv_name, lv in list(lvs.items()):
+        if not hasattr(lv, "solid"):
+            continue
+        new_mesh = None
+        last_err = None
+        for ctor in ctor_attempts:
+            try:
+                new_mesh = ctor(lv)
+                break
+            except TypeError as exc:
+                last_err = exc
+                continue
+            except Exception as exc:
+                last_err = exc
+                # constructor signature matched but build failed — stop trying
+                break
+        if new_mesh is None:
+            failed += 1
+            if not sample_logged:
+                print(f"  [TESSELLATION] LV mesh rebuild failed for "
+                      f"'{lv_name}': {last_err}", flush=True)
+                sample_logged = True
+            continue
+        try:
+            lv.mesh = new_mesh
+            rebuilt += 1
+        except Exception as exc:
+            failed += 1
+            if not sample_logged:
+                print(f"  [TESSELLATION] LV mesh assign failed for "
+                      f"'{lv_name}': {exc}", flush=True)
+                sample_logged = True
+
+    print(f"  [TESSELLATION] LV meshes rebuilt: {rebuilt} "
+          f"(failed: {failed}, total LVs: {len(lvs)})", flush=True)
+    return rebuilt
 
 _TRACKER_RESPLIT_KEYS = (
     "tracker", "trk", "tpc", "silicon", "vertex", "inner_tracker",
