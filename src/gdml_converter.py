@@ -128,17 +128,22 @@ _DEFAULT_NSLICE = 128
 
 def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
     """
-    Bump nslice (azimuthal segments) and nstack (polar segments) on every
-    curved solid in *reg* so the tessellated mesh has enough segments to
-    look smooth at 4K render resolution.
+    Bump tessellation resolution on every solid in *reg* whose mesh
+    quality depends on a slice/segment count, so the rendered geometry
+    looks smooth at 4K render resolution.
 
     Returns the number of solids that were bumped.
 
-    pyg4ometry's default nslice is ~16, which produces a visibly faceted
-    cylinder.  Skips solids whose polygonality is geometrically meaningful
-    (Polyhedra) so we don't accidentally change the geometry shape itself.
+    pyg4ometry's default nslice is ~16 (a visibly faceted cylinder).
+    We also raise ``numSide`` on Polyhedra solids — DD4hep sometimes
+    models cylindrical pieces as a low-side Polyhedra for simulation
+    performance, which then renders as an obvious polygon.  Bumping
+    numSide changes the *geometry* (a 128-sided polyhedron is a
+    different solid than a 16-sided one), but for visualisation the
+    closer-to-cylinder shape is what we want.
     """
     import os as _os
+    from collections import Counter
     if nslice is None:
         try:
             nslice = int(_os.environ.get("DDGEOVIZTOOLS_NSLICE", _DEFAULT_NSLICE))
@@ -146,29 +151,64 @@ def _bump_curved_solid_resolution(reg, nslice: "int | None" = None) -> int:
             nslice = _DEFAULT_NSLICE
     nstack = max(16, nslice // 4)
 
-    bumped = 0
+    # Attribute names pyg4ometry uses across different solid types.
+    SLICE_ATTRS = ("nslice", "nSlice")
+    STACK_ATTRS = ("nstack", "nStack")
+    SIDE_ATTRS  = ("numSide", "nside", "nSide", "pNumSide")
+
+    by_type    = Counter()
+    bumped_by  = Counter()
+
     for s in reg.solidDict.values():
         cls = type(s).__name__
-        # Polyhedra / GenericPolyhedra are intentionally polygonal: their
-        # numSide attribute is part of the geometry definition, not a
-        # rendering knob — leave them alone.
-        if cls in ("Polyhedra", "GenericPolyhedra"):
-            continue
-        if hasattr(s, "nslice"):
-            try:
-                s.nslice = nslice
-                bumped += 1
-            except (AttributeError, TypeError):
-                pass
-        if hasattr(s, "nstack"):
-            try:
-                s.nstack = nstack
-            except (AttributeError, TypeError):
-                pass
-    if bumped:
+        by_type[cls] += 1
+
+        touched = False
+        for a in SLICE_ATTRS:
+            if hasattr(s, a):
+                try:
+                    setattr(s, a, nslice)
+                    touched = True
+                    break
+                except Exception:
+                    pass
+        for a in STACK_ATTRS:
+            if hasattr(s, a):
+                try:
+                    setattr(s, a, nstack)
+                    break
+                except Exception:
+                    pass
+        # Polyhedra: numSide is the geometric segment count.  Bumping it
+        # for visualisation is intentional even though it changes the
+        # represented solid.  Skip if it's already large.
+        for a in SIDE_ATTRS:
+            if hasattr(s, a):
+                try:
+                    current = int(getattr(s, a) or 0)
+                except (TypeError, ValueError):
+                    current = 0
+                if current < nslice:
+                    try:
+                        setattr(s, a, nslice)
+                        touched = True
+                        break
+                    except Exception:
+                        pass
+        if touched:
+            bumped_by[cls] += 1
+
+    total = sum(bumped_by.values())
+    if total:
+        per_type = ", ".join(f"{k}={v}" for k, v in sorted(bumped_by.items()))
         print(f"  [TESSELLATION] nslice={nslice} nstack={nstack} "
-              f"applied to {bumped} curved solid(s)", flush=True)
-    return bumped
+              f"applied to {total}/{sum(by_type.values())} solid(s) "
+              f"[{per_type}]", flush=True)
+    else:
+        types_seen = ", ".join(f"{k}={v}" for k, v in sorted(by_type.items()))
+        print(f"  [TESSELLATION] no curved solids in registry "
+              f"(types seen: {types_seen})", flush=True)
+    return total
 
 _TRACKER_RESPLIT_KEYS = (
     "tracker", "trk", "tpc", "silicon", "vertex", "inner_tracker",
