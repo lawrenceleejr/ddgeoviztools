@@ -24,15 +24,43 @@ manifest.json schema:
       "actor_tags": ["ECalBarrel"]
     },
     ...
+  ],
+  "lights": [
+    {
+      "name": "Key_Amber",
+      "type": "AREA",               # AREA | SUN | POINT | SPOT
+      "location_m": [x, y, z],      # Blender world space, metres, Z-up
+      "rotation_euler": [rx, ry, rz],  # radians, XYZ
+      "direction": [dx, dy, dz],    # world-space forward (light local -Z), normalised
+      "energy": 1000.0,             # Watts (AREA/POINT/SPOT) or W/m^2 (SUN)
+      "color": [r, g, b],           # linear RGB tint
+      "temperature_k": 3200,        # Kelvin if a Blackbody node drives the colour, else null
+      "size": 2.0,                  # AREA: panel width  (metres)
+      "size_y": 1.2,                # AREA: panel height (metres; == size for SQUARE/DISK)
+      "shape": "RECTANGLE",         # AREA shape
+      "spot_size_rad": 1.04,        # SPOT: full cone angle (radians)
+      "spot_blend": 0.15            # SPOT: edge softness 0..1
+    },
+    ...
+  ],
+  "cameras": [
+    { "name": "Perspective", "type": "PERSP", "location_m": [x,y,z],
+      "rotation_euler": [rx,ry,rz], "lens_mm": 50.0, "sensor_width_mm": 36.0,
+      "dof": {"use_dof": true, "fstop": 2.8, "focus_distance_m": 6.0} }
   ]
 }
 
 Notes:
-- Iterates the "Detector" Blender collection (created by gdml_to_blender.py).
-- Applies all modifiers (bevel, etc.) before export.
-- Phi cutaway is already baked into mesh geometry — no extra handling needed.
+- Meshes: iterates the "Detector" Blender collection (created by gdml_to_blender.py),
+  applies all modifiers (bevel, etc.) before export. Phi cutaway is already baked into
+  the mesh geometry, so it transfers automatically — no extra handling needed.
 - GLTF export: Y-forward convention corrected to UE5 Z-up via export_yup=True.
 - Material params read from Principled BSDF node on each object's first material slot.
+- Lights/cameras: exported as NUMERIC TRANSFORMS in Blender world space (metres, Z-up),
+  NOT through glTF. They are *not* re-axised by export_yup. The consumer
+  (Tools/ue5_build_content.py) applies the matching Blender->UE basis (LIGHT_BASIS) so the
+  spawned UE light actors line up with the export_yup meshes. Keep the two scripts in sync:
+  if the mesh export axis convention changes, update LIGHT_BASIS in ue5_build_content.py.
 """
 
 import sys
@@ -57,6 +85,10 @@ def parse_args():
                         help="Directory to write GLTF files and manifest.json")
     parser.add_argument("--collection", default="Detector",
                         help="Blender collection name to export (default: Detector)")
+    parser.add_argument("--no-lights", action="store_true",
+                        help="Skip exporting the Blender light rig to the manifest")
+    parser.add_argument("--no-cameras", action="store_true",
+                        help="Skip exporting Blender cameras to the manifest")
     return parser.parse_args(own_args)
 
 
@@ -157,6 +189,103 @@ def export_object_as_gltf(obj, output_path: Path, context):
     )
 
 
+def _light_temperature(light):
+    """
+    Return the Blackbody colour temperature (Kelvin) driving a light, or None.
+
+    gdml_to_blender.py tints lights either via a ShaderNodeBlackbody node feeding the
+    emission colour (Blender 3.x/4.x) or via a native temperature attribute (Blender 5.0+).
+    Check both.
+    """
+    # Native attribute (Blender 5.0+: light.temperature when use_temperature is on)
+    if getattr(light, "use_temperature", False) and hasattr(light, "temperature"):
+        try:
+            return round(float(light.temperature), 1)
+        except (TypeError, ValueError):
+            pass
+    # Blackbody node in the light's shader tree
+    if getattr(light, "use_nodes", False) and light.node_tree is not None:
+        for node in light.node_tree.nodes:
+            if node.bl_idname == "ShaderNodeBlackbody":
+                try:
+                    return round(float(node.inputs["Temperature"].default_value), 1)
+                except (KeyError, TypeError, ValueError):
+                    pass
+    return None
+
+
+def _world_forward(obj):
+    """World-space forward direction of a light/camera (local -Z), normalised."""
+    from mathutils import Vector
+    d = (obj.matrix_world.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+    return [round(d.x, 6), round(d.y, 6), round(d.z, 6)]
+
+
+def light_to_entry(obj):
+    """Build a manifest light entry from a Blender LIGHT object (world space, metres)."""
+    lamp = obj.data
+    loc = obj.matrix_world.translation
+    entry = {
+        "name":           obj.name,
+        "type":           lamp.type,                       # POINT | SUN | SPOT | AREA
+        "location_m":     [round(loc.x, 5), round(loc.y, 5), round(loc.z, 5)],
+        "rotation_euler": [round(a, 6) for a in obj.rotation_euler],
+        "direction":      _world_forward(obj),
+        "energy":         round(float(lamp.energy), 4),    # W (POINT/SPOT/AREA), W/m^2 (SUN)
+        "color":          [round(c, 4) for c in lamp.color],
+        "temperature_k":  _light_temperature(lamp),
+    }
+    if lamp.type == "AREA":
+        entry["size"]   = round(float(lamp.size), 5)
+        entry["size_y"] = round(float(getattr(lamp, "size_y", lamp.size)), 5)
+        entry["shape"]  = lamp.shape
+    elif lamp.type == "SPOT":
+        entry["spot_size_rad"] = round(float(lamp.spot_size), 6)
+        entry["spot_blend"]    = round(float(lamp.spot_blend), 4)
+    return entry
+
+
+def camera_to_entry(obj):
+    """Build a manifest camera entry from a Blender CAMERA object (world space, metres)."""
+    cam = obj.data
+    loc = obj.matrix_world.translation
+    dof = getattr(cam, "dof", None)
+    entry = {
+        "name":            obj.name,
+        "type":            cam.type,                        # PERSP | ORTHO | PANO
+        "location_m":      [round(loc.x, 5), round(loc.y, 5), round(loc.z, 5)],
+        "rotation_euler":  [round(a, 6) for a in obj.rotation_euler],
+        "direction":       _world_forward(obj),
+        "lens_mm":         round(float(cam.lens), 4),
+        "sensor_width_mm": round(float(cam.sensor_width), 4),
+    }
+    if cam.type == "ORTHO":
+        entry["ortho_scale"] = round(float(cam.ortho_scale), 4)
+    if dof is not None:
+        entry["dof"] = {
+            "use_dof":          bool(dof.use_dof),
+            "fstop":            round(float(dof.aperture_fstop), 4),
+            "focus_distance_m": round(float(dof.focus_distance), 5),
+        }
+    return entry
+
+
+def export_lights():
+    """Export all LIGHT objects in the scene to manifest entries."""
+    import bpy
+    lights = [light_to_entry(o) for o in bpy.data.objects if o.type == "LIGHT"]
+    print(f"Found {len(lights)} light(s)")
+    return lights
+
+
+def export_cameras():
+    """Export all CAMERA objects in the scene to manifest entries."""
+    import bpy
+    cameras = [camera_to_entry(o) for o in bpy.data.objects if o.type == "CAMERA"]
+    print(f"Found {len(cameras)} camera(s)")
+    return cameras
+
+
 def main():
     import bpy
 
@@ -207,13 +336,22 @@ def main():
                 "actor_tags": [name],   # one tag per object — matches DA_DetectorVisibility
             })
 
+    # Lights + cameras (numeric transforms in Blender world space; see module docstring)
+    lights  = [] if args.no_lights  else export_lights()
+    cameras = [] if args.no_cameras else export_cameras()
+
     # Write manifest.json
-    manifest = {"sub_detectors": manifest_entries}
+    manifest = {
+        "sub_detectors": manifest_entries,
+        "lights":        lights,
+        "cameras":       cameras,
+    }
     manifest_path = output_dir / "manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
 
-    print(f"\nExported {len(manifest_entries)} sub-detectors to {output_dir}")
+    print(f"\nExported {len(manifest_entries)} sub-detectors, "
+          f"{len(lights)} light(s), {len(cameras)} camera(s) to {output_dir}")
     print(f"Manifest written to {manifest_path}")
 
 

@@ -104,11 +104,16 @@ private:
 
 	bool bOrbitMode = false;
 
-	// ---- Third-person RMB Zoom ----
+	// ---- Third-person Zoom (RMB) ----
+	// Holding the zoom button pulls the spring arm in AND narrows the camera FOV,
+	// so the user can lean in to inspect detector / event detail.  Tick() smoothly
+	// interpolates both back and forth.
 
 	bool  bZoomHeld        = false;
 	float DefaultArmLength = 400.f;
 	float ZoomedArmLength  = 150.f;
+	float DefaultFOV       = 90.f;
+	float ZoomedFOV        = 40.f;
 
 	// ---- Orbit RMB Zoom ----
 

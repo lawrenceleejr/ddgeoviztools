@@ -19,18 +19,38 @@
 
 AColliderVisGameMode::AColliderVisGameMode()
 {
-	DefaultPawnClass = AColliderVisCharacter::StaticClass();
-	HUDClass         = AColliderVisHUD::StaticClass();
+	// Prefer the BP character (created by Tools/ue5_build_content.py) so any
+	// Blueprint-level tweaks apply; both it and the C++ class carry the example
+	// Mannequin model.  Falls back to the C++ class if the BP isn't present yet.
+	static ConstructorHelpers::FClassFinder<AColliderVisCharacter> CharacterBP(
+		TEXT("/Game/Blueprints/BP_ColliderVisCharacter"));
+	DefaultPawnClass = CharacterBP.Succeeded()
+		? CharacterBP.Class
+		: AColliderVisCharacter::StaticClass();
+
+	HUDClass = AColliderVisHUD::StaticClass();
 }
 
 void AColliderVisGameMode::BeginPlay()
 {
 	Super::BeginPlay();
-	SetupAtmosphere();
-	SpawnSciFiRoom();
+
+	// Always-on: cinematic grade + god-ray volumetric fog + low ambient sky.
+	SetupPostProcessAndFog();
+
+	// Legacy hardcoded rig — OFF by default.  The imported Blender lights and
+	// detector geometry placed by Tools/ue5_build_content.py are authoritative.
+	if (bSpawnDefaultLighting)
+	{
+		SetupDefaultLightRig();
+	}
+	if (bSpawnSciFiRoom)
+	{
+		SpawnSciFiRoom();
+	}
 }
 
-void AColliderVisGameMode::SetupAtmosphere()
+void AColliderVisGameMode::SetupPostProcessAndFog()
 {
 	UWorld* World = GetWorld();
 	if (!World) return;
@@ -120,9 +140,65 @@ void AColliderVisGameMode::SetupAtmosphere()
 		// Depth of Field — NOT overridden (cine camera drives this via UpdateFocusToCentroid)
 	}
 
-	// NO SkyAtmosphere — we're indoors.  An atmosphere would render a sky
-	// outside the room and bleach the upper walls with skylight.  We rely
-	// entirely on the practical lights spawned below for indoor illumination.
+	// NO SkyAtmosphere — an atmosphere would render a sky outside the scene and
+	// bleach the geometry with skylight.  Key/fill/rim illumination now comes from
+	// the imported Blender light rig placed in the level by Tools/ue5_build_content.py
+	// (or, on a blank map, from SetupDefaultLightRig() when bSpawnDefaultLighting is on).
+
+	// ── Sky Light — low ambient cyan tint, no scene capture (no sky exists) ──
+	ASkyLight* SkyLightActor = World->SpawnActor<ASkyLight>();
+	if (SkyLightActor)
+	{
+		USkyLightComponent* SLC = SkyLightActor->GetLightComponent();
+		SLC->SourceType       = ESkyLightSourceType::SLS_SpecifiedCubemap; // no captured scene
+		SLC->Intensity        = 0.4f;
+		SLC->bRealTimeCapture = false;
+		// Cool cyan ambient — fills shadow regions with subtle sci-fi tint
+		SLC->LightColor       = FColor(180, 210, 230);
+	}
+
+	// ── Exponential Height Fog — INDOOR HAZE ─────────────────────────────────
+	//
+	// Indoor laboratory haze: low density (so the room is visible), short
+	// reach (StartDistance keeps the player's near-field clean), neutral
+	// cool tint.  Volumetric scattering ON so the practical rect lights
+	// cast visible god-ray shafts through the room.
+	AExponentialHeightFog* FogActor = World->SpawnActor<AExponentialHeightFog>();
+	if (FogActor)
+	{
+		UExponentialHeightFogComponent* FC = FogActor->GetComponent();
+
+		FC->FogDensity              = 0.006f;            // light haze, not soup
+		FC->FogInscatteringLuminance = FLinearColor(0.05f, 0.07f, 0.10f);
+		FC->FogHeightFalloff        = 0.2f;
+		FC->StartDistance           = 300.f;
+		FC->FogMaxOpacity           = 0.7f;
+
+		FC->bEnableVolumetricFog                 = true;
+		FC->VolumetricFogScatteringDistribution  = 0.6f;
+		FC->VolumetricFogExtinctionScale         = 1.0f;
+		FC->VolumetricFogAlbedo                  = FLinearColor(0.5f, 0.6f, 0.7f).ToFColor(true);
+		FC->VolumetricFogEmissive                = FLinearColor(0.001f, 0.0015f, 0.002f);
+
+		// No abyssal second layer — we're in a finite room.
+		FC->SecondFogData.FogDensity       = 0.0f;
+		FC->SecondFogData.FogHeightFalloff = 0.5f;
+		FC->SecondFogData.FogHeightOffset  = -500.f;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Legacy default light rig
+//
+// The original hardcoded "clean-room" four-rect-light setup.  Superseded by the
+// imported Blender light rig (placed in the level by Tools/ue5_build_content.py),
+// so it is only spawned when bSpawnDefaultLighting is enabled — handy for a blank
+// map that has no imported lights.
+// ---------------------------------------------------------------------------
+void AColliderVisGameMode::SetupDefaultLightRig()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
 
 	// Helper: orient an actor's +X toward the world origin
 	auto PointAtOrigin = [](AActor* A, const FVector& Pos)
@@ -132,9 +208,6 @@ void AColliderVisGameMode::SetupAtmosphere()
 	};
 
 	// ── Key light: warm ceiling fixture above the detector ──
-	// Big rect light on the ceiling acting like a recessed panel.  4400 K
-	// reads as the warm side of a clean-room overhead — distinctive against
-	// the cool teal post-process gain.
 	ARectLight* KeyLight = World->SpawnActor<ARectLight>();
 	if (KeyLight)
 	{
@@ -196,47 +269,6 @@ void AColliderVisGameMode::SetupAtmosphere()
 		C->SourceWidth       = 200.f;
 		C->SourceHeight      = 600.f;
 		C->AttenuationRadius = 3000.f;
-	}
-
-	// ── Sky Light — low ambient cyan tint, no scene capture (no sky exists) ──
-	ASkyLight* SkyLightActor = World->SpawnActor<ASkyLight>();
-	if (SkyLightActor)
-	{
-		USkyLightComponent* SLC = SkyLightActor->GetLightComponent();
-		SLC->SourceType       = ESkyLightSourceType::SLS_SpecifiedCubemap; // no captured scene
-		SLC->Intensity        = 0.4f;
-		SLC->bRealTimeCapture = false;
-		// Cool cyan ambient — fills shadow regions with subtle sci-fi tint
-		SLC->LightColor       = FColor(180, 210, 230);
-	}
-
-	// ── Exponential Height Fog — INDOOR HAZE ─────────────────────────────────
-	//
-	// Indoor laboratory haze: low density (so the room is visible), short
-	// reach (StartDistance keeps the player's near-field clean), neutral
-	// cool tint.  Volumetric scattering ON so the practical rect lights
-	// cast visible god-ray shafts through the room.
-	AExponentialHeightFog* FogActor = World->SpawnActor<AExponentialHeightFog>();
-	if (FogActor)
-	{
-		UExponentialHeightFogComponent* FC = FogActor->GetComponent();
-
-		FC->FogDensity              = 0.006f;            // light haze, not soup
-		FC->FogInscatteringLuminance = FLinearColor(0.05f, 0.07f, 0.10f);
-		FC->FogHeightFalloff        = 0.2f;
-		FC->StartDistance           = 300.f;
-		FC->FogMaxOpacity           = 0.7f;
-
-		FC->bEnableVolumetricFog                 = true;
-		FC->VolumetricFogScatteringDistribution  = 0.6f;
-		FC->VolumetricFogExtinctionScale         = 1.0f;
-		FC->VolumetricFogAlbedo                  = FLinearColor(0.5f, 0.6f, 0.7f).ToFColor(true);
-		FC->VolumetricFogEmissive                = FLinearColor(0.001f, 0.0015f, 0.002f);
-
-		// No abyssal second layer — we're in a finite room.
-		FC->SecondFogData.FogDensity       = 0.0f;
-		FC->SecondFogData.FogHeightFalloff = 0.5f;
-		FC->SecondFogData.FogHeightOffset  = -500.f;
 	}
 }
 

@@ -12,90 +12,81 @@ docker run --rm -v /data:/data ddgeoviztools blender-scene \
     /data/gltf_out/ /data/detector.blend
 ```
 
-## Step 2 — Export from .blend to UE5-ready GLTF + manifest.json
+## Step 2 — Export the .blend to UE-ready GLTF + manifest.json
 
-Requires Blender 4.x installed on your machine.
+Uses the ddgeoviztools Docker image (no local Blender needed). This exports per-sub-detector
+GLTF **plus** the Blender light rig and cameras into `manifest.json`:
 
 ```bash
-blender --background /data/detector.blend \
-        --python /home/user/ColliderVis/Tools/blend_to_ue5.py \
-        -- --output-dir /tmp/ue5_meshes/
+scripts/blend_to_ue5_export.sh /data/detector.blend -o /tmp/ue5_meshes
 ```
 
 Output:
 ```
 /tmp/ue5_meshes/
-    ECalBarrel.gltf
-    HCalBarrel.gltf
-    Solenoid.gltf
-    ...
-    manifest.json
+    ECalBarrel.gltf, HCalBarrel.gltf, Solenoid.gltf, ...
+    manifest.json          # sub_detectors[] + lights[] + cameras[]
 ```
 
-## Step 3 — Import GLTF files into UE5
+The phi **cutaway** is already baked into the exported mesh geometry, so it transfers
+automatically — nothing extra to do in UE.
 
-1. Open UE5 project `ColliderVis.uproject` in the Unreal Editor.
-2. Enable the **glTF Importer** plugin: *Edit → Plugins → search "glTF" → Enable → Restart*.
-3. In the Content Browser, navigate to `Content/Detector/` (create folder if needed).
-4. Drag-and-drop all `*.gltf` files from `/tmp/ue5_meshes/` into the Content Browser.
-5. In the Import dialog:
-   - **Generate Lightmap UV**: Yes
-   - **Import Normals**: Yes
-   - **Build Nanite**: Check (or enable per-asset afterwards)
-   - **Collision**: None (decorative geometry)
-6. Click **Import All**.
+## Step 3 — Build all UE content automatically
 
-## Step 4 — Drag meshes into the level
+Steps 3–7 of the old manual workflow (import GLTF, create materials / input / data assets /
+blueprints, build the level, tag actors, spawn the Blender lights) are now done by one
+idempotent script: **`Tools/ue5_build_content.py`**.
 
-1. Open `Content/Maps/ColliderVisLevel` (or create a new level).
-2. For each imported static mesh (`SM_ECalBarrel`, etc.), drag it from the Content Browser
-   into the viewport.
-3. Place meshes at origin (0, 0, 0) — they are already in detector-centred coordinates.
-4. Set each actor's **Mobility** to **Static** in the Details panel.
+Run it inside the editor — easiest via the **mcp-unreal** `execute_script` tool (see
+`../../MCP_SETUP.md`), or from the editor's Python console:
 
-## Step 5 — Apply Actor Tags via Editor Python
+```python
+import sys; sys.path.append(r"<repo>/ColliderVis/Tools")
+import ue5_build_content as b
+b.build({"manifest_dir": "/tmp/ue5_meshes"})
+```
 
-1. *Edit → Execute Python Script* → select `Tools/ue5_tag_actors.py`
-2. Or run from the output log console:
-   ```python
-   import subprocess
-   subprocess.run(["python", "Tools/ue5_tag_actors.py",
-                   "--manifest", "/tmp/ue5_meshes/manifest.json",
-                   "--content-path", "/Game/Detector"])
-   ```
-   This sets actor tags and enables Nanite on each mesh asset.
+or headless:
 
-## Step 6 — Populate DA_DetectorVisibility
+```bash
+UnrealEditor-Cmd ColliderVis.uproject -run=pythonscript \
+    -script="<repo>/ColliderVis/Tools/ue5_build_content.py --manifest-dir /tmp/ue5_meshes"
+```
 
-1. Right-click in Content Browser → *Blueprint → Data Asset → UDetectorVisibilityConfig* →
-   name it `DA_DetectorVisibility`.
-2. For each entry in `manifest.json`, add a row:
-   - **Name**: sub-detector name (e.g. `ECalBarrel`)
-   - **bVisibleByDefault**: true
-   - **LabelColor**: use the `base_color` from manifest (for the UI panel swatch)
-   - **ActorTags**: `["ECalBarrel"]`
-3. Assign `DA_DetectorVisibility` to the `ADetectorVisibilityManager` actor in the level.
+It creates (idempotently — safe to re-run):
 
-## Step 7 — Blueprint Assets to Create (after C++ compile)
+| Output | Path |
+|--------|------|
+| Detector meshes (Nanite, no-collision, tagged) | `/Game/Detector/*` |
+| Materials `M_Track`, `M_CaloHit`, `M_MCParticle`, `M_DetectorGeometry` + per-sub-detector MICs | `/Game/Materials/*` |
+| Input `IA_*`, `IMC_Default`, `IMC_VR` (keys + modifiers) | `/Game/Input/*` |
+| `DA_EventDisplayConfig`, `DA_DetectorVisibility`, `DA_DetectorGeometryManifest` | `/Game/Data/*` |
+| `BP_EventDisplayManager`, `BP_CineCamera`, `BP_ColliderVisCharacter` | `/Game/Blueprints/*` |
+| `WBP_Options`, `WBP_DetectorRow` (stubs — layout is manual, see UE5_SETUP §7) | `/Game/UI/*` |
+| Level `ColliderVisMain` (meshes + Blender lights + managers, set as startup map) | `/Game/Maps/*` |
 
-| Asset | Parent | Location |
-|-------|--------|----------|
-| `BP_ColliderVisCharacter` | AColliderVisCharacter | Content/Blueprints/ |
-| `BP_EventDisplayManager`  | AEventDisplayManager  | Content/Blueprints/ |
-| `BP_CineCamera`           | AColliderVisCineCameraActor | Content/Blueprints/ |
-| `WBP_EventMenu`           | UEventMenuWidget      | Content/UI/ |
-| `WBP_DetectorVisibility`  | UUserWidget           | Content/UI/ |
-| `DA_EventDisplayConfig`   | UEventDisplayConfig   | Content/Data/ |
-| `IMC_Default`             | UInputMappingContext  | Content/Input/ |
-| `IA_Move`, `IA_Look`, `IA_Jump`, `IA_NextEvent`, `IA_OpenMenu`, `IA_SwitchMode`, `IA_ToggleDetectorMenu` | UInputAction | Content/Input/ |
+Watch stdout for `COLLIDERVIS_BUILD_RESULT={...}` (machine-parseable summary) and any
+`MANUAL TODO` lines.
 
-## Verification Checklist
+> `ue5_tag_actors.py` (tag-only) is kept for re-tagging an already-populated level; the full
+> builder above supersedes it for a fresh setup.
 
-- [ ] All GLTF meshes imported, visible in Content Browser
-- [ ] `stat Nanite` in PIE console shows virtual geometry active
-- [ ] Actors in World Outliner show `Mobility = Static`
-- [ ] Actor Tags set correctly (select actor → Details → Actor → Tags)
-- [ ] `DA_DetectorVisibility` has entries matching manifest
-- [ ] `ADetectorVisibilityManager` placed in level with Config assigned
-- [ ] `BP_EventDisplayManager` placed with `DA_EventDisplayConfig` assigned
-- [ ] Press D in PIE → `WBP_DetectorVisibility` toggles ECal/HCal/Tracker visibility
+## Step 4 — Finish the manual bits
+
+The builder reports these as TODOs (they can't be reliably scripted):
+
+1. **Example character model** — add the **Third Person** feature pack
+   (*Content Browser → Add → Add Feature or Content Pack → Third Person*). The character
+   auto-binds `SKM_Manny_Simple` + `ABP_Manny` on the next compile.
+2. **WBP_Options / WBP_DetectorRow** — build the UMG layout + button wiring (UE5_SETUP §7).
+3. **IMC_VR** — finish any XR controller bindings your VR plugins require (UE5_SETUP §3c).
+
+## Verification
+
+- [ ] `COLLIDERVIS_BUILD_RESULT` reports `"ok": true`
+- [ ] `/Game/Detector/*` meshes present; one selected shows **Nanite Enabled**
+- [ ] `ColliderVisMain` opens: detector at origin with the cutaway open, lit by `Light_*`
+      actors (the Blender rig), `EventDisplayManager` + `DetectorVisibilityManager` placed
+- [ ] PIE: third-person Mannequin spawns and is controllable (WASD), **RMB zooms in** (arm +
+      FOV), keys 1–9 toggle sub-detectors
+- [ ] `stat Nanite` shows virtual geometry active

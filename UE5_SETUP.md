@@ -1,9 +1,22 @@
 # ColliderVis — UE5 Editor Setup Guide
 
 This guide covers everything you need to do **inside the Unreal Engine 5 editor**
-after opening the project for the first time. The C++ code handles lighting,
-atmosphere, and game logic automatically at runtime — your job is to wire up the
-input assets, materials, and packaging settings described here.
+after opening the project for the first time. The C++ code handles atmosphere
+(post-process grade + god-ray fog) and game logic automatically at runtime — your
+job is to wire up the input assets, materials, and packaging settings described here.
+
+> ### ⚡ Automated setup (recommended)
+> Most of sections 3–6 below (Input assets, Materials, Data assets, Level) are now
+> built automatically by **`ColliderVis/Tools/ue5_build_content.py`** from a
+> `blend_to_ue5.py` manifest — including the **detector geometry, the Blender light
+> rig, and cameras**. Run it via the `mcp-unreal` `execute_script` tool (see
+> `MCP_SETUP.md`) or the editor Python console; see `Tools/README_UE5_IMPORT.md`.
+> Lighting now comes from your **Blender scene** (imported as light actors), not the
+> hardcoded C++ rig — that legacy rig is gated behind
+> `AColliderVisGameMode::bSpawnDefaultLighting` (default off).
+> The third-person character uses the UE **Mannequin** (add the *Third Person*
+> feature pack); **hold RMB to zoom** the camera in (boom + FOV) for detail.
+> The sections below remain the reference for anything you tune by hand.
 
 ---
 

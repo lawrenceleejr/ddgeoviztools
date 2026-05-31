@@ -13,6 +13,10 @@
 #include "InputAction.h"
 #include "Kismet/GameplayStatics.h"
 #include "ColliderVisHUD.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "Animation/AnimInstance.h"
+#include "UObject/ConstructorHelpers.h"
 
 AColliderVisCharacter::AColliderVisCharacter()
 {
@@ -33,6 +37,35 @@ AColliderVisCharacter::AColliderVisCharacter()
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	FollowCamera->bUsePawnControlRotation = false;
+	FollowCamera->SetFieldOfView(DefaultFOV);
+
+	// ── Example third-person model ──────────────────────────────────────────
+	// Use the UE "Third Person" feature-pack Mannequin (Manny) as the playable
+	// avatar, if that content is present in the project
+	// (/Game/Characters/Mannequins/...).  All lookups are guarded by .Succeeded()
+	// so the character stays playable (just invisible) when the pack hasn't been
+	// added yet — add it via "Add Feature or Content Pack → Third Person", then
+	// recompile.  See UE5_SETUP.md / README_UE5_IMPORT.md.
+	if (USkeletalMeshComponent* MeshComp = GetMesh())
+	{
+		// Standard mannequin offset: feet on the capsule base, facing +X.
+		MeshComp->SetRelativeLocationAndRotation(
+			FVector(0.f, 0.f, -89.f), FRotator(0.f, -90.f, 0.f));
+
+		static ConstructorHelpers::FObjectFinder<USkeletalMesh> MannequinMesh(
+			TEXT("/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
+		if (MannequinMesh.Succeeded())
+		{
+			MeshComp->SetSkeletalMesh(MannequinMesh.Object);
+		}
+
+		static ConstructorHelpers::FClassFinder<UAnimInstance> MannequinAnim(
+			TEXT("/Game/Characters/Mannequins/Animations/ABP_Manny"));
+		if (MannequinAnim.Succeeded())
+		{
+			MeshComp->SetAnimInstanceClass(MannequinAnim.Class);
+		}
+	}
 
 	// Character movement defaults
 	GetCharacterMovement()->bOrientRotationToMovement        = true;
@@ -97,10 +130,15 @@ void AColliderVisCharacter::Tick(float DeltaTime)
 	// In orbit mode there is nothing to interpolate here.
 	if (!bOrbitMode)
 	{
-		// Third-person: RMB zooms the follow camera toward the character.
+		// Third-person: zoom pulls the follow camera in and narrows the FOV so
+		// the user can inspect fine detector / event detail.
 		const float TargetLength = bZoomHeld ? ZoomedArmLength : DefaultArmLength;
 		CameraBoom->TargetArmLength = FMath::FInterpTo(
 			CameraBoom->TargetArmLength, TargetLength, DeltaTime, 8.f);
+
+		const float TargetFOV = bZoomHeld ? ZoomedFOV : DefaultFOV;
+		FollowCamera->SetFieldOfView(FMath::FInterpTo(
+			FollowCamera->FieldOfView, TargetFOV, DeltaTime, 8.f));
 	}
 	else if (OrbitCam)
 	{
