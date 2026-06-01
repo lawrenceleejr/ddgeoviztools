@@ -1,8 +1,8 @@
 # Agentic Unreal control on your Mac (mcp-unreal)
 
 This sets up [`remiphilippe/mcp-unreal`](https://github.com/remiphilippe/mcp-unreal) so Claude
-Code can drive the ColliderVis editor directly — import geometry, build the level, compile,
-take viewport screenshots, and iterate on lighting — over the Model Context Protocol.
+Code **or Claude Desktop** can drive the ColliderVis editor directly — import geometry, build the
+level, compile, take viewport screenshots, and iterate on lighting — over the Model Context Protocol.
 
 It pairs with `ColliderVis/Tools/ue5_build_content.py` (the one-shot content builder): Claude
 runs that script through the MCP `execute_script` tool, then uses `capture_viewport` to *see*
@@ -17,7 +17,7 @@ the result and refine.
 | Unreal Engine **5.7** | Epic Games Launcher. Default path `/Users/Shared/Epic Games/UE_5.7` (matches `scripts/build_mac.sh` and the mcp-unreal default `UE_EDITOR_PATH`). |
 | Xcode 26+ | Required to compile the C++ project + the MCPUnreal plugin. |
 | Docker | For the Blender export step (`scripts/blend_to_ue5_export.sh`). |
-| Claude Code | This repo ships a `.mcp.json` that registers the server. |
+| Claude Code **or** Claude Desktop | Either MCP client works. Claude Code auto-reads the repo's `.mcp.json`; Claude Desktop needs a one-time config entry (§4b). |
 | Go 1.25+ | Only if you build `mcp-unreal` from source instead of using a release binary. |
 
 ---
@@ -62,7 +62,13 @@ cp -r /path/to/mcp-unreal/plugin "$PWD/ColliderVis/Plugins/MCPUnreal"
 curl http://localhost:30010/remote/info     # should return JSON once the editor is open
 ```
 
-## 4. Register the server with Claude Code
+## 4. Register the server with your MCP client
+
+`mcp-unreal` is a stdio MCP server, so any MCP client launches it the same way — only the
+registration differs. Both clients talk to the **same** running editor (ports 30010 / 8090),
+so keep the UE editor open and drive from one client at a time to avoid interleaved edits.
+
+### 4a. Claude Code
 
 The repo's `.mcp.json` already declares the server. Before launching Claude Code from the repo
 root, export the project path (and the binary location if it isn't on `PATH`):
@@ -78,14 +84,53 @@ Or register it explicitly instead of relying on `.mcp.json`:
 claude mcp add mcp-unreal -- mcp-unreal
 ```
 
-Other env vars (defaults shown): `RC_API_PORT=30010`, `PLUGIN_PORT=8090`,
+### 4b. Claude Desktop
+
+Claude Desktop has no `.mcp.json`, does **not** expand `${VAR}` placeholders, and does **not**
+inherit your shell `PATH` (a GUI app launched from Finder gets a minimal environment). So
+register the server with **absolute paths and literal values**.
+
+1. **Claude Desktop → Settings → Developer → Edit Config.** This creates/opens the config file:
+   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+2. Add `mcp-unreal` under `mcpServers` (merge into the file if it already has other servers):
+
+   ```json
+   {
+     "mcpServers": {
+       "mcp-unreal": {
+         "command": "/usr/local/bin/mcp-unreal",
+         "args": [],
+         "env": {
+           "MCP_UNREAL_PROJECT": "/Users/<you>/work/ddgeoviztools/ColliderVis/ColliderVis.uproject"
+         }
+       }
+     }
+   }
+   ```
+
+   - `command` **must be the absolute path** to the binary — run `which mcp-unreal` to find it.
+     A bare `"mcp-unreal"` usually fails under Desktop's minimal `PATH`.
+   - Use **literal** values in `env` (no `${...}`). Add `UE_EDITOR_PATH`, `RC_API_PORT`, or
+     `PLUGIN_PORT` here too if you've changed them from the defaults below.
+3. **Fully quit and reopen** Claude Desktop (⌘Q — closing the window isn't enough; it reloads
+   the config only on a cold start).
+4. Confirm it loaded: the tools (🔨 / slider) control in the message box lists the `mcp-unreal`
+   tools. On error, **Settings → Developer** shows the server's stderr log.
+
+> `lookup_docs` reads the `docs/index.bleve` you built in step 1 relative to the binary's working
+> directory — which is `/` when Desktop launches it. If that tool can't find its index, point
+> `command` at a `mcp-unreal` that sits next to its `docs/` folder; the other tools don't need it.
+
+Other env vars (defaults shown), valid for either client: `RC_API_PORT=30010`, `PLUGIN_PORT=8090`,
 `UE_EDITOR_PATH=/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor-Cmd`.
 
 ---
 
 ## 5. Drive it (end-to-end)
 
-With the UE editor open on `ColliderVis.uproject` and Claude Code running from the repo root:
+With the UE editor open on `ColliderVis.uproject` and your MCP client connected (Claude Code from
+the repo root, or Claude Desktop with §4b configured):
 
 ```bash
 # 1. (terminal) Blender .blend -> UE-ready GLTF + manifest (meshes + lights + cameras)
