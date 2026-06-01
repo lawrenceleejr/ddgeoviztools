@@ -22,10 +22,11 @@ AColliderVisGameMode::AColliderVisGameMode()
 	// Prefer the BP character (created by Tools/ue5_build_content.py) so any
 	// Blueprint-level tweaks apply; both it and the C++ class carry the example
 	// Mannequin model.  Falls back to the C++ class if the BP isn't present yet.
+	// (.Get() yields UClass* on both arms so the ternary type is unambiguous.)
 	static ConstructorHelpers::FClassFinder<AColliderVisCharacter> CharacterBP(
 		TEXT("/Game/Blueprints/BP_ColliderVisCharacter"));
 	DefaultPawnClass = CharacterBP.Succeeded()
-		? CharacterBP.Class
+		? CharacterBP.Class.Get()
 		: AColliderVisCharacter::StaticClass();
 
 	HUDClass = AColliderVisHUD::StaticClass();
