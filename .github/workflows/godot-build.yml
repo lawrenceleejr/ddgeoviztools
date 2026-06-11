@@ -1,0 +1,96 @@
+name: Godot builds (macOS app + Linux)
+
+# Exports the ColliderVis Godot project headlessly:
+#   - a ready-to-run macOS .app (universal x86_64+arm64, ad-hoc signed),
+#     published as ColliderVis-macOS.zip
+#   - a Linux x86_64 binary
+# plus a rendered verification screenshot so every build's lighting can be
+# eyeballed straight from the artifacts page.
+#
+# The macOS app is ad-hoc signed (no Apple developer account needed). After
+# downloading and unzipping, clear the quarantine flag once:
+#     xattr -cr ColliderVis.app
+on:
+  push:
+    paths:
+      - "ColliderVisGodot/**"
+      - ".github/workflows/godot-build.yml"
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.6"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Godot + export templates
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot-bin
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-stable
+
+      - name: Download Godot + export templates
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          mkdir -p ~/godot-bin
+          curl -sSL -o /tmp/godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d ~/godot-bin
+          mv ~/godot-bin/Godot_v${GODOT_VERSION}-stable_linux.x86_64 ~/godot-bin/godot
+          chmod +x ~/godot-bin/godot
+          curl -sSL -o /tmp/templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mkdir -p ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          unzip -q /tmp/templates.tpz -d /tmp/templates
+          mv /tmp/templates/templates/* ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
+
+      - name: Import project
+        run: ~/godot-bin/godot --headless --path ColliderVisGodot --import || true
+
+      - name: Export macOS app
+        run: |
+          mkdir -p ColliderVisGodot/build
+          ~/godot-bin/godot --headless --path ColliderVisGodot \
+            --export-release "macOS" build/ColliderVis-macOS.zip
+
+      - name: Export Linux binary
+        run: |
+          ~/godot-bin/godot --headless --path ColliderVisGodot \
+            --export-release "Linux" build/ColliderVis-Linux.x86_64
+
+      # Render one frame with the software Vulkan driver (lavapipe) as a
+      # smoke test that the exported content actually loads and lights up.
+      - name: Verification render
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers xvfb
+          chmod +x ColliderVisGodot/build/ColliderVis-Linux.x86_64
+          timeout 600 xvfb-run -a -s "-screen 0 1280x720x24" \
+            ColliderVisGodot/build/ColliderVis-Linux.x86_64 \
+            --resolution 1280x720 -- --screenshot=$PWD/verify.png --frames=80
+          test -f verify.png
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ColliderVis-macOS
+          path: ColliderVisGodot/build/ColliderVis-macOS.zip
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ColliderVis-Linux
+          path: ColliderVisGodot/build/ColliderVis-Linux.x86_64
+
+      - name: Upload verification render
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-render
+          path: verify.png
