@@ -48,8 +48,10 @@ open /Applications/ColliderVis.app
 - **Phi cutaway** (the Blender pipeline's signature feature) implemented in
   the detector shader — toggle with `C`, resize with `[` / `]` or the menu
   slider.
-- **Third-person mode**: a procedurally-built, procedurally-animated sci-fi
-  explorer you walk around the cavern à la UE's third-person template.
+- **Third-person mode**: a fully rigged, professionally animated explorer
+  (KayKit "Adventurers" character, CC0) you walk around the cavern à la UE's
+  third-person template — cross-blended idle/walk/run/jump clips with
+  playback speed matched to velocity so the feet plant naturally.
 - **Full in-game UI** (`Esc`): open event files, jump to any event index,
   reco/truth particle listings, per-sub-detector visibility toggles,
   camera/cutaway controls.

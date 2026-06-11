@@ -1,8 +1,25 @@
 extends CharacterBody3D
-## Third-person explorer: a stylized sci-fi mannequin (built procedurally —
-## no asset files) with a procedural walk/run/idle animation cycle, driven
-## à la UE's third-person template: WASD moves relative to the camera,
+## Third-person explorer: a fully rigged, professionally animated character
+## (KayKit "Adventurers" Knight — CC0, see assets/character/KAYKIT_LICENSE.txt)
+## driven à la UE's third-person template: WASD moves relative to the camera,
 ## Shift runs, Space jumps, the body turns toward the move direction.
+##
+## Locomotion uses the pack's animation library with cross-blending:
+## Idle / Walking_B / Running_B on the ground (playback speed scaled to
+## actual velocity so feet don't slide), Jump_Start → Jump_Idle → Jump_Land
+## in the air. If the model file is missing (e.g. a stripped fork), a simple
+## capsule keeps the mode functional.
+
+const MODEL_PATH := "res://assets/character/Knight.glb"
+## Prop nodes hidden at runtime — our explorer is unarmed, and the cape
+## blocks the whole torso from the over-the-shoulder camera.
+const HIDDEN_PROPS := ["1H_Sword", "1H_Sword_Offhand", "2H_Sword",
+	"Badge_Shield", "Rectangle_Shield", "Round_Shield", "Spike_Shield",
+	"Knight_Cape"]
+## Looping locomotion clips (imported glTF clips default to one-shot).
+const LOOPED_CLIPS := ["Idle", "Walking_B", "Running_B", "Jump_Idle"]
+## KayKit models face +Z; rig yaw is atan2(dir.x, dir.z) + this offset.
+const MODEL_YAW_OFFSET := 0.0
 
 const WALK_SPEED := 3.0
 const RUN_SPEED := 6.5
@@ -10,33 +27,28 @@ const JUMP_VELOCITY := 4.8
 const GRAVITY := 12.0
 const TURN_LERP := 10.0
 const LOOK_SPEED := 0.0035
+const BLEND_TIME := 0.25
 
 var cam_yaw := 1.16    # spawn looking at the detector from the default spawn point
 var cam_pitch := -0.12
-var _phase := 0.0
-var _speed_blend := 0.0   # 0 idle .. 1 run, smoothed
 
-# Rig pivots.
 var rig: Node3D
-var torso: Node3D
-var head: Node3D
-var hip_l: Node3D
-var hip_r: Node3D
-var knee_l: Node3D
-var knee_r: Node3D
-var shoulder_l: Node3D
-var shoulder_r: Node3D
-var elbow_l: Node3D
-var elbow_r: Node3D
-
+var anim: AnimationPlayer = null
 var spring: SpringArm3D
 var camera: Camera3D
 
+var _current_clip := ""
+var _was_airborne := false
+var _land_timer := 0.0
+
 
 func _ready() -> void:
-	_build_body()
+	rig = Node3D.new()
+	add_child(rig)
+	rig.rotation.y = cam_yaw + PI + MODEL_YAW_OFFSET   # face away from camera
+	if not _load_model():
+		_build_fallback_body()
 	_build_camera()
-	rig.rotation.y = cam_yaw + PI   # face away from the camera at spawn
 	var shape := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
 	capsule.radius = 0.3
@@ -46,92 +58,64 @@ func _ready() -> void:
 	add_child(shape)
 
 
-# ── procedural mannequin ─────────────────────────────────────────────────────
+# ── rigged model ─────────────────────────────────────────────────────────────
 
-func _mat(color: Color, metallic := 0.6, roughness := 0.45,
-		emissive := Color.BLACK, e_energy := 0.0) -> StandardMaterial3D:
+func _load_model() -> bool:
+	var scene: Node = null
+	if ResourceLoader.exists(MODEL_PATH, "PackedScene"):
+		var ps: PackedScene = load(MODEL_PATH)
+		if ps != null:
+			scene = ps.instantiate()
+	if scene == null and FileAccess.file_exists(MODEL_PATH):
+		var doc := GLTFDocument.new()
+		var state := GLTFState.new()
+		if doc.append_from_file(MODEL_PATH, state) == OK:
+			scene = doc.generate_scene(state)
+	if scene == null:
+		push_warning("Character: model '%s' unavailable; using capsule." % MODEL_PATH)
+		return false
+	rig.add_child(scene)
+	for prop_name in HIDDEN_PROPS:
+		var n := scene.find_child(prop_name, true, false)
+		if n is Node3D:
+			(n as Node3D).visible = false
+	var players := scene.find_children("*", "AnimationPlayer", true, false)
+	if players.is_empty():
+		push_warning("Character: no AnimationPlayer in model; animations disabled.")
+		return true
+	anim = players[0]
+	for clip in LOOPED_CLIPS:
+		if anim.has_animation(clip):
+			anim.get_animation(clip).loop_mode = Animation.LOOP_LINEAR
+	_play("Idle")
+	return true
+
+
+func _play(clip: String, speed := 1.0) -> void:
+	if anim == null or not anim.has_animation(clip):
+		return
+	if _current_clip != clip:
+		anim.play(clip, BLEND_TIME)
+		_current_clip = clip
+	anim.speed_scale = speed
+
+
+func _build_fallback_body() -> void:
 	var m := StandardMaterial3D.new()
-	m.albedo_color = color
-	m.metallic = metallic
-	m.roughness = roughness
-	if e_energy > 0.0:
-		m.emission_enabled = true
-		m.emission = emissive
-		m.emission_energy_multiplier = e_energy
-	return m
-
-
-func _part(parent: Node3D, mesh: Mesh, pos: Vector3, mat: Material) -> MeshInstance3D:
+	m.albedo_color = Color(0.55, 0.58, 0.62)
+	m.metallic = 0.6
+	m.roughness = 0.45
+	var body := CapsuleMesh.new()
+	body.radius = 0.3
+	body.height = 1.7
 	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	mi.position = pos
-	mi.material_override = mat
-	parent.add_child(mi)
-	return mi
+	mi.mesh = body
+	mi.position = Vector3(0, 0.85, 0)
+	mi.material_override = m
+	rig.add_child(mi)
 
 
-func _pivot(parent: Node3D, pos: Vector3) -> Node3D:
-	var p := Node3D.new()
-	p.position = pos
-	parent.add_child(p)
-	return p
-
-
-func _capsule(radius: float, height: float) -> CapsuleMesh:
-	var c := CapsuleMesh.new()
-	c.radius = radius
-	c.height = height
-	return c
-
-
-func _box(size: Vector3) -> BoxMesh:
-	var b := BoxMesh.new()
-	b.size = size
-	return b
-
-
-func _build_body() -> void:
-	var suit := _mat(Color(0.55, 0.58, 0.62), 0.7, 0.4)
-	var dark := _mat(Color(0.16, 0.17, 0.20), 0.3, 0.7)
-	var accent := _mat(Color(0.1, 0.12, 0.15), 0.4, 0.5, Color(0.1, 0.7, 1.0), 3.0)
-
-	rig = Node3D.new()
-	add_child(rig)
-
-	# Pelvis + torso + head (rig origin at feet).
-	var pelvis := _pivot(rig, Vector3(0, 0.95, 0))
-	_part(pelvis, _box(Vector3(0.32, 0.18, 0.22)), Vector3.ZERO, dark)
-	torso = _pivot(pelvis, Vector3(0, 0.12, 0))
-	_part(torso, _box(Vector3(0.38, 0.46, 0.24)), Vector3(0, 0.30, 0), suit)
-	_part(torso, _box(Vector3(0.18, 0.10, 0.02)), Vector3(0, 0.38, 0.13), accent)  # chest light
-	head = _pivot(torso, Vector3(0, 0.62, 0))
-	var skull := SphereMesh.new()
-	skull.radius = 0.13
-	skull.height = 0.26
-	_part(head, skull, Vector3(0, 0.10, 0), suit)
-	_part(head, _box(Vector3(0.16, 0.05, 0.02)), Vector3(0, 0.11, 0.12), accent)   # visor
-
-	# Arms.
-	shoulder_l = _pivot(torso, Vector3(-0.26, 0.48, 0))
-	shoulder_r = _pivot(torso, Vector3(0.26, 0.48, 0))
-	for s in [shoulder_l, shoulder_r]:
-		_part(s, _capsule(0.06, 0.34), Vector3(0, -0.16, 0), suit)
-	elbow_l = _pivot(shoulder_l, Vector3(0, -0.34, 0))
-	elbow_r = _pivot(shoulder_r, Vector3(0, -0.34, 0))
-	for e in [elbow_l, elbow_r]:
-		_part(e, _capsule(0.05, 0.32), Vector3(0, -0.15, 0), dark)
-
-	# Legs.
-	hip_l = _pivot(pelvis, Vector3(-0.10, -0.06, 0))
-	hip_r = _pivot(pelvis, Vector3(0.10, -0.06, 0))
-	for hp in [hip_l, hip_r]:
-		_part(hp, _capsule(0.075, 0.42), Vector3(0, -0.21, 0), suit)
-	knee_l = _pivot(hip_l, Vector3(0, -0.44, 0))
-	knee_r = _pivot(hip_r, Vector3(0, -0.44, 0))
-	for kn in [knee_l, knee_r]:
-		_part(kn, _capsule(0.06, 0.40), Vector3(0, -0.20, 0), dark)
-		_part(kn, _box(Vector3(0.11, 0.06, 0.24)), Vector3(0, -0.42, 0.05), dark)  # foot
-
+# ── camera ───────────────────────────────────────────────────────────────────
 
 func _build_camera() -> void:
 	# Over-the-shoulder cinematic follow camera.
@@ -140,7 +124,7 @@ func _build_camera() -> void:
 	gimbal.position = Vector3(0, 1.55, 0)
 	add_child(gimbal)
 	spring = SpringArm3D.new()
-	spring.spring_length = 3.4
+	spring.spring_length = 4.2
 	spring.collision_mask = 1
 	gimbal.add_child(spring)
 	camera = Camera3D.new()
@@ -192,45 +176,45 @@ func _physics_process(delta: float) -> void:
 		wish = wish.normalized()
 		velocity.x = wish.x * speed
 		velocity.z = wish.z * speed
-		rig.rotation.y = lerp_angle(rig.rotation.y, atan2(wish.x, wish.z), TURN_LERP * delta)
+		rig.rotation.y = lerp_angle(rig.rotation.y,
+			atan2(wish.x, wish.z) + MODEL_YAW_OFFSET, TURN_LERP * delta)
 	else:
 		velocity.x = move_toward(velocity.x, 0, speed * 4.0 * delta)
 		velocity.z = move_toward(velocity.z, 0, speed * 4.0 * delta)
 
+	var jumped := false
 	if not is_on_floor():
 		velocity.y -= GRAVITY * delta
 	elif Input.is_key_pressed(KEY_SPACE) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		velocity.y = JUMP_VELOCITY
+		jumped = true
 
 	move_and_slide()
-	_animate(delta)
+	_update_animation(delta, jumped)
 
 
-func _animate(delta: float) -> void:
+func _update_animation(delta: float, jumped: bool) -> void:
+	if anim == null:
+		return
+	var airborne := not is_on_floor()
 	var ground_speed := Vector2(velocity.x, velocity.z).length()
-	var target_blend := clampf(ground_speed / RUN_SPEED, 0.0, 1.0)
-	_speed_blend = lerpf(_speed_blend, target_blend, 8.0 * delta)
-	_phase += delta * (2.0 + 9.0 * _speed_blend)
 
-	var k := _speed_blend
-	var swing := sin(_phase)
-	var swing2 := sin(_phase + PI)
-
-	# Legs: thighs swing in opposition; knees bend on the back-swing.
-	hip_l.rotation.x = swing * 0.75 * k
-	hip_r.rotation.x = swing2 * 0.75 * k
-	knee_l.rotation.x = -maxf(0.0, -swing) * 1.1 * k
-	knee_r.rotation.x = -maxf(0.0, -swing2) * 1.1 * k
-
-	# Arms counter-swing; idle has a subtle sway.
-	var idle_sway := sin(_phase * 0.35) * 0.04
-	shoulder_l.rotation.x = swing2 * 0.55 * k + idle_sway
-	shoulder_r.rotation.x = swing * 0.55 * k - idle_sway
-	elbow_l.rotation.x = -0.25 - maxf(0.0, swing2) * 0.5 * k
-	elbow_r.rotation.x = -0.25 - maxf(0.0, swing) * 0.5 * k
-
-	# Torso: bob + slight lean into the run; idle breathing.
-	var bob := absf(cos(_phase)) * 0.05 * k
-	torso.position.y = 0.12 + bob + sin(_phase * 0.5) * 0.008 * (1.0 - k)
-	torso.rotation.x = -0.12 * k
-	head.rotation.x = 0.10 * k   # keep the visor level-ish while leaning
+	if jumped:
+		_play("Jump_Start")
+	elif airborne:
+		# Let Jump_Start finish before settling into the airborne loop.
+		if _current_clip != "Jump_Start" or not anim.is_playing():
+			_play("Jump_Idle")
+	elif _was_airborne:
+		_play("Jump_Land")
+		_land_timer = 0.25
+	elif _land_timer > 0.0:
+		_land_timer -= delta
+	elif ground_speed > RUN_SPEED * 0.65:
+		# Match playback to actual speed so feet plant instead of sliding.
+		_play("Running_B", clampf(ground_speed / RUN_SPEED, 0.7, 1.3))
+	elif ground_speed > 0.25:
+		_play("Walking_B", clampf(ground_speed / WALK_SPEED, 0.7, 1.4))
+	else:
+		_play("Idle")
+	_was_airborne = airborne
