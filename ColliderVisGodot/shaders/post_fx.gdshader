@@ -18,7 +18,7 @@ uniform float flare_threshold = 0.90;    // post-tonemap luminance cut for flare
 uniform float ca_strength = 0.45;        // chromatic aberration (px at corners)
 uniform float vignette_intensity = 0.28;
 uniform float vignette_softness = 2.2;
-uniform float grain_amount = 0.008;
+uniform float grain_amount = 0.004;
 
 float hash12(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 0.1031);

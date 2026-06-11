@@ -36,7 +36,7 @@ const FX_DEFAULTS := {
 	"flare_strength": 0.03,
 	"motion_blur_scale": 0.2,
 	"ca_strength": 0.45,
-	"grain_amount": 0.008,
+	"grain_amount": 0.004,
 	"vignette_intensity": 0.28,
 }
 

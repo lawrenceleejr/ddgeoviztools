@@ -24,12 +24,6 @@ void vertex() {
 	v_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
-// Cheap value-noise roughness variation so big metal panels don't read as
-// laser-uniform CG surfaces.
-float hash3(vec3 p) {
-	return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
-}
-
 void fragment() {
 	if (cv_cutaway_enabled > 0.5) {
 		float phi = degrees(atan(v_world_pos.y, v_world_pos.x));
@@ -41,9 +35,9 @@ void fragment() {
 	if (!FRONT_FACING) {
 		NORMAL = -NORMAL;
 	}
-	float n = hash3(floor(v_world_pos * 23.0));
+	// Clean, uniform surfaces — the soft GI does the talking.
 	ALBEDO = albedo.rgb;
 	METALLIC = metallic;
-	ROUGHNESS = clamp(roughness + (n - 0.5) * 0.10, 0.04, 1.0);
+	ROUGHNESS = roughness;
 	SPECULAR = 0.5;
 }

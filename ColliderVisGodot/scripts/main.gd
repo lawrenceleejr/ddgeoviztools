@@ -158,10 +158,12 @@ func _build_environment() -> void:
 
 	# Contact shadows in detector crevices. SSIL is expensive and off by
 	# default ("Quality" preset re-enables it) — VoxelGI covers indirect.
+	# Gentle AO — strong settings read as dirty/noisy splotches on the
+	# clean surfaces; the baked GI already grounds the geometry.
 	env.ssao_enabled = true
-	env.ssao_radius = 1.5
-	env.ssao_intensity = 2.0
-	env.ssao_power = 1.8
+	env.ssao_radius = 1.2
+	env.ssao_intensity = 1.1
+	env.ssao_power = 1.5
 	env.ssil_enabled = false
 	env.ssil_radius = 3.0
 	env.ssil_intensity = 1.0
@@ -350,9 +352,9 @@ func _add_spot(pos: Vector3, color: Color, energy: float, angle_deg: float,
 	l.light_energy = energy
 	l.spot_angle = angle_deg
 	l.spot_range = range_m
-	l.light_size = size
+	l.light_size = size * 1.8   # bigger virtual source = softer penumbrae
 	l.shadow_enabled = shadows
-	l.shadow_blur = 1.5
+	l.shadow_blur = 3.0
 	l.light_volumetric_fog_energy = fog_energy
 	l.light_specular = 0.8
 	add_child(l)
@@ -698,7 +700,17 @@ func set_event_display_visible(on: bool) -> void:
 
 
 func set_render_scale(f: float) -> void:
-	get_viewport().scaling_3d_scale = clampf(f, 0.5, 1.0)
+	var vp := get_viewport()
+	vp.scaling_3d_scale = clampf(f, 0.5, 1.0)
+	# FSR2 reconstructs near-native sharpness from the reduced-scale frame
+	# (plain bilinear reads soft/pixelated); it supplies its own temporal
+	# accumulation, so TAA goes off with it.
+	if vp.scaling_3d_scale < 0.999:
+		vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR2
+		vp.use_taa = false
+	else:
+		vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+		vp.use_taa = true
 
 
 func set_resolution_index(idx: int) -> void:
