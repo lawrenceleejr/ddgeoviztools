@@ -24,8 +24,21 @@ var det_checks: Dictionary = {}  # group name -> CheckBox
 var phi_slider: HSlider
 var cutaway_check: CheckBox
 var mode_label: Label
+var fps_label: Label
+var _fps_accum := 0.0
 
-const PANEL_W := 420.0
+const PANEL_W := 560.0
+const FONT_SIZE := 16
+const HEADER_SIZE := 19
+
+## Post-FX defaults (restored when an effect checkbox is re-enabled).
+const FX_DEFAULTS := {
+	"flare_strength": 0.10,
+	"motion_blur_scale": 0.7,
+	"ca_strength": 0.45,
+	"grain_amount": 0.008,
+	"vignette_intensity": 0.28,
+}
 
 
 func build(p_main: Node3D) -> void:
@@ -42,7 +55,7 @@ func build(p_main: Node3D) -> void:
 func _build_status() -> void:
 	status = Label.new()
 	status.position = Vector2(16, 12)
-	status.add_theme_font_size_override("font_size", 14)
+	status.add_theme_font_size_override("font_size", FONT_SIZE)
 	status.add_theme_color_override("font_color", Color(0.8, 0.9, 1.0, 0.85))
 	status.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
 	status.add_theme_constant_override("shadow_offset_x", 1)
@@ -55,15 +68,45 @@ func _build_status() -> void:
 func _section(parent: Control, title: String) -> VBoxContainer:
 	var lbl := Label.new()
 	lbl.text = title
-	lbl.add_theme_font_size_override("font_size", 15)
+	lbl.add_theme_font_size_override("font_size", HEADER_SIZE)
 	lbl.add_theme_color_override("font_color", Color(0.55, 0.75, 0.95))
 	parent.add_child(lbl)
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 6)
+	box.add_theme_constant_override("separation", 8)
 	parent.add_child(box)
 	var sep := HSeparator.new()
 	parent.add_child(sep)
 	return box
+
+
+func _check(text: String, pressed: bool, cb: Callable) -> CheckBox:
+	var c := CheckBox.new()
+	c.text = text
+	c.focus_mode = Control.FOCUS_NONE
+	c.set_pressed_no_signal(pressed)
+	c.toggled.connect(cb)
+	return c
+
+
+func _labeled_slider(parent: Control, text: String, minv: float, maxv: float,
+		step: float, value: float, cb: Callable) -> HSlider:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var l := Label.new()
+	l.text = text
+	l.custom_minimum_size = Vector2(150, 0)
+	row.add_child(l)
+	var s := HSlider.new()
+	s.min_value = minv
+	s.max_value = maxv
+	s.step = step
+	s.value = value
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	s.focus_mode = Control.FOCUS_NONE
+	s.value_changed.connect(cb)
+	row.add_child(s)
+	parent.add_child(row)
+	return s
 
 
 func _button(text: String, cb: Callable) -> Button:
@@ -93,6 +136,10 @@ func _build_menu() -> void:
 	style.content_margin_top = 10
 	style.content_margin_bottom = 10
 	menu_root.add_theme_stylebox_override("panel", style)
+	# One theme bump makes every control in the panel comfortably large.
+	var theme := Theme.new()
+	theme.default_font_size = FONT_SIZE
+	menu_root.theme = theme
 	add_child(menu_root)
 
 	var scroll := ScrollContainer.new()
@@ -154,11 +201,14 @@ func _build_menu() -> void:
 	event_info = RichTextLabel.new()
 	event_info.bbcode_enabled = true
 	event_info.fit_content = false
-	event_info.custom_minimum_size = Vector2(0, 260)
+	event_info.custom_minimum_size = Vector2(0, 280)
 	event_info.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	event_info.add_theme_font_size_override("normal_font_size", 12)
-	event_info.add_theme_font_size_override("mono_font_size", 12)
+	event_info.add_theme_font_size_override("normal_font_size", 14)
+	event_info.add_theme_font_size_override("mono_font_size", 14)
 	info.add_child(event_info)
+	var ev_toggle := _check("Show event display", true,
+		func(on: bool): main.set_event_display_visible(on))
+	info.add_child(ev_toggle)
 
 	# ── Detector ──
 	var det := _section(col, "DETECTOR")
@@ -197,10 +247,79 @@ func _build_menu() -> void:
 	slider_row.add_child(phi_slider)
 	cam.add_child(slider_row)
 
+	# ── Settings ──
+	var s := _section(col, "SETTINGS")
+
+	fps_label = Label.new()
+	fps_label.add_theme_color_override("font_color", Color(0.65, 0.95, 0.7))
+	s.add_child(fps_label)
+	var gpu := Label.new()
+	gpu.text = "GPU: %s  ·  driver: %s" % [RenderingServer.get_video_adapter_name(),
+		RenderingServer.get_current_rendering_driver_name()]
+	gpu.add_theme_font_size_override("font_size", 13)
+	gpu.add_theme_color_override("font_color", Color(0.5, 0.6, 0.7))
+	s.add_child(gpu)
+
+	# Window resolution + fullscreen.
+	var res_row := HBoxContainer.new()
+	res_row.add_theme_constant_override("separation", 8)
+	var res_lbl := Label.new()
+	res_lbl.text = "Resolution"
+	res_lbl.custom_minimum_size = Vector2(150, 0)
+	res_row.add_child(res_lbl)
+	var res_opt := OptionButton.new()
+	res_opt.focus_mode = Control.FOCUS_NONE
+	for r in main.RESOLUTIONS:
+		res_opt.add_item("%d × %d" % [r.x, r.y])
+	var cur := DisplayServer.window_get_size()
+	for i in main.RESOLUTIONS.size():
+		if main.RESOLUTIONS[i] == cur:
+			res_opt.select(i)
+	res_opt.item_selected.connect(func(i: int): main.set_resolution_index(i))
+	res_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	res_row.add_child(res_opt)
+	s.add_child(res_row)
+	s.add_child(_check("Fullscreen", false, func(on: bool): main.set_fullscreen(on)))
+
+	# Render quality.
+	var q_row := HBoxContainer.new()
+	q_row.add_theme_constant_override("separation", 8)
+	var q_lbl := Label.new()
+	q_lbl.text = "Quality preset"
+	q_lbl.custom_minimum_size = Vector2(150, 0)
+	q_row.add_child(q_lbl)
+	var q_opt := OptionButton.new()
+	q_opt.focus_mode = Control.FOCUS_NONE
+	for q in ["Performance", "Balanced", "Quality"]:
+		q_opt.add_item(q)
+	q_opt.select(1)
+	q_opt.item_selected.connect(
+		func(i: int): main.apply_quality(["performance", "balanced", "quality"][i]))
+	q_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	q_row.add_child(q_opt)
+	s.add_child(q_row)
+
+	_labeled_slider(s, "Render scale", 0.5, 1.0, 0.05, 1.0,
+		func(v: float): main.set_render_scale(v))
+	_labeled_slider(s, "Light brightness", 0.4, 1.6, 0.05, main.light_scale,
+		func(v: float): main.set_light_scale(v))
+	_labeled_slider(s, "Depth of field", 0.0, 0.3, 0.01, 0.07,
+		func(v: float): main.set_dof_amount(v))
+
+	# Lens / camera effects.
+	for fx in [["Lens flares", "flare_strength"],
+			["Motion blur", "motion_blur_scale"],
+			["Chromatic aberration", "ca_strength"],
+			["Film grain", "grain_amount"],
+			["Vignette", "vignette_intensity"]]:
+		var param: String = fx[1]
+		var cb := func(on: bool): main.set_fx_param(param, FX_DEFAULTS[param] if on else 0.0)
+		s.add_child(_check(String(fx[0]), true, cb))
+
 	# ── Help ──
 	var help := _section(col, "CONTROLS")
 	var h := Label.new()
-	h.add_theme_font_size_override("font_size", 12)
+	h.add_theme_font_size_override("font_size", 14)
 	h.add_theme_color_override("font_color", Color(0.6, 0.7, 0.8))
 	h.text = ("Orbit: LMB drag · wheel zoom · MMB pan\n"
 		+ "Fly: WASD + QE · Shift fast · mouse look\n"
@@ -215,7 +334,7 @@ func _build_menu() -> void:
 	var c := RichTextLabel.new()
 	c.bbcode_enabled = true
 	c.fit_content = true
-	c.add_theme_font_size_override("normal_font_size", 11)
+	c.add_theme_font_size_override("normal_font_size", 13)
 	c.text = ("Character: [url=https://github.com/gdquest-demos/godot-3d-mannequin]"
 		+ "\"Mannequiny\"[/url] by [url=https://www.gdquest.com/]GDQuest and "
 		+ "contributors[/url] — licensed [url=https://creativecommons.org/"
@@ -233,6 +352,7 @@ func _build_dialogs() -> void:
 	file_dialog = FileDialog.new()
 	file_dialog.access = FileDialog.ACCESS_FILESYSTEM
 	file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	file_dialog.use_native_dialog = true   # system file picker
 	file_dialog.filters = PackedStringArray([
 		"*.json ; Converted event JSON",
 		"*.root ; EDM4HEP / key4hep ROOT file"])
@@ -243,6 +363,7 @@ func _build_dialogs() -> void:
 	detector_dialog = FileDialog.new()
 	detector_dialog.access = FileDialog.ACCESS_FILESYSTEM
 	detector_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	detector_dialog.use_native_dialog = true
 	detector_dialog.title = "Pick a folder of sub-detector .gltf files"
 	detector_dialog.size = Vector2(900, 600)
 	detector_dialog.dir_selected.connect(func(dir: String): main.load_detector_dir(dir))
@@ -279,6 +400,15 @@ func show_error(msg: String) -> void:
 
 
 # ── state refresh ────────────────────────────────────────────────────────────
+
+func _process(delta: float) -> void:
+	if not menu_root.visible or fps_label == null:
+		return
+	_fps_accum -= delta
+	if _fps_accum <= 0.0:
+		_fps_accum = 0.4
+		fps_label.text = "FPS: %d" % Engine.get_frames_per_second()
+
 
 func toggle_menu() -> void:
 	menu_root.visible = not menu_root.visible

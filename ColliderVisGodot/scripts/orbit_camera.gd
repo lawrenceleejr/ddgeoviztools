@@ -149,6 +149,7 @@ func _process(delta: float) -> void:
 	_s_target = _s_target.lerp(target, k)
 	_apply_orbit()
 
-	# DOF bokeh tracks the subject: focus plane sits at the orbit target.
-	_attrs.dof_blur_far_distance = _s_distance * 1.25
-	_attrs.dof_blur_far_transition = _s_distance * 1.2
+	# DOF bokeh tracks the subject: focus starts past the orbit target so
+	# the detector stays crisp while the dome melts away.
+	_attrs.dof_blur_far_distance = _s_distance * 1.45
+	_attrs.dof_blur_far_transition = _s_distance * 1.1

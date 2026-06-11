@@ -32,12 +32,13 @@ const UI := preload("res://scripts/ui.gd")
 const DEFAULT_GEOMETRY_DIR := "res://assets/detector"
 const DEFAULT_EVENTS_DIR := "res://events"
 
-## Experimental hall dimensions (metres). The detector (~9 m across) sits at
-## the origin; the hall is sized like a real underground cavern around it.
-const HALL_HALF_X := 13.5
-const HALL_HALF_Z := 17.0
-const HALL_FLOOR_Y := -6.5
-const HALL_CEIL_Y := 9.5
+## Studio rig positions (metres). The detector (~9 m across) floats at the
+## origin inside a softly lit dome; an "infinite" glass floor sits at the
+## beam plane (y = 0) so you can walk right up to the interaction point.
+const RIG_HALF_X := 13.5
+const RIG_HALF_Z := 17.0
+const RIG_CEIL_Y := 9.5
+const DOME_RADIUS := 70.0
 
 enum CamMode { ORBIT, FLY, WALK }
 
@@ -53,6 +54,9 @@ var ui: CanvasLayer = null
 var post_fx_mat: ShaderMaterial = null
 var environment: Environment = null
 var voxel_gi: VoxelGI = null
+var rig_lights: Array = []          # [[Light3D, base_energy], ...]
+var light_scale := 0.85             # settings: global rig brightness
+var show_events := true             # settings: event display on/off
 var cam_mode: CamMode = CamMode.ORBIT
 var cutaway_enabled := true
 var phi_min := 0.0
@@ -66,7 +70,7 @@ func _ready() -> void:
 	_args = _parse_user_args()
 	_setup_shader_globals()
 	_build_environment()
-	_build_hall()
+	_build_stage()
 	_build_light_rig()
 	_load_geometry(String(_args.get("geometry", DEFAULT_GEOMETRY_DIR)))
 	_setup_baked_gi()
@@ -128,12 +132,12 @@ func _build_environment() -> void:
 	var env := Environment.new()
 
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.004, 0.005, 0.008)
+	env.background_color = Color(0.008, 0.011, 0.018)
 
-	# Low cool ambient floor — SDFGI provides the real bounce light.
+	# Soft cool ambient — stands in for the dome's even illumination.
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.70, 0.82, 0.90)
-	env.ambient_light_energy = 0.18
+	env.ambient_light_color = Color(0.72, 0.80, 0.92)
+	env.ambient_light_energy = 0.26
 
 	# Real-time global illumination: light bounces off the hall and the
 	# detector's metal surfaces; emissive tracks tint their surroundings.
@@ -144,18 +148,19 @@ func _build_environment() -> void:
 	env.sdfgi_min_cell_size = 0.12
 	env.sdfgi_energy = 1.1
 
-	# Contact shadows in detector crevices + small-scale indirect light.
+	# Contact shadows in detector crevices. SSIL is expensive and off by
+	# default ("Quality" preset re-enables it) — VoxelGI covers indirect.
 	env.ssao_enabled = true
 	env.ssao_radius = 1.5
 	env.ssao_intensity = 2.0
 	env.ssao_power = 1.8
-	env.ssil_enabled = true
+	env.ssil_enabled = false
 	env.ssil_radius = 3.0
 	env.ssil_intensity = 1.0
 
-	# Screen-space reflections on the polished metal.
+	# Screen-space reflections on the polished metal and the glass floor.
 	env.ssr_enabled = true
-	env.ssr_max_steps = 96
+	env.ssr_max_steps = 48
 	env.ssr_fade_in = 0.15
 	env.ssr_fade_out = 2.0
 	env.ssr_depth_tolerance = 0.4
@@ -213,9 +218,10 @@ func _setup_baked_gi() -> void:
 	voxel_gi = VoxelGI.new()
 	voxel_gi.name = "VoxelGI"
 	# Cover the hall with some headroom; subdiv 256 -> ~16 cm voxels.
-	voxel_gi.size = Vector3(HALL_HALF_X * 2.0 + 2.0,
-		HALL_CEIL_Y - HALL_FLOOR_Y + 2.0, HALL_HALF_Z * 2.0 + 2.0)
-	voxel_gi.position = Vector3(0, (HALL_FLOOR_Y + HALL_CEIL_Y) / 2.0, 0)
+	# Cover the detector + the walkable area around it (the dome itself
+	# stays outside the field; it's ambient-lit, not GI-driven).
+	voxel_gi.size = Vector3(RIG_HALF_X * 2.0 + 2.0, 17.0, RIG_HALF_Z * 2.0 + 2.0)
+	voxel_gi.position = Vector3(0, 1.0, 0)
 	voxel_gi.subdiv = VoxelGI.SUBDIV_256
 	add_child(voxel_gi)
 	_rebake_gi()
@@ -245,60 +251,52 @@ func _rebake_gi() -> void:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Experimental hall — dark sci-fi cavern enclosing the detector
+# Stage — softly lit dome + infinite glass floor at the beam plane (y = 0)
 # ──────────────────────────────────────────────────────────────────────────────
 
-func _hall_material(tint: Color, metallic: float, roughness: float) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = tint
-	m.metallic = metallic
-	m.roughness = roughness
-	return m
+func _build_stage() -> void:
+	# Smooth gradient dome, seen from inside.
+	var dome_mesh := SphereMesh.new()
+	dome_mesh.radius = DOME_RADIUS
+	dome_mesh.height = DOME_RADIUS * 2.0
+	var dome := MeshInstance3D.new()
+	dome.name = "Dome"
+	dome.mesh = dome_mesh
+	var dome_mat := ShaderMaterial.new()
+	dome_mat.shader = load("res://shaders/dome.gdshader")
+	dome.material_override = dome_mat
+	dome.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	dome.extra_cull_margin = DOME_RADIUS   # never frustum-culled from inside
+	add_child(dome)
 
+	# Glass floor through the detector mid-plane: walk up to the IP, look
+	# down at the lower barrel half through the glass.
+	var plane := PlaneMesh.new()
+	plane.size = Vector2(DOME_RADIUS * 2.2, DOME_RADIUS * 2.2)
+	var glass := MeshInstance3D.new()
+	glass.name = "GlassFloor"
+	glass.mesh = plane
+	var gm := StandardMaterial3D.new()
+	gm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	gm.albedo_color = Color(0.75, 0.85, 0.95, 0.05)
+	gm.metallic = 0.0
+	# Specular survives alpha transparency at full strength, so the glass
+	# needs a genuinely soft, weak sheen or every spot blows out on it.
+	gm.roughness = 0.32
+	gm.metallic_specular = 0.08
+	gm.cull_mode = BaseMaterial3D.CULL_DISABLED   # visible from below too
+	glass.material_override = gm
+	glass.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	glass.position = Vector3.ZERO
+	add_child(glass)
 
-func _spawn_slab(slab_name: String, pos: Vector3, size: Vector3,
-		mat: Material, with_collision := false) -> MeshInstance3D:
-	var box := BoxMesh.new()
-	box.size = size
-	var mi := MeshInstance3D.new()
-	mi.name = slab_name
-	mi.mesh = box
-	mi.material_override = mat
-	mi.position = pos
-	mi.gi_mode = GeometryInstance3D.GI_MODE_STATIC
-	add_child(mi)
-	if with_collision:
-		var body := StaticBody3D.new()
-		var shape := CollisionShape3D.new()
-		var bs := BoxShape3D.new()
-		bs.size = size
-		shape.shape = bs
-		body.add_child(shape)
-		mi.add_child(body)
-	return mi
-
-
-func _build_hall() -> void:
-	var w := HALL_HALF_X * 2.0
-	var d := HALL_HALF_Z * 2.0
-	var h := HALL_CEIL_Y - HALL_FLOOR_Y
-	var t := 0.4   # slab thickness
-
-	# Floor — gunmetal, smooth-but-not-mirror (catches reflections).
-	var floor_mat := _hall_material(Color(0.05, 0.06, 0.07), 0.6, 0.32)
-	_spawn_slab("Hall_Floor", Vector3(0, HALL_FLOOR_Y - t / 2.0, 0), Vector3(w, t, d), floor_mat, true)
-
-	# Ceiling — darker, matte.
-	var ceil_mat := _hall_material(Color(0.02, 0.025, 0.035), 0.3, 0.7)
-	_spawn_slab("Hall_Ceiling", Vector3(0, HALL_CEIL_Y + t / 2.0, 0), Vector3(w, t, d), ceil_mat)
-
-	# Walls — slightly bluer than the floor, brushed feel.
-	var wall_mat := _hall_material(Color(0.045, 0.055, 0.075), 0.4, 0.55)
-	var ymid := (HALL_FLOOR_Y + HALL_CEIL_Y) / 2.0
-	_spawn_slab("Hall_Wall_PosX", Vector3(HALL_HALF_X + t / 2.0, ymid, 0), Vector3(t, h, d), wall_mat, true)
-	_spawn_slab("Hall_Wall_NegX", Vector3(-HALL_HALF_X - t / 2.0, ymid, 0), Vector3(t, h, d), wall_mat, true)
-	_spawn_slab("Hall_Wall_PosZ", Vector3(0, ymid, HALL_HALF_Z + t / 2.0), Vector3(w, h, t), wall_mat, true)
-	_spawn_slab("Hall_Wall_NegZ", Vector3(0, ymid, -HALL_HALF_Z - t / 2.0), Vector3(w, h, t), wall_mat, true)
+	# Infinite walkable plane (collision only) at y = 0.
+	var body := StaticBody3D.new()
+	body.name = "GlassFloorBody"
+	var shape := CollisionShape3D.new()
+	shape.shape = WorldBoundaryShape3D.new()
+	body.add_child(shape)
+	add_child(body)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -341,6 +339,8 @@ func _add_spot(pos: Vector3, color: Color, energy: float, angle_deg: float,
 	l.light_specular = 0.8
 	add_child(l)
 	l.look_at_from_position(pos, Vector3.ZERO, Vector3.UP if absf(pos.normalized().y) < 0.95 else Vector3.FORWARD)
+	rig_lights.append([l, energy])
+	l.light_energy = energy * light_scale
 	return l
 
 
@@ -349,40 +349,41 @@ func _build_light_rig() -> void:
 	const COOL_CYAN := Color(0.70, 0.90, 1.0)   # ~7000 K wall strips
 	const RIM_COOL := Color(0.92, 0.96, 1.0)    # ~6500 K rim accent
 
-	# Key — big warm ceiling panel, offset so the detector gets shape from it.
-	var key_pos := Vector3(-5.0, HALL_CEIL_Y - 0.2, 2.0)
+	# Key — big warm overhead softbox, offset so the detector gets shape.
+	var key_pos := Vector3(-5.0, RIG_CEIL_Y - 0.2, 2.0)
 	_add_spot(key_pos, KEY_WARM, 110.0, 110.0, 35.0, 1.2, 0.5)
-	_add_fixture_panel(Vector3(key_pos.x, HALL_CEIL_Y - 0.05, key_pos.z),
+	_add_fixture_panel(Vector3(key_pos.x, RIG_CEIL_Y + 0.1, key_pos.z),
 		Vector3(5.0, 0.1, 3.0), KEY_WARM, 2.0)
 
-	# Cool cyan strips on both side walls (long, narrow, low energy).
+	# Cool cyan strip softboxes on both sides (long, narrow, low energy).
 	for sx in [-1.0, 1.0]:
-		var p := Vector3(sx * (HALL_HALF_X - 0.3), 2.5, 0.0)
+		var p := Vector3(sx * (RIG_HALF_X - 0.3), 2.5, 0.0)
 		_add_spot(p, COOL_CYAN, 55.0, 120.0, 30.0, 1.0, 0.3)
-		_add_fixture_panel(Vector3(sx * (HALL_HALF_X - 0.06), 2.5, 0.0),
+		_add_fixture_panel(Vector3(sx * (RIG_HALF_X + 0.1), 2.5, 0.0),
 			Vector3(0.1, 0.5, 12.0), COOL_CYAN, 1.6)
 
-	# Neutral work lights on the ±Z end walls so the barrel face the camera
-	# sees never falls to black (the cavern equivalent of bounce cards).
+	# Neutral bounce cards on the ±Z ends so the barrel faces never go black.
 	for sz in [-1.0, 1.0]:
-		var p := Vector3(2.0, 4.0, sz * (HALL_HALF_Z - 0.5))
+		var p := Vector3(2.0, 4.0, sz * (RIG_HALF_Z - 0.5))
 		_add_spot(p, Color(0.95, 0.97, 1.0), 28.0, 100.0, 34.0, 0.9, 0.2)
 
-	# Rim accent from behind/above — separates the detector from the far wall.
-	var rim_pos := Vector3(-8.0, 6.5, -(HALL_HALF_Z - 1.0))
+	# Rim accent from behind/above — separates the detector from the dome.
+	var rim_pos := Vector3(-8.0, 6.5, -(RIG_HALF_Z - 1.0))
 	_add_spot(rim_pos, RIM_COOL, 40.0, 90.0, 38.0, 0.8, 0.25)
-	_add_fixture_panel(Vector3(-8.0, 6.5, -(HALL_HALF_Z - 0.15)),
+	_add_fixture_panel(Vector3(-8.0, 6.5, -(RIG_HALF_Z + 0.1)),
 		Vector3(2.0, 6.0, 0.1), RIM_COOL, 1.2)
 
-	# Faint under-glow so the bottom of the barrel doesn't go to pure black.
+	# Faint under-glow below the glass so the lower barrel half reads.
 	var under := OmniLight3D.new()
-	under.position = Vector3(0, HALL_FLOOR_Y + 0.5, 0)
+	under.position = Vector3(0, -5.5, 0)
 	under.light_color = Color(0.45, 0.62, 0.85)
 	under.light_energy = 4.0
 	under.omni_range = 14.0
 	under.shadow_enabled = false
 	under.light_volumetric_fog_energy = 0.15
 	add_child(under)
+	rig_lights.append([under, 4.0])
+	under.light_energy = 4.0 * light_scale
 
 	# Interaction-point light — turned on when an event is displayed so the
 	# glowing tracks visibly illuminate the detector interior.
@@ -573,7 +574,10 @@ func _show_event(idx: int) -> void:
 	event_display = EventDisplay.new()
 	add_child(event_display)
 	event_display.load_event(event_files[event_index])
-	ip_light.light_energy = 2.0
+	event_display.visible = show_events
+	ip_light.light_energy = 2.0 if show_events else 0.0
+	if show_events:
+		event_display.play_emergence()
 	_ui_refresh()
 
 
@@ -607,6 +611,106 @@ func event_summary_bbcode() -> String:
 			s += "… %d more\n" % (mc.size() - 10)
 		s += "[/code]"
 	return s
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Settings (driven by the UI settings panel)
+# ──────────────────────────────────────────────────────────────────────────────
+
+const RESOLUTIONS := [
+	Vector2i(1280, 720), Vector2i(1600, 900),
+	Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160)]
+
+
+func set_light_scale(f: float) -> void:
+	light_scale = f
+	for entry in rig_lights:
+		(entry[0] as Light3D).light_energy = float(entry[1]) * f
+
+
+func set_dof_amount(amount: float) -> void:
+	for cam in [orbit_camera, character.camera if character != null else null]:
+		if cam != null and cam.attributes is CameraAttributesPractical:
+			var a := cam.attributes as CameraAttributesPractical
+			a.dof_blur_far_enabled = amount > 0.001
+			a.dof_blur_amount = amount
+
+
+func get_dof_amount() -> float:
+	if orbit_camera.attributes is CameraAttributesPractical:
+		return (orbit_camera.attributes as CameraAttributesPractical).dof_blur_amount
+	return 0.0
+
+
+## Post-FX shader parameters (lens flares, motion blur, CA, grain, vignette).
+func set_fx_param(param: String, value: float) -> void:
+	if post_fx_mat != null:
+		post_fx_mat.set_shader_parameter(param, value)
+
+
+func get_fx_param(param: String) -> float:
+	if post_fx_mat != null:
+		var v: Variant = post_fx_mat.get_shader_parameter(param)
+		if v != null:
+			return float(v)
+	return 0.0
+
+
+func set_event_display_visible(on: bool) -> void:
+	show_events = on
+	if event_display != null:
+		event_display.visible = on
+	ip_light.light_energy = 2.0 if (on and event_display != null) else 0.0
+	_ui_refresh()
+
+
+func set_render_scale(f: float) -> void:
+	get_viewport().scaling_3d_scale = clampf(f, 0.5, 1.0)
+
+
+func set_resolution_index(idx: int) -> void:
+	if idx < 0 or idx >= RESOLUTIONS.size():
+		return
+	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN:
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	DisplayServer.window_set_size(RESOLUTIONS[idx])
+	# Re-centre on the current screen.
+	var screen := DisplayServer.window_get_current_screen()
+	var srect := DisplayServer.screen_get_usable_rect(screen)
+	DisplayServer.window_set_position(
+		srect.position + (srect.size - RESOLUTIONS[idx]) / 2)
+
+
+func set_fullscreen(on: bool) -> void:
+	DisplayServer.window_set_mode(
+		DisplayServer.WINDOW_MODE_FULLSCREEN if on else DisplayServer.WINDOW_MODE_WINDOWED)
+
+
+## Quality presets tune the expensive per-frame effects. VoxelGI (baked)
+## stays on in all of them.
+func apply_quality(preset: String) -> void:
+	var vp := get_viewport()
+	match preset:
+		"performance":
+			environment.ssil_enabled = false
+			environment.ssr_enabled = false
+			environment.ssao_enabled = false
+			environment.volumetric_fog_enabled = false
+			vp.msaa_3d = Viewport.MSAA_DISABLED
+		"balanced":
+			environment.ssil_enabled = false
+			environment.ssr_enabled = true
+			environment.ssr_max_steps = 48
+			environment.ssao_enabled = true
+			environment.volumetric_fog_enabled = true
+			vp.msaa_3d = Viewport.MSAA_2X
+		"quality":
+			environment.ssil_enabled = true
+			environment.ssr_enabled = true
+			environment.ssr_max_steps = 96
+			environment.ssao_enabled = true
+			environment.volumetric_fog_enabled = true
+			vp.msaa_3d = Viewport.MSAA_4X
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -646,7 +750,8 @@ func cycle_camera_mode() -> void:
 			if character == null:
 				character = Character.new()
 				character.name = "Explorer"
-				character.position = Vector3(9.5, HALL_FLOOR_Y + 1.2, 4.0)
+				# On the glass floor at the beam plane, facing the IP.
+				character.position = Vector3(9.5, 0.1, 4.0)
 				add_child(character)
 			character.visible = true
 			character.camera.current = true

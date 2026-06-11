@@ -59,9 +59,20 @@ open /Applications/ColliderVis.app
   clips with playback speed matched to velocity. If the model file is
   removed, a procedurally built hard-hat-and-hi-vis "cavern physicist"
   (with a glowing atom emblem) takes its place.
-- **Full in-game UI** (`Esc`): open event files, jump to any event index,
-  reco/truth particle listings, per-sub-detector visibility toggles,
-  camera/cutaway controls.
+- **Full in-game UI** (`Esc`): open event files (native OS file picker),
+  jump to any event index, reco/truth particle listings, per-sub-detector
+  visibility toggles, camera/cutaway controls, and a **settings panel**:
+  live FPS + GPU/driver readout, resolution presets and fullscreen, render
+  scale, quality presets (Performance/Balanced/Quality), light brightness,
+  depth of field, individual lens-effect toggles (flares, motion blur,
+  chromatic aberration, grain, vignette), and an event-display on/off
+  switch so you can view the bare detector.
+- **Stage**: the detector floats in a smooth, softly lit dome over an
+  "infinite" glass floor at the beam plane (y = 0) — in third-person mode
+  you walk right up to the interaction point. Events emerge from the IP
+  with a quick, subtle grow-in animation.
+- On macOS the app runs on **native Metal** (Godot's default on Apple
+  Silicon since 4.4) — check the GPU/driver line in Settings to confirm.
 
 ## Controls
 

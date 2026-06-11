@@ -16,8 +16,8 @@ const NEGATIVE_TRACK_COLOR := Color(0.1, 0.7, 1.0)   # cyan-blue
 const NEUTRAL_TRACK_COLOR := Color(1.0, 1.0, 1.0)
 const MC_COLOR := Color(0.45, 0.45, 0.95)
 
-const TRACK_RADIUS_M := 0.02
-const TUBE_SIDES := 10
+const TRACK_RADIUS_M := 0.008
+const TUBE_SIDES := 8
 const CALO_CUBE_M := 0.06
 
 const CALO_COLD := Color(0.0, 0.1, 0.5)
@@ -60,6 +60,15 @@ func load_event(path: String) -> bool:
 	print("EventDisplay: %s -> %d tracks, %d calo hits, %d MC lines"
 		% [path.get_file(), n_tracks, n_hits, n_mc])
 	return true
+
+
+## Quick, subtle "emergence" animation: the whole event grows out of the
+## interaction point, as if the collision just happened.
+func play_emergence(duration := 0.45) -> void:
+	scale = Vector3.ONE * 0.02
+	var tw := create_tween()
+	tw.tween_property(self, "scale", Vector3.ONE, duration) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 
 # ── Tracks ────────────────────────────────────────────────────────────────────
