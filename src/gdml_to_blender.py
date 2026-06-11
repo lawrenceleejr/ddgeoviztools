@@ -165,7 +165,8 @@ _GRADE_GAIN        = (1.05, 1.00, 0.94)   # warm highlights
 _VIGNETTE_SIZE     = 1.05     # ellipse half-size (>1 → only corners darken)
 _VIGNETTE_BLUR_PX  = 80
 _VIGNETTE_AMOUNT   = 0.5      # multiply-mix factor (0 = off, 1 = full mask)
-_GRAIN_FAC         = 0.035    # film-grain overlay opacity
+_GRAIN_FAC         = 0.012    # film-grain overlay opacity (subtle; OVERLAY
+                              # on near-black lifts shadows fast, so keep low)
 _GRAIN_NOISE_SIZE  = 0.08     # clouds-texture scale — smaller = finer grain
 
 # Cycles: firefly clamp + display look
@@ -176,8 +177,18 @@ _VIEW_LOOK_CANDIDATES = ("AgX - High Contrast", "High Contrast")
 _CAM_ANAMORPHIC_RATIO = 1.08
 
 # Lighting: cyan counter-fill (the one cool source in the all-warm rig)
-_CYAN_FILL_W_PER_M2 = 90.0
+_CYAN_FILL_W_PER_M2 = 650.0   # strong enough to survive _LIGHT_CALIBRATION
 _CYAN_FILL_RGB      = (0.35, 0.75, 1.0)
+
+# Global light-energy calibration, applied to every non-sun light in the
+# final pre-save sweep.  The scene is authored in millimetre units and every
+# area light runs normalize=False (power scales with the *huge* mm² panel
+# area), so the authored wattages land several stops hot: rendered as-is the
+# frame AgX-compresses to a uniform pastel.  0.04 was bisected empirically
+# on Blender 5.0 (0.05 = bright cinematic, 0.01 = moody-dark; see renders in
+# the PR).  Suns are physical (W/m², scale-independent) and get _SUN_SCALE.
+_LIGHT_CALIBRATION = 0.055
+_SUN_SCALE         = 0.2
 
 # Volumetrics: atmosphere cube fallback (used when the world-level scatter
 # is disabled).  Density is per mm: 5e-7/mm = 5e-4/m → optical depth ≈ 0.005
@@ -2227,7 +2238,10 @@ def _add_environment_sphere(radius: float):
         mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     if bsdf:
-        bsdf.inputs["Base Color"].default_value = (0.88, 0.88, 0.90, 1.0)
+        # Near-black studio cyc: the dome must read as dark void behind the
+        # detector, not as a lit wall — light grey here is what washed the
+        # whole frame to pastel (it bounces/receives every light in the rig).
+        bsdf.inputs["Base Color"].default_value = (0.035, 0.042, 0.055, 1.0)
         bsdf.inputs["Metallic"].default_value   = 0.0
         bsdf.inputs["Roughness"].default_value  = 1.0
     obj.data.materials.append(mat)
@@ -3039,25 +3053,53 @@ def _add_compositor_output(ctree, link_from_socket):
 
 def _new_mix_rgba(cnodes, blend_type: str = "MIX"):
     """
-    Construct a compositor RGBA mix node, transparently handling the
-    4.x → 5.0 rename of ``CompositorNodeMixRGB`` to ``CompositorNodeMix``.
+    Construct a compositor RGBA mix node across the API generations:
 
-    Returns (node, input1_name, input2_name) so callers can wire inputs
-    by name regardless of underlying type.
+      4.x   : ``CompositorNodeMixRGB``  (Image/Image, Fac, outputs[0])
+      5.0+  : the unified ``ShaderNodeMix`` in RGBA mode — the compositor
+              shares shader nodes, and the RGBA sockets live at fixed
+              *indices* (several inputs are named "A"/"B" across types).
+
+    Returns (node, in1, in2, fac, out): input/factor/output socket keys
+    (names or indices) so callers can wire blindly on any version.
     """
     try:
-        n = cnodes.new("CompositorNodeMix")
-        try:
-            n.data_type = "RGBA"
-        except (AttributeError, TypeError):
-            pass
-        n.blend_type = blend_type
-        # 5.0 RGBA Mix node socket names
-        return n, "Image", "Image_001"
-    except (RuntimeError, KeyError, TypeError):
         n = cnodes.new("CompositorNodeMixRGB")
         n.blend_type = blend_type
-        return n, "Image", "Image_002" if "Image_002" in n.inputs else "Color2"
+        in2 = "Image_002" if "Image_002" in n.inputs else "Color2"
+        return n, "Image", in2, "Fac", 0
+    except (RuntimeError, KeyError, TypeError):
+        n = cnodes.new("ShaderNodeMix")
+        n.data_type = "RGBA"
+        n.blend_type = blend_type
+        # RGBA A/B inputs sit at indices 6/7; the float Factor at 0; the
+        # RGBA Result output at index 2 (0/1 are the float/vector results).
+        return n, 6, 7, 0, 2
+
+
+def _new_math(cnodes):
+    """Compositor math node: CompositorNodeMath on 4.x, ShaderNodeMath on 5.0+."""
+    try:
+        return cnodes.new("CompositorNodeMath")
+    except (RuntimeError, KeyError, TypeError):
+        return cnodes.new("ShaderNodeMath")
+
+
+def _glare_set_type(node, gtype: str) -> None:
+    """
+    Select the glare variant. 4.x exposes ``glare_type`` (enum identifiers
+    like "FOG_GLOW"); 5.x replaced it with a "Type" menu *socket* whose
+    values are the human-readable labels ("Fog Glow").
+    """
+    try:
+        node.glare_type = gtype
+        return
+    except (AttributeError, TypeError):
+        pass
+    labels = {"BLOOM": "Bloom", "GHOSTS": "Ghosts", "STREAKS": "Streaks",
+              "FOG_GLOW": "Fog Glow", "SIMPLE_STAR": "Simple Star",
+              "SUN_BEAMS": "Sun Beams"}
+    node.inputs["Type"].default_value = labels.get(gtype, gtype)
 
 
 def _glare_set(node, prop: str, prop_val, socket: str | None = None,
@@ -3134,8 +3176,8 @@ def _build_compositor_graph(scene, ctree) -> None:
     bloom_ok = False
     try:
         bloom = cnodes.new("CompositorNodeGlare")
-        bloom.glare_type = "FOG_GLOW"      # property on all known versions
-        _glare_set(bloom, "quality",   "HIGH")
+        _glare_set_type(bloom, "FOG_GLOW")
+        _glare_set(bloom, "quality",   "HIGH", "Quality", "High")
         _glare_set(bloom, "threshold", _BLOOM_THRESHOLD, "Threshold")
         _glare_set(bloom, "size",      _BLOOM_SIZE,      "Size", _BLOOM_SIZE_REL)
         # 4.0-4.3 blend via 'mix' (-1 = original); 4.4+/5.x via 'Strength'.
@@ -3162,36 +3204,36 @@ def _build_compositor_graph(scene, ctree) -> None:
             lum.location = (-1000, -300)
             clinks.new(main_image, lum.inputs["Image"])
 
-            thresh = cnodes.new("CompositorNodeMath")
+            thresh = _new_math(cnodes)
             thresh.operation = "GREATER_THAN"
             thresh.inputs[1].default_value = 0.9
             thresh.location = (-820, -300)
-            clinks.new(lum.outputs["Val"], thresh.inputs[0])
+            clinks.new(lum.outputs[0], thresh.inputs[0])
 
-            bright, b1, b2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
+            bright, b1, b2, bfac, bout = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
             _set(bright, "location", (-640, -200))
             try:
-                bright.inputs["Fac"].default_value = 1.0
+                bright.inputs[bfac].default_value = 1.0
             except (KeyError, AttributeError):
                 pass
-            clinks.new(main_image,            bright.inputs[b1])
-            clinks.new(thresh.outputs["Value"], bright.inputs[b2])
+            clinks.new(main_image,        bright.inputs[b1])
+            clinks.new(thresh.outputs[0], bright.inputs[b2])
 
             glow_blur = cnodes.new("CompositorNodeBlur")
             _set(glow_blur, "size_x", 40)
             _set(glow_blur, "size_y", 40)
             glow_blur.location = (-460, -200)
-            clinks.new(bright.outputs[0], glow_blur.inputs["Image"])
+            clinks.new(bright.outputs[bout], glow_blur.inputs["Image"])
 
-            glow_mix, g1, g2 = _new_mix_rgba(cnodes, blend_type="ADD")
+            glow_mix, g1, g2, gfac, gout = _new_mix_rgba(cnodes, blend_type="ADD")
             _set(glow_mix, "location", (-260, 0))
             try:
-                glow_mix.inputs["Fac"].default_value = 0.5
+                glow_mix.inputs[gfac].default_value = 0.5
             except (KeyError, AttributeError):
                 pass
             clinks.new(main_image,             glow_mix.inputs[g1])
             clinks.new(glow_blur.outputs[0],   glow_mix.inputs[g2])
-            main_image = glow_mix.outputs[0]
+            main_image = glow_mix.outputs[gout]
         except (RuntimeError, KeyError, AttributeError) as exc:
             print(f"  [RENDER] Manual bloom skipped ({exc})", flush=True)
 
@@ -3201,18 +3243,18 @@ def _build_compositor_graph(scene, ctree) -> None:
     # at almost zero render cost.
     if "Mist" in rlayers.outputs:
         try:
-            haze_mix, h1, h2 = _new_mix_rgba(cnodes, blend_type="MIX")
+            haze_mix, h1, h2, hfac, hout = _new_mix_rgba(cnodes, blend_type="MIX")
             _set(haze_mix, "location", (-100, 0))
-            # Color2 is the haze tint — slightly cool, slightly blue, low
-            # luminance so distant objects fade *into* the gradient sky
-            # rather than getting brighter.
+            # The second input is the haze tint — slightly cool, slightly
+            # blue, low luminance so distant objects fade *into* the
+            # gradient sky rather than getting brighter.
             try:
                 haze_mix.inputs[h2].default_value = (0.30, 0.36, 0.46, 1.0)
             except (KeyError, AttributeError):
                 pass
-            clinks.new(main_image,             haze_mix.inputs[h1])
-            clinks.new(rlayers.outputs["Mist"], haze_mix.inputs["Fac"])
-            main_image = haze_mix.outputs[0]
+            clinks.new(main_image,              haze_mix.inputs[h1])
+            clinks.new(rlayers.outputs["Mist"], haze_mix.inputs[hfac])
+            main_image = haze_mix.outputs[hout]
         except (RuntimeError, KeyError, AttributeError) as exc:
             print(f"  [RENDER] Mist haze skipped ({exc})", flush=True)
 
@@ -3225,8 +3267,8 @@ def _build_compositor_graph(scene, ctree) -> None:
             and "Emit" in rlayers.outputs):
         try:
             streaks = cnodes.new("CompositorNodeGlare")
-            streaks.glare_type = "STREAKS"
-            _glare_set(streaks, "quality",      "HIGH")
+            _glare_set_type(streaks, "STREAKS")
+            _glare_set(streaks, "quality",      "HIGH", "Quality", "High")
             _glare_set(streaks, "streaks",      _STREAKS_COUNT, "Streaks")
             _glare_set(streaks, "iterations",   2, "Iterations")
             _glare_set(streaks, "fade",         _STREAKS_FADE, "Fade")
@@ -3242,15 +3284,15 @@ def _build_compositor_graph(scene, ctree) -> None:
                           if "Glare" in streaks.outputs
                           else streaks.outputs["Image"])
 
-            mix_streaks, a1, a2 = _new_mix_rgba(cnodes, blend_type="ADD")
+            mix_streaks, a1, a2, afac, aout = _new_mix_rgba(cnodes, blend_type="ADD")
             _set(mix_streaks, "location", (-400, 0))
             try:
-                mix_streaks.inputs["Fac"].default_value = _STREAKS_ADD_FAC
+                mix_streaks.inputs[afac].default_value = _STREAKS_ADD_FAC
             except (KeyError, AttributeError):
                 pass
             clinks.new(main_image, mix_streaks.inputs[a1])
             clinks.new(streak_out, mix_streaks.inputs[a2])
-            main_image = mix_streaks.outputs[0]
+            main_image = mix_streaks.outputs[aout]
         except (RuntimeError, KeyError, AttributeError) as exc:
             print(f"  [RENDER] Streaks pass skipped ({exc})", flush=True)
 
@@ -3285,7 +3327,7 @@ def _build_compositor_graph(scene, ctree) -> None:
     clinks.new(lens.outputs["Image"], grade.inputs["Image"])
 
     # --- Vignette: ellipse mask → blur → multiply over image ---
-    after_vignette = grade
+    after_vignette = grade.outputs["Image"]
     try:
         mask = cnodes.new("CompositorNodeEllipseMask")
         _set(mask, "x",        0.5)
@@ -3300,59 +3342,71 @@ def _build_compositor_graph(scene, ctree) -> None:
         blur.location = (300, -300)
         clinks.new(mask.outputs["Mask"], blur.inputs["Image"])
 
-        mix_vig, v1, v2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
+        mix_vig, v1, v2, vfac, vout = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
         _set(mix_vig, "location", (500, -100))
         try:
-            mix_vig.inputs["Fac"].default_value = _VIGNETTE_AMOUNT
+            mix_vig.inputs[vfac].default_value = _VIGNETTE_AMOUNT
         except (KeyError, AttributeError):
             pass
         clinks.new(grade.outputs["Image"], mix_vig.inputs[v1])
         clinks.new(blur.outputs["Image"],  mix_vig.inputs[v2])
-        after_vignette = mix_vig
+        after_vignette = mix_vig.outputs[vout]
     except (RuntimeError, KeyError):
         pass
 
-    # --- Film grain: procedural Clouds texture, OVERLAY at low opacity ---
+    # --- Film grain: procedural noise, OVERLAY at low opacity ---
     # OVERLAY around the texture's ~0.5 mean is near-neutral, so at
     # _GRAIN_FAC the grain reads as photochemical texture rather than
-    # noise.  CompositorNodeTexture is gone from the Blender 5 compositor;
-    # the whole block degrades to a clean no-op there.
+    # noise.  4.x: legacy CLOUDS texture via CompositorNodeTexture.
+    # 5.0+: that node is gone — the unified ShaderNodeTexNoise works in
+    # the compositor instead.
     after_grain = after_vignette
     try:
-        noise_tex = bpy.data.textures.get("FilmGrainNoise")
-        if noise_tex is None:
-            noise_tex = bpy.data.textures.new("FilmGrainNoise", type="CLOUDS")
+        grain_out = None
+        try:
+            noise_tex = bpy.data.textures.get("FilmGrainNoise")
+            if noise_tex is None:
+                noise_tex = bpy.data.textures.new("FilmGrainNoise", type="CLOUDS")
+                try:
+                    noise_tex.noise_scale = _GRAIN_NOISE_SIZE
+                    noise_tex.noise_depth = 0   # single octave = clean grain
+                except (AttributeError, TypeError):
+                    pass
+            grain = cnodes.new("CompositorNodeTexture")
+            grain.texture = noise_tex
+            grain.location = (500, -400)
+            grain_out = grain.outputs["Value"]
+        except (RuntimeError, KeyError, TypeError):
+            grain = cnodes.new("ShaderNodeTexNoise")
             try:
-                noise_tex.noise_scale = _GRAIN_NOISE_SIZE
-                noise_tex.noise_depth = 0      # single octave = clean grain
-            except (AttributeError, TypeError):
+                grain.inputs["Scale"].default_value = 800.0   # sub-pixel speckle
+                grain.inputs["Detail"].default_value = 0.0
+            except (KeyError, AttributeError):
                 pass
+            grain.location = (500, -400)
+            grain_out = grain.outputs["Factor"]
 
-        grain = cnodes.new("CompositorNodeTexture")
-        grain.texture = noise_tex
-        grain.location = (500, -400)
-
-        grain_mix, gr1, gr2 = _new_mix_rgba(cnodes, blend_type="OVERLAY")
+        grain_mix, gr1, gr2, grfac, grout = _new_mix_rgba(cnodes, blend_type="OVERLAY")
         _set(grain_mix, "location", (700, -100))
         try:
-            grain_mix.inputs["Fac"].default_value = _GRAIN_FAC
+            grain_mix.inputs[grfac].default_value = _GRAIN_FAC
         except (KeyError, AttributeError):
             pass
-        clinks.new(after_vignette.outputs[0], grain_mix.inputs[gr1])
-        clinks.new(grain.outputs["Value"],    grain_mix.inputs[gr2])
-        after_grain = grain_mix
+        clinks.new(after_vignette, grain_mix.inputs[gr1])
+        clinks.new(grain_out,      grain_mix.inputs[gr2])
+        after_grain = grain_mix.outputs[grout]
     except Exception as exc:
         print(f"  [RENDER] Film grain skipped ({exc})", flush=True)
 
     # --- Terminal output node (Composite on 4.x, NodeGroupOutput on 5.0+) ---
-    _add_compositor_output(ctree, after_grain.outputs[0])
+    _add_compositor_output(ctree, after_grain)
 
     # Viewer is optional and only meaningful in the UI; skip silently if the
     # node type isn't available on this Blender version.
     try:
         viewer = cnodes.new("CompositorNodeViewer")
         viewer.location = (900, -100)
-        clinks.new(after_grain.outputs[0], viewer.inputs["Image"])
+        clinks.new(after_grain, viewer.inputs["Image"])
     except (RuntimeError, KeyError):
         pass
 
@@ -4674,6 +4728,20 @@ def create_blender_scene(
     print(f"  [SAVE] Lights: {len(bpy.data.lights)} total, "
           f"{_norm_changed} forced normalize=False in final sweep",
           flush=True)
+
+    # Exposure calibration: rescale every light once, here, so each new
+    # light helper can keep authoring in the legacy wattage scale.  Guarded
+    # by a custom prop so a re-entrant save can't compound the factor.
+    for _l in bpy.data.lights:
+        if _l.get("cv_calibrated"):
+            continue
+        try:
+            _l.energy *= (_SUN_SCALE if _l.type == "SUN" else _LIGHT_CALIBRATION)
+            _l["cv_calibrated"] = True
+        except (AttributeError, TypeError):
+            pass
+    print(f"  [SAVE] Light calibration applied: x{_LIGHT_CALIBRATION} "
+          f"(sun x{_SUN_SCALE})", flush=True)
 
     print(f"  [SAVE] Meshes: {len(bpy.data.meshes)}  "
           f"Materials: {len(bpy.data.materials)}  "
