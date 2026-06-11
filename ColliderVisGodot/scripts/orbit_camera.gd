@@ -15,7 +15,7 @@ extends Camera3D
 ## Depth-of-field bokeh tracks the orbit distance automatically.
 
 var target := Vector3.ZERO
-var distance := 13.5
+var distance := 16.5
 var yaw := deg_to_rad(38.0)
 var pitch := deg_to_rad(22.0)
 var fly_mode := false
@@ -23,7 +23,7 @@ var fly_mode := false
 # Smoothed (rendered) state — follows the targets above with inertia.
 var _s_yaw := deg_to_rad(38.0)
 var _s_pitch := deg_to_rad(22.0)
-var _s_distance := 13.5
+var _s_distance := 16.5
 var _s_target := Vector3.ZERO
 
 var _idle_time := 0.0

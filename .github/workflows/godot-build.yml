@@ -54,6 +54,9 @@ jobs:
           unzip -q /tmp/templates.tpz -d /tmp/templates
           mv /tmp/templates/templates/* ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
 
+      - name: Bundle detector geometry
+        run: cp gltf/*.gltf ColliderVisGodot/assets/detector/
+
       - name: Import project
         run: ~/godot-bin/godot --headless --path ColliderVisGodot --import || true
 

@@ -2,3 +2,5 @@ src/__pycache__/
 __pycache__/
 ColliderVisGodot/.godot/
 ColliderVisGodot/build/
+ColliderVisGodot/assets/detector/*.gltf
+ColliderVisGodot/assets/detector/*.import

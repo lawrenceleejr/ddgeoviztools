@@ -23,7 +23,7 @@ const DETECTOR_MATERIALS := [
 	[["tracker", "trk", "sit", "svt", "ftd", "set", "etd", "tracking"],
 		Color(0.22, 0.38, 0.60), 0.55, 0.50],
 	[["tpc"], Color(0.78, 0.79, 0.80), 0.75, 0.50],
-	[["pixel", "vxd", "vtx", "velo", "pxd"],
+	[["pixel", "vxd", "vtx", "vertex", "velo", "pxd"],
 		Color(0.28, 0.45, 0.72), 0.70, 0.45],
 	[["muon", "mdt", "rpc", "tgc", "csc", "gem", "me0"],
 		Color(0.55, 0.50, 0.68), 0.20, 0.70],

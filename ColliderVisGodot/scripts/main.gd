@@ -73,7 +73,7 @@ func _ready() -> void:
 	_build_environment()
 	_build_stage()
 	_build_light_rig()
-	_load_geometry(String(_args.get("geometry", DEFAULT_GEOMETRY_DIR)))
+	_load_geometry(String(_args.get("geometry", _default_geometry_dir())))
 	_setup_baked_gi()
 	for g in String(_args.get("hide", "")).split(",", false):
 		if detector_groups.has(g):
@@ -419,6 +419,20 @@ func _build_light_rig() -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 # Geometry
 # ──────────────────────────────────────────────────────────────────────────────
+
+## The repo-level gltf/ directory is the canonical geometry source when
+## running from source; exported builds carry a copy in assets/detector
+## (placed there by CI before the export).
+func _default_geometry_dir() -> String:
+	for d in ["res://../gltf", DEFAULT_GEOMETRY_DIR]:
+		var da := DirAccess.open(d)
+		if da != null:
+			for f in da.get_files():
+				var ext := f.get_extension().to_lower()
+				if ext == "gltf" or ext == "glb":
+					return d
+	return DEFAULT_GEOMETRY_DIR
+
 
 func _load_geometry(dir: String) -> void:
 	var loader := DetectorLoader.new()
