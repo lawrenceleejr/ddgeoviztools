@@ -45,12 +45,30 @@ func build(p_main: Node3D) -> void:
 	main = p_main
 	layer = 20
 	_build_status()
+	_build_menu_button()
 	_build_menu()
 	_build_dialogs()
 	refresh()
 
 
 # ── status strip ─────────────────────────────────────────────────────────────
+
+func _build_menu_button() -> void:
+	# Always-clickable hamburger — the only way into the menu on touch
+	# devices (no Esc key on a phone), handy everywhere else.
+	var b := Button.new()
+	b.text = "☰"
+	b.focus_mode = Control.FOCUS_NONE
+	b.add_theme_font_size_override("font_size", 26)
+	b.anchor_left = 1.0
+	b.anchor_right = 1.0
+	b.offset_left = -64
+	b.offset_right = -12
+	b.offset_top = 10
+	b.offset_bottom = 58
+	b.pressed.connect(func(): main.toggle_menu_request())
+	add_child(b)
+
 
 func _build_status() -> void:
 	status = Label.new()

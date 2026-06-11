@@ -134,10 +134,24 @@ Useful flags (after `--`): `--events=…`, `--geometry=…`, `--hide=Group1,Grou
 
 ## CI
 
-`.github/workflows/godot-build.yml` exports the macOS app and a Linux binary
-on every push that touches `ColliderVisGodot/`, then boots the Linux build
-under Xvfb + lavapipe and renders a verification frame, published as the
-`verification-render` artifact.
+`.github/workflows/godot-build.yml` builds, on every push that touches
+`ColliderVisGodot/`:
+
+- **macOS app** (universal, ad-hoc signed) as a zip and a DMG
+- **Linux binary**, then boots it under Xvfb + lavapipe and renders a
+  verification frame (`verification-render` artifact)
+- **Meta Quest APK** (`ColliderVis-Quest`): Android XR export with the
+  [Godot OpenXR Vendors](https://github.com/GodotVR/godot_openxr_vendors)
+  plugin (downloaded by CI; gitignored locally). Sideload with
+  `adb install ColliderVis-Quest.apk` (developer mode). In the headset:
+  head-tracked viewing from the glass floor, trigger/A = next event,
+  B = previous, grip = cutaway toggle. Uses the Mobile renderer
+  (VoxelGI/SSR/fog are desktop-only and degrade gracefully).
+- **iOS (iPhone + iPad)**: `ColliderVis-iOS-unsigned` is an unsigned IPA
+  built with xcodebuild — sideload it with AltStore/Sideloadly, or take
+  the `ColliderVis-iOS-XcodeProject` artifact, open it in Xcode, set your
+  own team/signing, and deploy directly. Touch controls: one finger
+  orbits, pinch zooms, the ☰ button opens the menu.
 
 ## Status of the UE5 project
 

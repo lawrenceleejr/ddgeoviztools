@@ -168,3 +168,157 @@ jobs:
         with:
           name: ColliderVis-macOS-dmg
           path: ColliderVis-macOS.dmg
+
+  # Meta Quest: Android XR export (OpenXR vendors plugin + gradle build).
+  # The vendors GDExtension has a known crash-on-exit during headless
+  # export, so steps verify the artifact instead of trusting exit codes.
+  quest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Godot + export templates
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot-bin
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-stable
+
+      - name: Download Godot + export templates
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          mkdir -p ~/godot-bin
+          curl -sSL -o /tmp/godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d ~/godot-bin
+          mv ~/godot-bin/Godot_v${GODOT_VERSION}-stable_linux.x86_64 ~/godot-bin/godot
+          chmod +x ~/godot-bin/godot
+          curl -sSL -o /tmp/templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mkdir -p ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          unzip -q /tmp/templates.tpz -d /tmp/templates
+          mv /tmp/templates/templates/* ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
+
+      - name: Install OpenXR vendors addon
+        run: |
+          curl -sSL -o /tmp/vendors.zip \
+            "https://github.com/GodotVR/godot_openxr_vendors/releases/download/5.1.0-stable/godotopenxrvendorsaddon.zip"
+          unzip -q /tmp/vendors.zip -d /tmp/vendors
+          cp -r /tmp/vendors/asset/addons ColliderVisGodot/
+
+      - name: Configure Android SDK + debug keystore
+        run: |
+          keytool -genkeypair -v -keystore ~/debug.keystore -storepass android \
+            -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+            -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          mkdir -p ~/.config/godot
+          cat > ~/.config/godot/editor_settings-4.6.tres <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME_17_X64"
+          export/android/debug_keystore = "$HOME/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+      - name: Bundle detector geometry
+        run: cp gltf/*.gltf ColliderVisGodot/assets/detector/
+
+      - name: Import project
+        run: ~/godot-bin/godot --headless --path ColliderVisGodot --import || true
+
+      - name: Export Quest APK
+        run: |
+          mkdir -p ColliderVisGodot/build
+          ~/godot-bin/godot --headless --path ColliderVisGodot \
+            --install-android-build-template \
+            --export-debug "Quest" build/ColliderVis-Quest.apk || true
+          test -f ColliderVisGodot/build/ColliderVis-Quest.apk
+
+      - name: Upload Quest APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ColliderVis-Quest
+          path: ColliderVisGodot/build/ColliderVis-Quest.apk
+
+  # iOS (iPhone + iPad): export the Xcode project, compile it unsigned on a
+  # macOS runner. The unsigned IPA can be sideloaded (AltStore/Sideloadly)
+  # or the Xcode project opened and signed with your own Apple ID.
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Godot (macOS) + export templates
+        id: cache-godot-mac
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot-mac
+            ~/Library/Application Support/Godot/export_templates
+          key: godot-mac-${{ env.GODOT_VERSION }}-stable
+
+      - name: Download Godot + export templates
+        if: steps.cache-godot-mac.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          mkdir -p ~/godot-mac
+          curl -sSL -o /tmp/godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+          unzip -q /tmp/godot.zip -d ~/godot-mac
+          curl -sSL -o /tmp/templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mkdir -p "$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable"
+          unzip -q /tmp/templates.tpz -d /tmp/templates
+          mv /tmp/templates/templates/* "$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable/"
+
+      - name: Bundle detector geometry
+        run: cp gltf/*.gltf ColliderVisGodot/assets/detector/
+
+      - name: Import project
+        run: ~/godot-mac/Godot.app/Contents/MacOS/Godot --headless --path ColliderVisGodot --import || true
+
+      - name: Export iOS Xcode project
+        run: |
+          mkdir -p ColliderVisGodot/build/ios
+          ~/godot-mac/Godot.app/Contents/MacOS/Godot --headless --path ColliderVisGodot \
+            --export-release "iOS" build/ios/ColliderVis.ipa || true
+          test -d ColliderVisGodot/build/ios/ColliderVis.xcodeproj
+
+      - name: Build unsigned IPA
+        run: |
+          set -euo pipefail
+          cd ColliderVisGodot/build/ios
+          xcodebuild -project ColliderVis.xcodeproj -scheme ColliderVis \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CONFIGURATION_BUILD_DIR="$PWD/out" build
+          mkdir Payload
+          cp -r out/*.app Payload/
+          zip -qry ColliderVis-iOS-unsigned.ipa Payload
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ColliderVis-iOS-unsigned
+          path: ColliderVisGodot/build/ios/ColliderVis-iOS-unsigned.ipa
+
+      - name: Zip Xcode project
+        run: |
+          cd ColliderVisGodot/build/ios
+          zip -qry ColliderVis-Xcode.zip ColliderVis.xcodeproj ColliderVis ColliderVis.pck \
+            ColliderVis.xcframework MoltenVK.xcframework PrivacyInfo.xcprivacy || \
+          zip -qry ColliderVis-Xcode.zip .
+
+      - name: Upload Xcode project
+        uses: actions/upload-artifact@v4
+        with:
+          name: ColliderVis-iOS-XcodeProject
+          path: ColliderVisGodot/build/ios/ColliderVis-Xcode.zip

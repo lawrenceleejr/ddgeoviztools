@@ -28,6 +28,7 @@ var _s_target := Vector3.ZERO
 
 var _idle_time := 0.0
 var _attrs: CameraAttributesPractical
+var _touches := {}   # touch index -> screen position (mobile orbit/pinch)
 
 const BASE_FOV := 60.0
 const ZOOM_FOV := 30.0
@@ -85,7 +86,41 @@ func _apply_orbit(snap := false) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not current or not _captured():
+	if not current:
+		return
+
+	# Touch (iPhone/iPad/Android flat): one finger orbits, two-finger
+	# pinch zooms. Mouse emulation from touch never gets captured, so the
+	# desktop paths below stay inert on touch devices.
+	if event is InputEventScreenTouch:
+		var t := event as InputEventScreenTouch
+		if t.pressed:
+			_touches[t.index] = t.position
+		else:
+			_touches.erase(t.index)
+		return
+	if event is InputEventScreenDrag and not fly_mode:
+		var d := event as InputEventScreenDrag
+		if _touches.size() >= 2 and _touches.has(d.index):
+			var other_pos := Vector2.ZERO
+			for idx in _touches:
+				if idx != d.index:
+					other_pos = _touches[idx]
+					break
+			var old_dist: float = (_touches[d.index] as Vector2).distance_to(other_pos)
+			var new_dist := d.position.distance_to(other_pos)
+			if old_dist > 1.0 and new_dist > 1.0:
+				distance = clampf(distance * old_dist / new_dist,
+					MIN_DISTANCE, MAX_DISTANCE)
+		elif _touches.size() == 1:
+			yaw += d.relative.x * ORBIT_SPEED
+			pitch = clampf(pitch + d.relative.y * ORBIT_SPEED,
+				deg_to_rad(-85.0), deg_to_rad(85.0))
+		_touches[d.index] = d.position
+		_idle_time = 0.0
+		return
+
+	if not _captured():
 		return
 	# Look sensitivity tightens while the RMB examine-zoom is held.
 	var sens := fov / BASE_FOV

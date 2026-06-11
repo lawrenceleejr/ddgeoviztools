@@ -26,9 +26,20 @@ window/size/viewport_width=1920
 window/size/viewport_height=1080
 window/stretch/aspect="expand"
 
+[xr]
+
+; OpenXR only on Android (Quest); desktop runs flat with no XR runtime noise.
+openxr/enabled=false
+openxr/enabled.android=true
+shaders/enabled=false
+shaders/enabled.android=true
+
 [rendering]
 
 renderer/rendering_method="forward_plus"
+; Quest / mobile GPUs use the Mobile renderer (Forward+ features like
+; VoxelGI/SSR/volumetric fog degrade gracefully — guarded in code).
+renderer/rendering_method.mobile="mobile"
 textures/vram_compression/import_etc2_astc=true
 anti_aliasing/quality/msaa_3d=1
 anti_aliasing/quality/use_taa=true

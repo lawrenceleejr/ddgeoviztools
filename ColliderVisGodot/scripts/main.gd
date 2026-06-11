@@ -101,8 +101,53 @@ func _ready() -> void:
 		ui.visible = false
 	if _args.has("screenshot"):
 		_run_screenshot_mode()
+	elif _try_init_xr():
+		pass   # VR session running; flat-screen input stays available too
 	else:
 		_sync_mouse_mode()   # menu starts closed -> mouse drives the camera
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# VR (Meta Quest via OpenXR — enabled only in Android builds)
+# ──────────────────────────────────────────────────────────────────────────────
+
+func _try_init_xr() -> bool:
+	var xr := XRServer.find_interface("OpenXR")
+	if xr == null:
+		return false
+	if not xr.is_initialized() and not xr.initialize():
+		return false
+	get_viewport().use_xr = true
+	# Stand on the glass at the beam plane, a few metres from the barrel.
+	var origin := XROrigin3D.new()
+	origin.name = "XROrigin"
+	origin.position = Vector3(9.0, 0.0, 5.0)
+	add_child(origin)
+	var cam := XRCamera3D.new()
+	origin.add_child(cam)
+	for hand in ["left_hand", "right_hand"]:
+		var ctl := XRController3D.new()
+		ctl.tracker = hand
+		origin.add_child(ctl)
+		ctl.button_pressed.connect(_on_xr_button)
+	# Screen-space lens effects don't belong on a headset.
+	var fx := get_node_or_null("PostFX")
+	if fx != null:
+		fx.visible = false
+	if glass_floor != null:
+		glass_floor.visible = true
+	print("ColliderVis: OpenXR session started")
+	return true
+
+
+func _on_xr_button(button_name: String) -> void:
+	match button_name:
+		"trigger_click", "ax_button":
+			show_relative_event(1)
+		"by_button":
+			show_relative_event(-1)
+		"grip_click":
+			set_cutaway(not cutaway_enabled)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -225,6 +270,10 @@ func _build_environment() -> void:
 ## if the bake fails for any reason SDFGI stays on as the fallback.
 func _setup_baked_gi() -> void:
 	if String(_args.get("gi", "voxel")) != "voxel":
+		return
+	# The Mobile renderer (Quest) supports neither VoxelGI nor SDFGI;
+	# ambient + direct light carry the scene there.
+	if RenderingServer.get_current_rendering_method() != "forward_plus":
 		return
 	voxel_gi = VoxelGI.new()
 	voxel_gi.name = "VoxelGI"
@@ -828,6 +877,11 @@ func cycle_camera_mode() -> void:
 		glass_floor.visible = (cam_mode == CamMode.WALK)
 	_sync_mouse_mode()
 	_ui_refresh()
+
+
+func toggle_menu_request() -> void:
+	ui.toggle_menu()
+	_sync_mouse_mode()
 
 
 ## Cursor policy: menu open = free cursor; menu closed = captured mouse
