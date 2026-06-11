@@ -16,14 +16,17 @@ built procedurally at startup. Open it and it works.
 godot --path ColliderVisGodot
 ```
 
-Or download the **ready-to-run macOS app** from GitHub Actions:
-every push builds `ColliderVis-macOS.zip` (universal binary, ad-hoc signed).
-After unzipping, clear the quarantine flag once:
+Or download the **ready-to-run macOS app** from GitHub Actions: every push
+builds the `ColliderVis-macOS-dmg` artifact — a DMG with the universal
+ad-hoc-signed app, an Applications shortcut, and a README covering the
+one-time Gatekeeper step:
 
 ```bash
-xattr -cr ColliderVis.app
-open ColliderVis.app
+xattr -cr /Applications/ColliderVis.app
+open /Applications/ColliderVis.app
 ```
+
+(A bare `ColliderVis-macOS.zip` artifact is also published.)
 
 ## What you get
 

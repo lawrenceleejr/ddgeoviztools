@@ -2,14 +2,16 @@ name: Godot builds (macOS app + Linux)
 
 # Exports the ColliderVis Godot project headlessly:
 #   - a ready-to-run macOS .app (universal x86_64+arm64, ad-hoc signed),
-#     published as ColliderVis-macOS.zip
+#     published both as ColliderVis-macOS.zip and packaged into a proper
+#     DMG (with an /Applications shortcut and a README explaining the
+#     one-time quarantine removal) by a follow-on macOS job
 #   - a Linux x86_64 binary
 # plus a rendered verification screenshot so every build's lighting can be
 # eyeballed straight from the artifacts page.
 #
 # The macOS app is ad-hoc signed (no Apple developer account needed). After
-# downloading and unzipping, clear the quarantine flag once:
-#     xattr -cr ColliderVis.app
+# installing from the DMG, clear the quarantine flag once:
+#     xattr -cr /Applications/ColliderVis.app
 on:
   push:
     paths:
@@ -94,3 +96,70 @@ jobs:
         with:
           name: verification-render
           path: verify.png
+
+  # Package the .app into a real DMG with hdiutil. Runs on a macOS runner
+  # so the disk image is a native compressed UDZO DMG, not an ISO knock-off.
+  package-dmg:
+    needs: export
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download macOS app
+        uses: actions/download-artifact@v4
+        with:
+          name: ColliderVis-macOS
+
+      - name: Build DMG
+        run: |
+          set -euo pipefail
+          mkdir dmg-root
+          unzip -q ColliderVis-macOS.zip -d dmg-root
+          ln -s /Applications dmg-root/Applications
+          cat > "dmg-root/README — first launch.txt" <<'EOF'
+          ColliderVis — photo-realistic HEP collision event display
+          ==========================================================
+
+          INSTALL
+            Drag ColliderVis.app onto the Applications shortcut in this
+            window (or any folder you like).
+
+          FIRST LAUNCH (one-time step — please read)
+            This app is signed with an ad-hoc signature, not an Apple
+            Developer ID, so macOS Gatekeeper quarantines it on download.
+            Clear the quarantine flag once from Terminal:
+
+                xattr -cr /Applications/ColliderVis.app
+
+            (If you copied the app somewhere else, use that path instead.)
+            Then open the app normally. Alternatively: right-click the app
+            → Open → Open, which works on some macOS versions without the
+            Terminal step.
+
+          CONTROLS
+            Esc          menu (load EDM4HEP/JSON events, event index,
+                         detector toggles, event information)
+            Space        next event        B    previous event
+            Tab          cycle camera: Orbit → Fly → Third person
+            LMB / wheel  orbit / zoom      WASD move (Fly / Walk)
+            1-9 / 0      toggle sub-detectors / show all
+            C  [  ]      phi cutaway on/off, shrink/grow opening
+
+          Loading EDM4HEP/key4hep .root files directly requires python3
+          with `pip install uproot awkward` on this machine; converted
+          event JSON files load with no dependencies.
+
+          Project: https://github.com/lawrenceleejr/ddgeoviztools
+          EOF
+          hdiutil create -volname "ColliderVis" -srcfolder dmg-root \
+            -ov -format UDZO ColliderVis-macOS.dmg
+          # Sanity check: mount it and confirm the payload is intact.
+          hdiutil attach ColliderVis-macOS.dmg -mountpoint /tmp/cvmount -nobrowse
+          test -d "/tmp/cvmount/ColliderVis.app"
+          test -f "/tmp/cvmount/README — first launch.txt"
+          hdiutil detach /tmp/cvmount
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: ColliderVis-macOS-dmg
+          path: ColliderVis-macOS.dmg
