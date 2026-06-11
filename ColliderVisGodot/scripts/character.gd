@@ -22,7 +22,7 @@ const BLEND_TIME := 0.25
 const BASE_FOV := 65.0
 const ZOOM_FOV := 36.0
 const BASE_ARM := 4.0
-const ZOOM_ARM := 2.4
+const ZOOM_ARM := 1.4   # body hides while zoomed, so tuck right in
 
 const WALK_SPEED := 3.0
 const RUN_SPEED := 6.5
@@ -293,12 +293,15 @@ func _physics_process(delta: float) -> void:
 	var gimbal := spring.get_parent() as Node3D
 	gimbal.rotation = Vector3(cam_pitch, cam_yaw, 0)
 
-	# Hold-RMB examine zoom: FOV push-in + the arm tucks over the shoulder.
+	# Hold-RMB examine zoom: FOV push-in + the arm tucks in. The body gets
+	# out of the way: it vanishes early in the zoom-in and reappears as the
+	# zoom eases back out.
 	var zooming := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
 		and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
 	var zk := 1.0 - exp(-8.0 * delta)
 	camera.fov = lerpf(camera.fov, ZOOM_FOV if zooming else BASE_FOV, zk)
 	spring.spring_length = lerpf(spring.spring_length, ZOOM_ARM if zooming else BASE_ARM, zk)
+	rig.visible = not (zooming and camera.fov < BASE_FOV - 6.0)
 
 	# Movement relative to camera yaw.
 	var input_dir := Vector2.ZERO
