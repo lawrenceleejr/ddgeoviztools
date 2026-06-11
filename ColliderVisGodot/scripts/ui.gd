@@ -31,6 +31,63 @@ const PANEL_W := 560.0
 const FONT_SIZE := 16
 const HEADER_SIZE := 19
 
+## Touch devices get bigger UI and an on-screen action bar / joystick.
+var is_touch := OS.has_feature("mobile") or DisplayServer.is_touchscreen_available()
+var ui_scale: float = 1.6 if is_touch else 1.0
+var touch_bar: Control = null
+var joystick: Control = null
+var jump_btn: Button = null
+
+
+## A minimal thumb-stick: drag inside the pad, read `vector` (-1..1 each axis,
+## +y = forward).
+class TouchJoystick extends Control:
+	var vector := Vector2.ZERO
+	var _touch_idx := -1
+	var _center := Vector2.ZERO
+
+	func _ready() -> void:
+		mouse_filter = Control.MOUSE_FILTER_STOP
+
+	func _gui_input(event: InputEvent) -> void:
+		if event is InputEventScreenTouch:
+			var t := event as InputEventScreenTouch
+			if t.pressed and _touch_idx < 0:
+				_touch_idx = t.index
+				_center = t.position
+			elif not t.pressed and t.index == _touch_idx:
+				_touch_idx = -1
+				vector = Vector2.ZERO
+				queue_redraw()
+		elif event is InputEventScreenDrag:
+			var d := event as InputEventScreenDrag
+			if d.index == _touch_idx:
+				var v := (d.position - _center) / (size.x * 0.4)
+				vector = Vector2(clampf(v.x, -1, 1), clampf(-v.y, -1, 1))
+				queue_redraw()
+		# Mouse fallback (touchpads emulating, or testing on desktop).
+		elif event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.button_index == MOUSE_BUTTON_LEFT:
+				if mb.pressed:
+					_center = mb.position
+				else:
+					vector = Vector2.ZERO
+					queue_redraw()
+		elif event is InputEventMouseMotion:
+			var mm := event as InputEventMouseMotion
+			if mm.button_mask & MOUSE_BUTTON_MASK_LEFT:
+				var v := (mm.position - _center) / (size.x * 0.4)
+				vector = Vector2(clampf(v.x, -1, 1), clampf(-v.y, -1, 1))
+				queue_redraw()
+
+	func _draw() -> void:
+		var c := size / 2.0
+		draw_circle(c, size.x * 0.46, Color(0.4, 0.6, 0.8, 0.12))
+		draw_arc(c, size.x * 0.46, 0, TAU, 48, Color(0.5, 0.7, 0.9, 0.35), 2.0)
+		draw_circle(c + Vector2(vector.x, -vector.y) * size.x * 0.3,
+			size.x * 0.16, Color(0.6, 0.8, 1.0, 0.45))
+
 ## Post-FX defaults (restored when an effect checkbox is re-enabled).
 const FX_DEFAULTS := {
 	"flare_strength": 0.03,
@@ -48,7 +105,72 @@ func build(p_main: Node3D) -> void:
 	_build_menu_button()
 	_build_menu()
 	_build_dialogs()
+	if is_touch:
+		_build_touch_controls()
 	refresh()
+
+
+## On-screen controls for keyboard-less devices: a bottom action bar
+## (events / camera mode / cutaway) plus a joystick + jump in walk mode.
+func _build_touch_controls() -> void:
+	touch_bar = HBoxContainer.new()
+	touch_bar.add_theme_constant_override("separation", 14)
+	touch_bar.anchor_left = 0.5
+	touch_bar.anchor_right = 0.5
+	touch_bar.anchor_top = 1.0
+	touch_bar.anchor_bottom = 1.0
+	touch_bar.offset_top = -86
+	touch_bar.offset_bottom = -18
+	touch_bar.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	add_child(touch_bar)
+	var cb_prev := func(): main.show_relative_event(-1)
+	var cb_next := func(): main.show_relative_event(1)
+	var cb_cam := func(): main.cycle_camera_mode()
+	var cb_cut := func(): main.set_cutaway(not main.cutaway_enabled)
+	var labels := ["◀", "Next ▶", "Camera", "Cutaway"]
+	var callbacks := [cb_prev, cb_next, cb_cam, cb_cut]
+	for i in labels.size():
+		var b := Button.new()
+		b.text = labels[i]
+		b.focus_mode = Control.FOCUS_NONE
+		b.custom_minimum_size = Vector2(150, 68)
+		b.add_theme_font_size_override("font_size", 24)
+		b.modulate = Color(1, 1, 1, 0.85)
+		b.pressed.connect(callbacks[i])
+		touch_bar.add_child(b)
+
+	joystick = TouchJoystick.new()
+	joystick.anchor_top = 1.0
+	joystick.anchor_bottom = 1.0
+	joystick.offset_left = 30
+	joystick.offset_right = 250
+	joystick.offset_top = -330
+	joystick.offset_bottom = -110
+	joystick.visible = false
+	add_child(joystick)
+
+	jump_btn = Button.new()
+	jump_btn.text = "Jump"
+	jump_btn.focus_mode = Control.FOCUS_NONE
+	jump_btn.custom_minimum_size = Vector2(130, 90)
+	jump_btn.add_theme_font_size_override("font_size", 24)
+	jump_btn.modulate = Color(1, 1, 1, 0.85)
+	jump_btn.anchor_left = 1.0
+	jump_btn.anchor_right = 1.0
+	jump_btn.anchor_top = 1.0
+	jump_btn.anchor_bottom = 1.0
+	jump_btn.offset_left = -170
+	jump_btn.offset_right = -30
+	jump_btn.offset_top = -240
+	jump_btn.offset_bottom = -130
+	jump_btn.visible = false
+	jump_btn.pressed.connect(_on_jump_pressed)
+	add_child(jump_btn)
+
+
+func _on_jump_pressed() -> void:
+	if main.character != null:
+		main.character.request_jump()
 
 
 # ── status strip ─────────────────────────────────────────────────────────────
@@ -73,7 +195,7 @@ func _build_menu_button() -> void:
 func _build_status() -> void:
 	status = Label.new()
 	status.position = Vector2(16, 12)
-	status.add_theme_font_size_override("font_size", FONT_SIZE)
+	status.add_theme_font_size_override("font_size", int(FONT_SIZE * ui_scale))
 	status.add_theme_color_override("font_color", Color(0.8, 0.9, 1.0, 0.85))
 	status.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
 	status.add_theme_constant_override("shadow_offset_x", 1)
@@ -86,7 +208,7 @@ func _build_status() -> void:
 func _section(parent: Control, title: String) -> VBoxContainer:
 	var lbl := Label.new()
 	lbl.text = title
-	lbl.add_theme_font_size_override("font_size", HEADER_SIZE)
+	lbl.add_theme_font_size_override("font_size", int(HEADER_SIZE * ui_scale))
 	lbl.add_theme_color_override("font_color", Color(0.55, 0.75, 0.95))
 	parent.add_child(lbl)
 	var box := VBoxContainer.new()
@@ -154,9 +276,10 @@ func _build_menu() -> void:
 	style.content_margin_top = 10
 	style.content_margin_bottom = 10
 	menu_root.add_theme_stylebox_override("panel", style)
-	# One theme bump makes every control in the panel comfortably large.
+	# One theme bump makes every control in the panel comfortably large
+	# (and larger again on touch screens).
 	var theme := Theme.new()
-	theme.default_font_size = FONT_SIZE
+	theme.default_font_size = int(FONT_SIZE * ui_scale)
 	menu_root.theme = theme
 	add_child(menu_root)
 
@@ -317,7 +440,8 @@ func _build_menu() -> void:
 	q_row.add_child(q_opt)
 	s.add_child(q_row)
 
-	_labeled_slider(s, "Render scale", 0.5, 1.0, 0.05, 0.6,
+	_labeled_slider(s, "Render scale", 0.5, 1.0, 0.05,
+		main.get_viewport().scaling_3d_scale,
 		func(v: float): main.set_render_scale(v))
 	_labeled_slider(s, "Light brightness", 0.4, 1.6, 0.05, main.light_scale,
 		func(v: float): main.set_light_scale(v))
@@ -422,6 +546,9 @@ func show_error(msg: String) -> void:
 # ── state refresh ────────────────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
+	# Virtual joystick -> character.
+	if joystick != null and joystick.visible and main.character != null:
+		main.character.touch_move = joystick.vector
 	if not menu_root.visible or fps_label == null:
 		return
 	_fps_accum -= delta
@@ -483,3 +610,11 @@ func refresh() -> void:
 	mode_label.text = "Mode: %s" % main.camera_mode_name()
 	cutaway_check.set_pressed_no_signal(main.cutaway_enabled)
 	phi_slider.set_value_no_signal(main.phi_max)
+
+	# Walk-mode touch controls.
+	var walking: bool = main.camera_mode_name() == "Third person"
+	if joystick != null:
+		joystick.visible = walking
+		jump_btn.visible = walking
+		if not walking and main.character != null:
+			main.character.touch_move = Vector2.ZERO

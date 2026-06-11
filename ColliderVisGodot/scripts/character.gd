@@ -33,6 +33,15 @@ const LOOK_SPEED := 0.0035
 
 var cam_yaw := 1.16    # spawn looking at the detector from the default spawn point
 var cam_pitch := -0.12
+
+# Touch controls (set by the UI's virtual joystick / jump button).
+var touch_move := Vector2.ZERO   # x = strafe, y = forward
+var _touch_jump := false
+var _is_mobile := OS.has_feature("mobile")
+
+
+func request_jump() -> void:
+	_touch_jump = true
 var _phase := 0.0
 var _speed_blend := 0.0   # 0 idle .. 1 run, smoothed
 
@@ -283,6 +292,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		var sens := LOOK_SPEED * camera.fov / BASE_FOV   # tighter while zoomed
 		cam_yaw -= mm.relative.x * sens
 		cam_pitch = clampf(cam_pitch - mm.relative.y * sens, -1.2, 0.5)
+	elif event is InputEventScreenDrag:
+		# Touch look: drags on the right side of the screen steer the
+		# camera (the left side belongs to the virtual joystick).
+		var sd := event as InputEventScreenDrag
+		if sd.position.x > get_viewport().get_visible_rect().size.x * 0.45:
+			cam_yaw -= sd.relative.x * LOOK_SPEED
+			cam_pitch = clampf(cam_pitch - sd.relative.y * LOOK_SPEED, -1.2, 0.5)
 
 
 func _physics_process(delta: float) -> void:
@@ -303,14 +319,17 @@ func _physics_process(delta: float) -> void:
 	spring.spring_length = lerpf(spring.spring_length, ZOOM_ARM if zooming else BASE_ARM, zk)
 	rig.visible = not (zooming and camera.fov < BASE_FOV - 6.0)
 
-	# Movement relative to camera yaw.
+	# Movement relative to camera yaw: WASD when the mouse is captured,
+	# plus the virtual joystick on touch devices.
 	var input_dir := Vector2.ZERO
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		if Input.is_key_pressed(KEY_W): input_dir.y += 1
 		if Input.is_key_pressed(KEY_S): input_dir.y -= 1
 		if Input.is_key_pressed(KEY_A): input_dir.x -= 1
 		if Input.is_key_pressed(KEY_D): input_dir.x += 1
-	var running := Input.is_key_pressed(KEY_SHIFT)
+	input_dir += touch_move
+	input_dir = input_dir.limit_length(1.0)
+	var running := Input.is_key_pressed(KEY_SHIFT) or touch_move.length() > 0.85
 	var speed := RUN_SPEED if running else WALK_SPEED
 
 	var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
@@ -328,9 +347,11 @@ func _physics_process(delta: float) -> void:
 	var jumped := false
 	if not is_on_floor():
 		velocity.y -= GRAVITY * delta
-	elif Input.is_key_pressed(KEY_SPACE) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+	elif _touch_jump or (Input.is_key_pressed(KEY_SPACE)
+			and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED):
 		velocity.y = JUMP_VELOCITY
 		jumped = true
+	_touch_jump = false
 
 	move_and_slide()
 	if anim != null:

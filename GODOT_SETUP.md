@@ -144,14 +144,20 @@ Useful flags (after `--`): `--events=…`, `--geometry=…`, `--hide=Group1,Grou
   [Godot OpenXR Vendors](https://github.com/GodotVR/godot_openxr_vendors)
   plugin (downloaded by CI; gitignored locally). Sideload with
   `adb install ColliderVis-Quest.apk` (developer mode). In the headset:
-  head-tracked viewing from the glass floor, trigger/A = next event,
-  B = previous, grip = cutaway toggle. Uses the Mobile renderer
-  (VoxelGI/SSR/fog are desktop-only and degrade gracefully).
+  left stick glides, right stick snap-turns 45°; right trigger / A =
+  next event, B = previous; left trigger / X = cutaway; Y = event
+  display on/off; grip steps an "x-ray" cursor through the sub-detector
+  groups. Tuned for smoothness: Mobile renderer, 0.7 render scale,
+  aggressive dynamic foveation, MSAA 2x.
 - **iOS (iPhone + iPad)**: `ColliderVis-iOS-unsigned` is an unsigned IPA
   built with xcodebuild — sideload it with AltStore/Sideloadly, or take
   the `ColliderVis-iOS-XcodeProject` artifact, open it in Xcode, set your
-  own team/signing, and deploy directly. Touch controls: one finger
-  orbits, pinch zooms, the ☰ button opens the menu.
+  own team/signing, and deploy directly. Phones/tablets run at the
+  0.5 render-scale floor with the Performance preset and no lens pass
+  for smoothness, with a full touch interface: one finger orbits, pinch
+  zooms, ☰ opens the menu, a bottom action bar gives Prev/Next event,
+  camera mode, and cutaway, and walk mode gets a virtual joystick +
+  jump button with drag-look on the right half of the screen.
 
 ## Status of the UE5 project
 

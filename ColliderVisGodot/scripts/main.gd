@@ -66,6 +66,12 @@ var phi_max := 90.0
 var _args := {}
 var _prev_cam_xform := Transform3D.IDENTITY
 
+## Phones/tablets and Quest: no keyboard/mouse, tight GPU budget.
+var is_mobile := OS.has_feature("mobile")
+var xr_origin: XROrigin3D = null
+var xr_left: XRController3D = null
+var xr_right: XRController3D = null
+
 
 func _ready() -> void:
 	_args = _parse_user_args()
@@ -83,9 +89,11 @@ func _ready() -> void:
 	if not event_files.is_empty() and not _args.has("no-event"):
 		_show_event(0)
 	_spawn_cameras()
-	# Default render scale: low-ish — a big frame-rate win that the TAA
-	# upscale hides well; raise it in Settings on fast GPUs.
-	set_render_scale(0.6)
+	# Default render scale: low-ish on desktop (FSR2 hides it well);
+	# floor it on mobile where smoothness beats resolution.
+	set_render_scale(0.5 if is_mobile else 0.6)
+	if is_mobile:
+		apply_quality("performance")
 	match String(_args.get("mode", "orbit")):
 		"fly":
 			cycle_camera_mode()
@@ -117,19 +125,29 @@ func _try_init_xr() -> bool:
 		return false
 	if not xr.is_initialized() and not xr.initialize():
 		return false
-	get_viewport().use_xr = true
+	var vp := get_viewport()
+	vp.use_xr = true
+	# Headset perf: low render scale (dynamic foveation does the rest, see
+	# project.godot) with a little MSAA — aliasing is brutal in VR.
+	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+	vp.scaling_3d_scale = 0.7
+	vp.msaa_3d = Viewport.MSAA_2X
 	# Stand on the glass at the beam plane, a few metres from the barrel.
-	var origin := XROrigin3D.new()
-	origin.name = "XROrigin"
-	origin.position = Vector3(9.0, 0.0, 5.0)
-	add_child(origin)
+	xr_origin = XROrigin3D.new()
+	xr_origin.name = "XROrigin"
+	xr_origin.position = Vector3(9.0, 0.0, 5.0)
+	add_child(xr_origin)
 	var cam := XRCamera3D.new()
-	origin.add_child(cam)
+	xr_origin.add_child(cam)
 	for hand in ["left_hand", "right_hand"]:
 		var ctl := XRController3D.new()
 		ctl.tracker = hand
-		origin.add_child(ctl)
-		ctl.button_pressed.connect(_on_xr_button)
+		xr_origin.add_child(ctl)
+		ctl.button_pressed.connect(_on_xr_button.bind(hand))
+		if hand == "left_hand":
+			xr_left = ctl
+		else:
+			xr_right = ctl
 	# Screen-space lens effects don't belong on a headset.
 	var fx := get_node_or_null("PostFX")
 	if fx != null:
@@ -140,14 +158,68 @@ func _try_init_xr() -> bool:
 	return true
 
 
-func _on_xr_button(button_name: String) -> void:
+## Quest controller map (no keyboard/menu in-headset):
+##   right trigger / A    next event        left trigger    previous event
+##   B                    previous event    X               cutaway toggle
+##   Y                    event display on/off
+##   either grip          cycle which sub-detector group is hidden
+##   left stick           glide (head-relative)
+##   right stick left/right  45-degree snap turn
+var _xr_hide_idx := -1
+
+func _on_xr_button(button_name: String, hand: String) -> void:
 	match button_name:
-		"trigger_click", "ax_button":
-			show_relative_event(1)
+		"trigger_click":
+			show_relative_event(1 if hand == "right_hand" else -1)
+		"ax_button":
+			if hand == "right_hand":
+				show_relative_event(1)        # A
+			else:
+				set_cutaway(not cutaway_enabled)   # X
 		"by_button":
-			show_relative_event(-1)
+			if hand == "right_hand":
+				show_relative_event(-1)       # B
+			else:
+				set_event_display_visible(not show_events)   # Y
 		"grip_click":
-			set_cutaway(not cutaway_enabled)
+			# Step an "x-ray" cursor through the groups: each press un-hides
+			# the previous group and hides the next one; wraps to all-on.
+			if _xr_hide_idx >= 0 and _xr_hide_idx < group_order.size():
+				set_group_visible(group_order[_xr_hide_idx], true)
+			_xr_hide_idx += 1
+			if _xr_hide_idx >= group_order.size():
+				_xr_hide_idx = -1
+			else:
+				set_group_visible(group_order[_xr_hide_idx], false)
+
+
+const XR_MOVE_SPEED := 2.5
+const XR_SNAP_DEG := 45.0
+var _xr_snap_ready := true
+
+func _process_xr(delta: float) -> void:
+	if xr_origin == null:
+		return
+	# Left stick: glide relative to where you're looking.
+	if xr_left != null:
+		var mv := xr_left.get_vector2("primary")
+		if mv.length() > 0.12:
+			var cam := xr_origin.get_child(0) as XRCamera3D
+			var fwd := -cam.global_transform.basis.z
+			fwd.y = 0.0
+			fwd = fwd.normalized()
+			var right := cam.global_transform.basis.x
+			right.y = 0.0
+			right = right.normalized()
+			xr_origin.position += (fwd * mv.y + right * mv.x) * XR_MOVE_SPEED * delta
+	# Right stick X: comfortable snap turns.
+	if xr_right != null:
+		var tv := xr_right.get_vector2("primary")
+		if absf(tv.x) > 0.7 and _xr_snap_ready:
+			xr_origin.rotate_y(deg_to_rad(-signf(tv.x) * XR_SNAP_DEG))
+			_xr_snap_ready = false
+		elif absf(tv.x) < 0.3:
+			_xr_snap_ready = true
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -771,13 +843,16 @@ func set_render_scale(f: float) -> void:
 	vp.scaling_3d_scale = clampf(f, 0.5, 1.0)
 	# FSR2 reconstructs near-native sharpness from the reduced-scale frame
 	# (plain bilinear reads soft/pixelated); it supplies its own temporal
-	# accumulation, so TAA goes off with it.
-	if vp.scaling_3d_scale < 0.999:
+	# accumulation, so TAA goes off with it. Not available in XR or on the
+	# Mobile renderer — those stay on plain bilinear scaling.
+	var can_fsr2 := not vp.use_xr \
+		and RenderingServer.get_current_rendering_method() == "forward_plus"
+	if vp.scaling_3d_scale < 0.999 and can_fsr2:
 		vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR2
 		vp.use_taa = false
 	else:
 		vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
-		vp.use_taa = true
+		vp.use_taa = not is_mobile
 
 
 func set_resolution_index(idx: int) -> void:
@@ -854,6 +929,12 @@ func camera_mode_name() -> String:
 func cycle_camera_mode() -> void:
 	match cam_mode:
 		CamMode.ORBIT:
+			if is_mobile:
+				# No keys for flying — go straight to the walkable mode
+				# (virtual joystick + jump button take over there).
+				cam_mode = CamMode.FLY   # fall through to WALK below
+				cycle_camera_mode()
+				return
 			cam_mode = CamMode.FLY
 			orbit_camera.set_fly(true)
 		CamMode.FLY:
@@ -907,10 +988,13 @@ func _build_post_fx() -> void:
 	post_fx_mat.shader = load("res://shaders/post_fx.gdshader")
 	rect.material = post_fx_mat
 	layer.add_child(rect)
+	# The many-tap lens pass is poison for mobile tiler GPUs.
+	layer.visible = not is_mobile
 	add_child(layer)
 
 
 func _process(_delta: float) -> void:
+	_process_xr(_delta)
 	# Feed the camera's screen-space motion to the motion-blur pass.
 	var cam := current_camera()
 	if cam == null or post_fx_mat == null:

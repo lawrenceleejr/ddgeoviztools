@@ -34,6 +34,9 @@ openxr/enabled=false
 openxr/enabled.android=true
 shaders/enabled=false
 shaders/enabled.android=true
+; Aggressive dynamic foveation — big fragment-cost win on Quest.
+openxr/foveation_level=3
+openxr/foveation_dynamic=true
 
 [rendering]
 
