@@ -43,6 +43,13 @@ Features
 - Default render: Cycles 4 K (3840 × 2160), 256 samples, 12 max bounces
   (4 diffuse + 8 glossy + 8 transmission, 4 volume), AgX / Filmic tone
   mapping at +2.5 EV exposure with "Medium High Contrast" look.
+- Hollywood post chain built in the scene compositor (subtle by design):
+  Glare FOG_GLOW bloom, emission-pass anamorphic streaks, lens distortion
+  with chromatic dispersion, teal-shadow / warm-highlight Color Balance,
+  ellipse-mask vignette, and procedural film grain — all parameterised by
+  module constants, opt out via DDGEOVIZTOOLS_COMPOSITOR=0.
+- Material micro-detail: pointiness edge wear + AO crevice grime on metals,
+  clearcoat sheen on crystal / ECal materials, anisotropic brushed nozzles.
 - Saves as a .blend file readable by any Blender 4.x or 5.0+ installation.
 """
 from __future__ import annotations
@@ -128,6 +135,64 @@ _DETECTOR_MATERIALS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Cinematic post-processing / "Hollywood" constants
+# ---------------------------------------------------------------------------
+# Every post effect is deliberately subtle — film polish, not music video.
+# Plain module constants so a look tweak never requires touching the
+# node-graph plumbing below.
+
+# Compositor: bloom (Glare FOG_GLOW)
+_BLOOM_THRESHOLD   = 2.0      # linear luminance where bloom starts
+_BLOOM_SIZE        = 7        # 4.0-4.3 fog-glow kernel (2^n px)
+_BLOOM_MIX         = -0.92    # 4.0-4.3 Glare 'mix' (-1 = original .. +1 = glare)
+_BLOOM_STRENGTH    = 0.08     # 4.4+/5.x Glare 'Strength' socket (0..1)
+_BLOOM_SIZE_REL    = 0.5      # 4.4+/5.x relative 'Size' socket (0..1)
+
+# Compositor: anamorphic streaks (keyed off the Emission pass)
+_STREAKS_COUNT     = 4
+_STREAKS_ANGLE_DEG = 15.0     # tilt so streaks don't sit on the pixel grid
+_STREAKS_FADE      = 0.85
+_STREAKS_THRESHOLD = 1.5      # Emission pass only — IP accent & god-ray core
+_STREAKS_ADD_FAC   = 0.06     # ADD-mix opacity over the main image
+
+# Compositor: lens, grade, vignette, grain
+_LENS_DISTORT      = 0.015    # subtle barrel distortion
+_LENS_DISPERSION   = 0.008    # chromatic aberration toward the frame edge
+_GRADE_LIFT        = (0.95, 1.00, 1.07)   # teal shadows
+_GRADE_GAMMA       = (1.00, 1.00, 1.00)
+_GRADE_GAIN        = (1.05, 1.00, 0.94)   # warm highlights
+_VIGNETTE_SIZE     = 1.05     # ellipse half-size (>1 → only corners darken)
+_VIGNETTE_BLUR_PX  = 80
+_VIGNETTE_AMOUNT   = 0.5      # multiply-mix factor (0 = off, 1 = full mask)
+_GRAIN_FAC         = 0.035    # film-grain overlay opacity
+_GRAIN_NOISE_SIZE  = 0.08     # clouds-texture scale — smaller = finer grain
+
+# Cycles: firefly clamp + display look
+_CLAMP_INDIRECT       = 10.0  # clamp indirect samples; direct stays unclamped
+_VIEW_LOOK_CANDIDATES = ("AgX - High Contrast", "High Contrast")
+
+# Camera: slight anamorphic bokeh squeeze on perspective lenses
+_CAM_ANAMORPHIC_RATIO = 1.08
+
+# Lighting: cyan counter-fill (the one cool source in the all-warm rig)
+_CYAN_FILL_W_PER_M2 = 90.0
+_CYAN_FILL_RGB      = (0.35, 0.75, 1.0)
+
+# Volumetrics: atmosphere cube fallback (used when the world-level scatter
+# is disabled).  Density is per mm: 5e-7/mm = 5e-4/m → optical depth ≈ 0.005
+# over a 10 m detector — visible light shafts, no fog wall.
+_ATMOS_DENSITY_PER_MM = 5e-7
+_ATMOS_ANISOTROPY     = 0.3
+
+# Materials: AO-driven crevice grime + crystal clearcoat
+_AO_GRIME_DISTANCE_MM = 40.0  # occlusion search radius
+_AO_GRIME_STRENGTH    = 0.45  # 0..1 — how dirty the crevices get
+_GRIME_DARKEN         = 0.55  # multiplier on base colour for the grime tone
+_COAT_WEIGHT          = 0.25  # clearcoat weight on crystal / ECal materials
+_COAT_ROUGHNESS       = 0.12
+
+
 def _make_material(name: str, color_rgb: tuple, metallic: float, roughness: float):
     mat = bpy.data.materials.new(name=name)
     # Blender 5+: materials always have node_tree; use_nodes is deprecated.
@@ -156,6 +221,21 @@ def _make_material(name: str, color_rgb: tuple, metallic: float, roughness: floa
     # would muddy the matte read.
     if metallic >= 0.5:
         _decorate_metal_bsdf(mat, color_rgb, roughness)
+
+    # Crystal / glassy calorimeter materials get a thin clearcoat lacquer —
+    # the polished-PbWO4 sheen — without raising base reflectivity.
+    # Input names: "Coat Weight"/"Coat Roughness" on Blender 4.x/5.x,
+    # "Clearcoat"/"Clearcoat Roughness" on 3.x.  KeyError → try next pair.
+    if metallic < 0.5 and any(k in name.lower()
+                              for k in ("ecal", "crystal", "calo")):
+        for w_key, r_key in (("Coat Weight", "Coat Roughness"),
+                             ("Clearcoat",   "Clearcoat Roughness")):
+            try:
+                bsdf.inputs[w_key].default_value = _COAT_WEIGHT
+                bsdf.inputs[r_key].default_value = _COAT_ROUGHNESS
+                break
+            except KeyError:
+                continue
 
     return mat
 
@@ -231,6 +311,53 @@ def _decorate_metal_bsdf(mat, base_rgb: tuple, base_rough: float) -> None:
     bump.inputs["Distance"].default_value = 0.02
     links.new(micro_noise.outputs["Fac"], bump.inputs["Height"])
     links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+
+    # --- AO grime: darken + roughen the crevices ---
+    # ShaderNodeAmbientOcclusion returns ~1 in the open and ~0 in concave
+    # pockets, so (1 − AO) masks exactly where dust and machining grime
+    # collect.  Costs a few extra AO rays per shade point — negligible next
+    # to the GI budget.  Re-links Base Color / Roughness, layering on top of
+    # the edge-wear chain above (new links replace the old ones).
+    try:
+        ao = nodes.new("ShaderNodeAmbientOcclusion")
+        ao.inputs["Distance"].default_value = _AO_GRIME_DISTANCE_MM
+        for attr, val in (("samples", 8), ("only_local", True)):
+            try:
+                setattr(ao, attr, val)
+            except (AttributeError, TypeError):
+                pass
+
+        inv = nodes.new("ShaderNodeMath")
+        inv.operation = "SUBTRACT"
+        inv.inputs[0].default_value = 1.0
+        links.new(ao.outputs["AO"], inv.inputs[1])
+
+        amt = nodes.new("ShaderNodeMath")
+        amt.operation = "MULTIPLY"
+        amt.use_clamp = True
+        amt.inputs[1].default_value = _AO_GRIME_STRENGTH
+        links.new(inv.outputs["Value"], amt.inputs[0])
+
+        # Base Color: pull the crevices toward a darker grime tone.
+        grime_rgb = tuple(c * _GRIME_DARKEN for c in base_rgb)
+        grime_mix = nodes.new("ShaderNodeMixRGB")
+        grime_mix.blend_type = "MIX"
+        grime_mix.inputs["Color2"].default_value = (*grime_rgb, 1.0)
+        links.new(amt.outputs["Value"],       grime_mix.inputs["Fac"])
+        links.new(color_mix.outputs["Color"], grime_mix.inputs["Color1"])
+        links.new(grime_mix.outputs["Color"], bsdf.inputs["Base Color"])
+
+        # Roughness: grime is duller than the surrounding metal.
+        gr = min(0.95, base_rough + 0.25)
+        grime_rough = nodes.new("ShaderNodeMixRGB")
+        grime_rough.blend_type = "MIX"
+        grime_rough.inputs["Color2"].default_value = (gr, gr, gr, 1.0)
+        links.new(amt.outputs["Value"],         grime_rough.inputs["Fac"])
+        links.new(rough_mix.outputs["Color"],   grime_rough.inputs["Color1"])
+        links.new(grime_rough.outputs["Color"], bsdf.inputs["Roughness"])
+    except (RuntimeError, KeyError, AttributeError) as exc:
+        # Edge-wear links above remain intact if AO isn't available.
+        print(f"  [MAT] AO grime skipped on '{mat.name}' ({exc})", flush=True)
 
 
 def _make_brushed_metal_material(
@@ -2532,6 +2659,78 @@ def _add_volume_scatter_sphere(radius: float):
     return obj
 
 
+def _add_atmosphere_cube(half_size: float):
+    """
+    Large cube enclosing the whole scene, filled with a barely-there
+    scattering medium so the light rig produces visible shafts.  Used as
+    the volumetric fallback when the world-level scatter is disabled
+    (volume_density <= 0) — never alongside it, to avoid double fog.
+
+    Shader choice per Blender version:
+      4.x  : ShaderNodeVolumePrincipled (density + anisotropy, full model)
+      5.0+ : ShaderNodeVolumeScatter — Principled Volume on a *mesh* is the
+             documented save_as_mainfile crash on 5.0 headless builds (see
+             _add_volume_scatter_sphere), Volume Scatter has been stable.
+
+    Density _ATMOS_DENSITY_PER_MM is deliberately tiny (OD ≈ 0.005 across
+    the detector) and scene.cycles.volume_bounces stays at 2, so the render
+    cost is a few percent, not a fog simulation.
+    """
+    import bmesh as _bm
+
+    mesh = bpy.data.meshes.new("AtmosphereVolume")
+    bm   = _bm.new()
+    _bm.ops.create_cube(bm, size=half_size * 2.0)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+
+    obj = bpy.data.objects.new("AtmosphereVolume", mesh)
+    bpy.data.scenes[0].collection.objects.link(obj)
+    obj.hide_viewport = True    # never clutters editing
+    obj.hide_render   = False
+
+    mat = bpy.data.materials.new("AtmosphereVolumeMat")
+    if mat.node_tree is None:
+        mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+
+    out = nodes.new("ShaderNodeOutputMaterial")
+    out.location = (400, 0)
+
+    # Surface stays occupied by a Transparent BSDF — same stability pattern
+    # as the god-ray sphere (an empty Surface socket has caused save issues).
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    transparent.location = (0, 100)
+    links.new(transparent.outputs["BSDF"], out.inputs["Surface"])
+
+    vol = None
+    if bpy.app.version < (5, 0, 0):
+        try:
+            vol = nodes.new("ShaderNodeVolumePrincipled")
+        except Exception:
+            vol = None
+    if vol is None:
+        vol = nodes.new("ShaderNodeVolumeScatter")
+    vol.location = (0, -100)
+    try:
+        vol.inputs["Density"].default_value    = _ATMOS_DENSITY_PER_MM
+        vol.inputs["Anisotropy"].default_value = _ATMOS_ANISOTROPY
+        if "Color" in vol.inputs:
+            vol.inputs["Color"].default_value = (0.90, 0.94, 1.0, 1.0)
+    except KeyError:
+        pass
+    links.new(vol.outputs["Volume"], out.inputs["Volume"])
+
+    obj.data.materials.append(mat)
+    print(f"  [ATMOS] Atmosphere cube: half-size={half_size:.0f} mm  "
+          f"density={_ATMOS_DENSITY_PER_MM:.1e}/mm  "
+          f"anisotropy={_ATMOS_ANISOTROPY}  ({vol.bl_idname})", flush=True)
+    return obj
+
+
 def _add_god_ray_spot(
     name: str,
     phi_center_deg: float,
@@ -2861,19 +3060,52 @@ def _new_mix_rgba(cnodes, blend_type: str = "MIX"):
         return n, "Image", "Image_002" if "Image_002" in n.inputs else "Color2"
 
 
+def _glare_set(node, prop: str, prop_val, socket: str | None = None,
+               socket_val=None) -> bool:
+    """
+    Set a Glare-node parameter across the API split:
+
+      Blender 4.0-4.3 : options are RNA properties (node.threshold, node.mix)
+      Blender 4.4/5.x : options moved to input sockets ("Threshold",
+                        "Strength", "Size", ...) with different semantics
+                        (e.g. Size became a relative 0..1 factor).
+
+    Tries the property first; on AttributeError falls back to the named
+    socket using *socket_val* (or *prop_val* when no separate value is
+    given).  Returns True if either write landed.
+    """
+    try:
+        setattr(node, prop, prop_val)
+        return True
+    except (AttributeError, TypeError):
+        pass
+    if socket is not None:
+        try:
+            node.inputs[socket].default_value = (
+                socket_val if socket_val is not None else prop_val)
+            return True
+        except (KeyError, TypeError, AttributeError):
+            pass
+    return False
+
+
 def _build_compositor_graph(scene, ctree) -> None:
     """
     Build the Hollywood-grade post chain:
 
         Render Layers
-          → Glare BLOOM
-          → Glare FOG_GLOW                     (atmospheric halo)
+          → Glare FOG_GLOW                     (bloom; manual bright-pass
+                                                fallback if unavailable)
+          → Mist haze                          (atmospheric perspective)
           → [STREAKS branch from Emit pass]    (anamorphic, ADD)
-          → Lens Distortion                    (subtle CA)
-          → Color Balance                      (teal/orange grade)
+          → Lens Distortion                    (subtle barrel + CA)
+          → Color Balance                      (teal-shadow / warm-highlight)
           → Vignette (ellipse mask × blur × multiply)
-          → Film grain (noise × overlay)
+          → Film grain (noise texture × overlay)
           → Composite + Viewer
+
+    All effect strengths come from the module-level _BLOOM_* / _STREAKS_* /
+    _LENS_* / _GRADE_* / _VIGNETTE_* / _GRAIN_* constants.
 
     The graph terminates at a Composite node on every path — a
     half-wired graph is the documented save_as_mainfile crash mode on
@@ -2893,56 +3125,75 @@ def _build_compositor_graph(scene, ctree) -> None:
     rlayers.location = (-1200, 0)
 
     # --- Main image chain ---
-    # --- Manual bright-pass bloom (drama without depending on the
-    # Blender 5.0 Glare node, whose config moved to input sockets and
-    # whose default mix produces a fullframe haze).  The chain:
+    main_image = rlayers.outputs["Image"]
+
+    # --- Bloom: Glare FOG_GLOW, inline.  _glare_set lands each parameter
+    # on whichever API this Blender exposes (property on 4.0-4.3, input
+    # socket on 4.4+/5.x).  If the node can't be created at all we fall
+    # back to the manual bright-pass chain below.
+    bloom_ok = False
+    try:
+        bloom = cnodes.new("CompositorNodeGlare")
+        bloom.glare_type = "FOG_GLOW"      # property on all known versions
+        _glare_set(bloom, "quality",   "HIGH")
+        _glare_set(bloom, "threshold", _BLOOM_THRESHOLD, "Threshold")
+        _glare_set(bloom, "size",      _BLOOM_SIZE,      "Size", _BLOOM_SIZE_REL)
+        # 4.0-4.3 blend via 'mix' (-1 = original); 4.4+/5.x via 'Strength'.
+        _glare_set(bloom, "mix",       _BLOOM_MIX,       "Strength", _BLOOM_STRENGTH)
+        bloom.location = (-1000, 150)
+        clinks.new(main_image, bloom.inputs["Image"])
+        main_image = bloom.outputs["Image"]
+        bloom_ok = True
+    except (RuntimeError, KeyError, AttributeError) as exc:
+        print(f"  [RENDER] Glare FOG_GLOW unavailable ({exc}); "
+              f"using manual bloom.", flush=True)
+
+    # --- Fallback: manual bright-pass bloom.  The chain:
     #
     #   image -> RGBToBW -> Math GREATER_THAN(0.9) -> Multiply with image
-    #         -> Blur(40px) -> Mix ADD over image at fac=0.35
+    #         -> Blur(40px) -> Mix ADD over image at fac=0.5
     #
     # Only pixels above 0.9 linear (the IP accent, brightest rim-lit
     # specular hits, the god-ray spot cone) leak glow; the bulk of the
-    # detector stays sharp.  Adjustable: bump threshold lower for more
-    # glow, raise blur size for softer halos.
-    main_image = rlayers.outputs["Image"]
-
-    try:
-        lum = cnodes.new("CompositorNodeRGBToBW")
-        lum.location = (-1000, -300)
-        clinks.new(main_image, lum.inputs["Image"])
-
-        thresh = cnodes.new("CompositorNodeMath")
-        thresh.operation = "GREATER_THAN"
-        thresh.inputs[1].default_value = 0.9
-        thresh.location = (-820, -300)
-        clinks.new(lum.outputs["Val"], thresh.inputs[0])
-
-        bright, b1, b2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
-        _set(bright, "location", (-640, -200))
+    # detector stays sharp.
+    if not bloom_ok:
         try:
-            bright.inputs["Fac"].default_value = 1.0
-        except (KeyError, AttributeError):
-            pass
-        clinks.new(main_image,            bright.inputs[b1])
-        clinks.new(thresh.outputs["Value"], bright.inputs[b2])
+            lum = cnodes.new("CompositorNodeRGBToBW")
+            lum.location = (-1000, -300)
+            clinks.new(main_image, lum.inputs["Image"])
 
-        glow_blur = cnodes.new("CompositorNodeBlur")
-        _set(glow_blur, "size_x", 40)
-        _set(glow_blur, "size_y", 40)
-        glow_blur.location = (-460, -200)
-        clinks.new(bright.outputs[0], glow_blur.inputs["Image"])
+            thresh = cnodes.new("CompositorNodeMath")
+            thresh.operation = "GREATER_THAN"
+            thresh.inputs[1].default_value = 0.9
+            thresh.location = (-820, -300)
+            clinks.new(lum.outputs["Val"], thresh.inputs[0])
 
-        glow_mix, g1, g2 = _new_mix_rgba(cnodes, blend_type="ADD")
-        _set(glow_mix, "location", (-260, 0))
-        try:
-            glow_mix.inputs["Fac"].default_value = 0.5
-        except (KeyError, AttributeError):
-            pass
-        clinks.new(main_image,             glow_mix.inputs[g1])
-        clinks.new(glow_blur.outputs[0],   glow_mix.inputs[g2])
-        main_image = glow_mix.outputs[0]
-    except (RuntimeError, KeyError, AttributeError) as exc:
-        print(f"  [RENDER] Manual bloom skipped ({exc})", flush=True)
+            bright, b1, b2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
+            _set(bright, "location", (-640, -200))
+            try:
+                bright.inputs["Fac"].default_value = 1.0
+            except (KeyError, AttributeError):
+                pass
+            clinks.new(main_image,            bright.inputs[b1])
+            clinks.new(thresh.outputs["Value"], bright.inputs[b2])
+
+            glow_blur = cnodes.new("CompositorNodeBlur")
+            _set(glow_blur, "size_x", 40)
+            _set(glow_blur, "size_y", 40)
+            glow_blur.location = (-460, -200)
+            clinks.new(bright.outputs[0], glow_blur.inputs["Image"])
+
+            glow_mix, g1, g2 = _new_mix_rgba(cnodes, blend_type="ADD")
+            _set(glow_mix, "location", (-260, 0))
+            try:
+                glow_mix.inputs["Fac"].default_value = 0.5
+            except (KeyError, AttributeError):
+                pass
+            clinks.new(main_image,             glow_mix.inputs[g1])
+            clinks.new(glow_blur.outputs[0],   glow_mix.inputs[g2])
+            main_image = glow_mix.outputs[0]
+        except (RuntimeError, KeyError, AttributeError) as exc:
+            print(f"  [RENDER] Manual bloom skipped ({exc})", flush=True)
 
     # --- Atmospheric haze driven by the Mist pass.  Mixes a cool teal
     # tint into the image based on per-pixel depth — sharp foreground,
@@ -2965,78 +3216,71 @@ def _build_compositor_graph(scene, ctree) -> None:
         except (RuntimeError, KeyError, AttributeError) as exc:
             print(f"  [RENDER] Mist haze skipped ({exc})", flush=True)
 
-    # --- Optional Glare BLOOM + FOG_GLOW (default OFF on Blender 5.0+
-    # because their config moved to input sockets and the setattr path
-    # silently falls back to a 50% mix).  Re-enable behind env vars once
-    # the input-socket plumbing lands.
-    if os.environ.get("DDGEOVIZTOOLS_BLOOM", "0") != "0":
-        bloom = cnodes.new("CompositorNodeGlare")
-        _set(bloom, "glare_type", "BLOOM")
-        _set(bloom, "threshold",  5.0)
-        _set(bloom, "size",       7)
-        _set(bloom, "quality",    "HIGH")
-        _set(bloom, "mix",        -0.97)
-        bloom.location = (-900, 150)
-        clinks.new(main_image, bloom.inputs["Image"])
-        main_image = bloom.outputs["Image"]
-
-    if os.environ.get("DDGEOVIZTOOLS_FOG_GLOW", "0") != "0":
-        fog = cnodes.new("CompositorNodeGlare")
-        _set(fog, "glare_type", "FOG_GLOW")
-        _set(fog, "threshold",  4.0)
-        _set(fog, "size",       6)
-        _set(fog, "quality",    "HIGH")
-        _set(fog, "mix",        -0.98)
-        fog.location = (-650, 150)
-        clinks.new(main_image, fog.inputs["Image"])
-        main_image = fog.outputs["Image"]
-
-    # --- STREAKS branch (default OFF — Glare on Blender 5.0 produces
-    # framewide criss-cross under the old API, see BLOOM note above).
-    if (os.environ.get("DDGEOVIZTOOLS_STREAKS", "0") != "0"
+    # --- STREAKS: subtle anamorphic flare keyed off the Emission pass so
+    # only genuinely emissive sources streak (the IP accent) — speculars
+    # and bright metal stay clean.  ADD-mixed at _STREAKS_ADD_FAC so the
+    # effect reads as lens character, not a star filter.
+    # DDGEOVIZTOOLS_STREAKS=0 disables.
+    if (os.environ.get("DDGEOVIZTOOLS_STREAKS", "1") != "0"
             and "Emit" in rlayers.outputs):
-        streaks = cnodes.new("CompositorNodeGlare")
-        _set(streaks, "glare_type",   "STREAKS")
-        _set(streaks, "streaks",       4)
-        _set(streaks, "iterations",    2)
-        _set(streaks, "fade",          0.80)
-        _set(streaks, "angle_offset",  0.0)
-        _set(streaks, "size",          4)
-        _set(streaks, "threshold",     1.5)
-        _set(streaks, "quality",       "HIGH")
-        _set(streaks, "mix",           1.0)
-        streaks.location = (-650, -250)
-        clinks.new(rlayers.outputs["Emit"], streaks.inputs["Image"])
-
-        mix_streaks, a1, a2 = _new_mix_rgba(cnodes, blend_type="ADD")
-        _set(mix_streaks, "location", (-400, 0))
         try:
-            mix_streaks.inputs["Fac"].default_value = 0.08
-        except (KeyError, AttributeError):
-            pass
-        clinks.new(main_image,              mix_streaks.inputs[a1])
-        clinks.new(streaks.outputs["Image"], mix_streaks.inputs[a2])
-        main_image = mix_streaks.outputs[0]
+            streaks = cnodes.new("CompositorNodeGlare")
+            streaks.glare_type = "STREAKS"
+            _glare_set(streaks, "quality",      "HIGH")
+            _glare_set(streaks, "streaks",      _STREAKS_COUNT, "Streaks")
+            _glare_set(streaks, "iterations",   2, "Iterations")
+            _glare_set(streaks, "fade",         _STREAKS_FADE, "Fade")
+            _glare_set(streaks, "angle_offset",
+                       math.radians(_STREAKS_ANGLE_DEG), "Streaks Angle")
+            _glare_set(streaks, "threshold",    _STREAKS_THRESHOLD, "Threshold")
+            _glare_set(streaks, "mix",          1.0, "Strength", 1.0)
+            streaks.location = (-650, -250)
+            clinks.new(rlayers.outputs["Emit"], streaks.inputs["Image"])
+            # 4.4+/5.x exposes a glare-only output; on 4.0-4.3 mix=1.0 makes
+            # the Image output glare-only, so either way we ADD pure glare.
+            streak_out = (streaks.outputs["Glare"]
+                          if "Glare" in streaks.outputs
+                          else streaks.outputs["Image"])
+
+            mix_streaks, a1, a2 = _new_mix_rgba(cnodes, blend_type="ADD")
+            _set(mix_streaks, "location", (-400, 0))
+            try:
+                mix_streaks.inputs["Fac"].default_value = _STREAKS_ADD_FAC
+            except (KeyError, AttributeError):
+                pass
+            clinks.new(main_image, mix_streaks.inputs[a1])
+            clinks.new(streak_out, mix_streaks.inputs[a2])
+            main_image = mix_streaks.outputs[0]
+        except (RuntimeError, KeyError, AttributeError) as exc:
+            print(f"  [RENDER] Streaks pass skipped ({exc})", flush=True)
 
     # --- Lens distortion (subtle barrel + chromatic dispersion) ---
+    # Socket spelling differs across versions ("Distort" vs "Distortion");
+    # try both, "Dispersion" has been stable.
     lens = cnodes.new("CompositorNodeLensdist")
-    try:
-        lens.inputs["Distort"].default_value    = 0.015
-        lens.inputs["Dispersion"].default_value = 0.008
-    except (KeyError, AttributeError):
-        pass
+    for sock, val in (("Distort",    _LENS_DISTORT),
+                      ("Distortion", _LENS_DISTORT),
+                      ("Dispersion", _LENS_DISPERSION)):
+        try:
+            lens.inputs[sock].default_value = val
+        except (KeyError, AttributeError, TypeError):
+            pass
     lens.location = (-150, 0)
     clinks.new(main_image, lens.inputs["Image"])
 
-    # --- Color Balance: teal shadows / orange highlights ---
+    # --- Color Balance: teal shadows / warm highlights (final grade) ---
     grade = cnodes.new("CompositorNodeColorBalance")
     _set(grade, "correction_method", "LIFT_GAMMA_GAIN")
-    try:
-        grade.lift  = (0.95, 1.00, 1.07, 1.0)   # teal lift in the shadows
-        grade.gamma = (1.00, 1.00, 1.00, 1.0)
-        grade.gain  = (1.05, 1.00, 0.94, 1.0)   # warm gain on highlights
-    except (AttributeError, TypeError):
-        pass
+    for attr, rgb in (("lift",  _GRADE_LIFT),
+                      ("gamma", _GRADE_GAMMA),
+                      ("gain",  _GRADE_GAIN)):
+        # Property is a 3-float color on most builds; some accept RGBA.
+        for val in (rgb, (*rgb, 1.0)):
+            try:
+                setattr(grade, attr, val)
+                break
+            except (AttributeError, TypeError, ValueError):
+                continue
     grade.location = (100, 0)
     clinks.new(lens.outputs["Image"], grade.inputs["Image"])
 
@@ -3046,20 +3290,20 @@ def _build_compositor_graph(scene, ctree) -> None:
         mask = cnodes.new("CompositorNodeEllipseMask")
         _set(mask, "x",        0.5)
         _set(mask, "y",        0.5)
-        _set(mask, "width",    1.05)
-        _set(mask, "height",   1.05)
+        _set(mask, "width",    _VIGNETTE_SIZE)
+        _set(mask, "height",   _VIGNETTE_SIZE)
         mask.location = (100, -300)
 
         blur = cnodes.new("CompositorNodeBlur")
-        _set(blur, "size_x", 80)
-        _set(blur, "size_y", 80)
+        _set(blur, "size_x", _VIGNETTE_BLUR_PX)
+        _set(blur, "size_y", _VIGNETTE_BLUR_PX)
         blur.location = (300, -300)
         clinks.new(mask.outputs["Mask"], blur.inputs["Image"])
 
         mix_vig, v1, v2 = _new_mix_rgba(cnodes, blend_type="MULTIPLY")
         _set(mix_vig, "location", (500, -100))
         try:
-            mix_vig.inputs["Fac"].default_value = 0.7
+            mix_vig.inputs["Fac"].default_value = _VIGNETTE_AMOUNT
         except (KeyError, AttributeError):
             pass
         clinks.new(grade.outputs["Image"], mix_vig.inputs[v1])
@@ -3068,21 +3312,37 @@ def _build_compositor_graph(scene, ctree) -> None:
     except (RuntimeError, KeyError):
         pass
 
-    # --- Film grain: noise texture × overlay ---
+    # --- Film grain: procedural Clouds texture, OVERLAY at low opacity ---
+    # OVERLAY around the texture's ~0.5 mean is near-neutral, so at
+    # _GRAIN_FAC the grain reads as photochemical texture rather than
+    # noise.  CompositorNodeTexture is gone from the Blender 5 compositor;
+    # the whole block degrades to a clean no-op there.
     after_grain = after_vignette
     try:
-        # Use a Color → Noise shader pattern via a small node-group fallback
-        # path: a procedural Noise compositor texture isn't available, so
-        # we emulate grain with a Noise via Image input.  If unavailable,
-        # silently skip — the image still terminates at Composite.
-        grain = cnodes.new("CompositorNodeImage")
-        grain.location = (500, -500)
-        # No image datablock — Cycles will treat this as a transparent
-        # placeholder.  We approximate grain via a low-frequency Math/Mix
-        # path below; if anything fails, after_grain stays at after_vignette.
-        cnodes.remove(grain)
-    except Exception:
-        pass
+        noise_tex = bpy.data.textures.get("FilmGrainNoise")
+        if noise_tex is None:
+            noise_tex = bpy.data.textures.new("FilmGrainNoise", type="CLOUDS")
+            try:
+                noise_tex.noise_scale = _GRAIN_NOISE_SIZE
+                noise_tex.noise_depth = 0      # single octave = clean grain
+            except (AttributeError, TypeError):
+                pass
+
+        grain = cnodes.new("CompositorNodeTexture")
+        grain.texture = noise_tex
+        grain.location = (500, -400)
+
+        grain_mix, gr1, gr2 = _new_mix_rgba(cnodes, blend_type="OVERLAY")
+        _set(grain_mix, "location", (700, -100))
+        try:
+            grain_mix.inputs["Fac"].default_value = _GRAIN_FAC
+        except (KeyError, AttributeError):
+            pass
+        clinks.new(after_vignette.outputs[0], grain_mix.inputs[gr1])
+        clinks.new(grain.outputs["Value"],    grain_mix.inputs[gr2])
+        after_grain = grain_mix
+    except Exception as exc:
+        print(f"  [RENDER] Film grain skipped ({exc})", flush=True)
 
     # --- Terminal output node (Composite on 4.x, NodeGroupOutput on 5.0+) ---
     _add_compositor_output(ctree, after_grain.outputs[0])
@@ -3147,21 +3407,39 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
     except (AttributeError, TypeError) as exc:
         print(f"  [RENDER] FFMPEG output setup failed: {exc}", flush=True)
 
-    # Motion blur — on by default.  The hero camera animation depends on
-    # this for the cinematic streak.  Cycles uses a 0.5 frame shutter
-    # (≈ 180° equivalent) which matches typical film camera behaviour.
+    # Motion blur — enabled only when something is actually animated (the
+    # hero camera inserts its keyframes before this runs).  A static still
+    # gains nothing from motion blur but pays for the extra time samples.
+    # Cycles uses a 0.5 frame shutter (≈ 180° equivalent) which matches
+    # typical film camera behaviour.
+    _has_anim = False
     try:
-        scene.render.use_motion_blur     = True
-        scene.render.motion_blur_shutter = 0.5
-        for attr_name, val in (("motion_blur_position", "CENTER"),
-                               ("rolling_shutter_type", "NONE")):
-            try:
-                setattr(scene.cycles, attr_name, val)
-            except (AttributeError, TypeError):
-                pass
-        print("  [RENDER] Motion blur: ON (shutter=0.5, centred)", flush=True)
-    except Exception as exc:
-        print(f"  [RENDER] Motion blur setup failed: {exc}", flush=True)
+        for _act in bpy.data.actions:
+            if any(True for _ in _iter_action_fcurves(_act)):
+                _has_anim = True
+                break
+    except Exception:
+        _has_anim = True   # can't tell — keep the previous always-on default
+    if _has_anim:
+        try:
+            scene.render.use_motion_blur     = True
+            scene.render.motion_blur_shutter = 0.5
+            for attr_name, val in (("motion_blur_position", "CENTER"),
+                                   ("rolling_shutter_type", "NONE")):
+                try:
+                    setattr(scene.cycles, attr_name, val)
+                except (AttributeError, TypeError):
+                    pass
+            print("  [RENDER] Motion blur: ON (shutter=0.5, centred)", flush=True)
+        except Exception as exc:
+            print(f"  [RENDER] Motion blur setup failed: {exc}", flush=True)
+    else:
+        try:
+            scene.render.use_motion_blur = False
+        except Exception:
+            pass
+        print("  [RENDER] Motion blur: OFF (no animation keyframes found)",
+              flush=True)
 
     # Tile size — 2160 px.  Cycles uses tiled rendering only when GPU
     # memory is tight; at 2160 the entire 4 K frame is essentially a
@@ -3228,6 +3506,16 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
                       ("diffuse_bounces", 4),
                       ("glossy_bounces", 4),
                       ("transmission_bounces", 12)):
+        try:
+            setattr(scene.cycles, attr, val)
+        except (AttributeError, TypeError):
+            pass
+
+    # Firefly suppression — clamp indirect samples only; direct stays
+    # unclamped (0 = off) so the IP emissive and hot speculars keep their
+    # full HDR punch for the bloom/streaks passes.
+    for attr, val in (("sample_clamp_indirect", _CLAMP_INDIRECT),
+                      ("sample_clamp_direct",   0.0)):
         try:
             setattr(scene.cycles, attr, val)
         except (AttributeError, TypeError):
@@ -3353,14 +3641,17 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
     except Exception:
         pass
 
-    # Look: None.  The reference scene uses AgX with no contrast look
-    # applied — the contrast comes from the lighting ratio + film_exposure.
-    # Adding "Medium High Contrast" on top was crushing midtones.
-    try:
-        scene.view_settings.look = "None"
-        print("  [RENDER] Look: None (AgX baseline)", flush=True)
-    except (TypeError, Exception):
-        pass
+    # Look: High Contrast on top of AgX (names differ per view transform —
+    # "AgX - High Contrast" under AgX, plain "High Contrast" under Filmic).
+    # An invalid name raises TypeError, so we walk the candidates and fall
+    # back to "None" (the previous AgX-baseline behaviour) if none exists.
+    for look in (*_VIEW_LOOK_CANDIDATES, "None"):
+        try:
+            scene.view_settings.look = look
+            print(f"  [RENDER] Look: {look}", flush=True)
+            break
+        except (TypeError, Exception):
+            continue
 
     # Freestyle — draw edge lines on every visible mesh edge so that
     # adjacent coplanar faces remain distinguishable and the cutaway
@@ -3403,14 +3694,14 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
         print("  [INFO] Freestyle skipped (Blender 5.0+ removed linestyle support).",
               flush=True)
 
-    # --- Compositor: OFF by default.  Inspection of the reference scene
-    #     showed its compositor is empty (just RLayers → output); all the
-    #     visual richness comes from Cycles + AgX + film_exposure, not
-    #     from post-processing.  Our previous bloom/glare/grade chain
-    #     was actually competing with AgX and producing washed-out
-    #     midtones.  Re-enable for diagnostics or experimentation via
-    #     DDGEOVIZTOOLS_COMPOSITOR=1.
-    if os.environ.get("DDGEOVIZTOOLS_COMPOSITOR", "0") != "0":
+    # --- Compositor: subtle post chain ON by default (FOG_GLOW bloom,
+    #     emission streaks, lens distortion + CA, teal/orange grade,
+    #     vignette, film grain).  Every effect is parameterised by the
+    #     module-level constants near the top of the file and tuned to be
+    #     gentle enough not to fight AgX (the previous, much heavier chain
+    #     did, which is why it was once disabled).  Set
+    #     DDGEOVIZTOOLS_COMPOSITOR=0 for a clean pass-through graph.
+    if os.environ.get("DDGEOVIZTOOLS_COMPOSITOR", "1") != "0":
         ctree = _get_compositor_tree(scene)
         if ctree is None:
             print("  [WARN] Could not access compositor node tree; skipping.",
@@ -3418,8 +3709,8 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
             return
         try:
             _build_compositor_graph(scene, ctree)
-            print("  [RENDER] Compositor: post chain built (env var enabled)",
-                  flush=True)
+            print("  [RENDER] Compositor: Hollywood post chain built "
+                  "(DDGEOVIZTOOLS_COMPOSITOR=0 to disable)", flush=True)
         except Exception as exc:
             print(f"  [RENDER] Post chain build failed ({exc}); minimal graph.",
                   flush=True)
@@ -3438,7 +3729,7 @@ def _setup_render_and_compositor(scene, r: float = 1000.0):
                 rl.location = (-200, 0)
                 _add_compositor_output(ctree, rl.outputs["Image"])
                 print("  [RENDER] Compositor: pass-through "
-                      "(DDGEOVIZTOOLS_COMPOSITOR=1 to add post chain)",
+                      "(post chain disabled via env var)",
                       flush=True)
             except Exception as exc:
                 print(f"  [RENDER] Pass-through compositor failed ({exc})",
@@ -3506,7 +3797,10 @@ def _make_camera(name: str, location: tuple, target: tuple,
         # prime" look.
         cam_data.dof.aperture_blades  = aperture_blades
         cam_data.dof.aperture_rotation = 0.0
-        cam_data.dof.aperture_ratio   = 1.0
+        # Slight anamorphic squeeze on perspective lenses → oval bokeh.
+        # Orthographic technical views stay circular (ratio 1.0).
+        cam_data.dof.aperture_ratio   = (1.0 if ortho
+                                         else _CAM_ANAMORPHIC_RATIO)
         print(f"  [CAMERA] {name}: DOF f/{dof_fstop:.1f}  "
               f"focus_distance={focus_distance:.1f} mm", flush=True)
     except (AttributeError, TypeError) as exc:
@@ -3595,7 +3889,7 @@ def _make_hero_camera(centre, r,
     cam_data.dof.use_dof = True
     cam_data.dof.aperture_fstop  = dof_fstop
     cam_data.dof.aperture_blades = 6     # subtle hex bokeh
-    cam_data.dof.aperture_ratio  = 1.0
+    cam_data.dof.aperture_ratio  = _CAM_ANAMORPHIC_RATIO  # anamorphic oval
 
     cam_obj = bpy.data.objects.new("Cam_Hero", cam_data)
     bpy.data.scenes[0].collection.objects.link(cam_obj)
@@ -3982,6 +4276,18 @@ def create_blender_scene(
         env_sphere = _add_environment_sphere(r * 3.6)
         _link_to_collection(env_sphere, col_lights)
 
+    # ---- Atmosphere cube (volumetric fallback) ----
+    # The primary scattering medium is the world-level Volume Scatter set up
+    # in _setup_world; only when that is disabled (volume_density <= 0) do
+    # we drop in the mesh-based atmosphere cube so the rig still gets its
+    # light shafts.  Never both — that would double the fog density.
+    if volume_density <= 0.0:
+        try:
+            atmos_cube = _add_atmosphere_cube(r * 3.0)
+            _link_to_collection(atmos_cube, col_lights)
+        except Exception as exc:
+            print(f"  [ATMOS] Atmosphere cube skipped ({exc})", flush=True)
+
     # ---- Cameras ----
     # All three cameras target the geometric CENTRE of the detector AABB
     # (not the world origin), so they frame the detector correctly even
@@ -4190,6 +4496,27 @@ def create_blender_scene(
         temp_kelvin=WARM_KELVIN,
     )
 
+    # Cyan counter-fill — the one cool source in the otherwise all-warm rig
+    # (the gap in the existing five-light setup).  Very low energy: it tints
+    # shadow-side metal toward the teal of the world gradient without
+    # competing with the amber key.  Fixed RGB (cyan is not a blackbody
+    # colour), normalize off like every other light in the rig.
+    cyan_data        = bpy.data.lights.new("Light_Fill_Cyan", type="AREA")
+    cyan_data.energy = _CYAN_FILL_W_PER_M2
+    cyan_data.size   = r * 0.75
+    cyan_data.shape  = "SQUARE"
+    cyan_data.color  = _CYAN_FILL_RGB
+    _disable_light_normalize(cyan_data, "Light_Fill_Cyan")
+    cyan_obj = bpy.data.objects.new("Light_Fill_Cyan", cyan_data)
+    bpy.data.scenes[0].collection.objects.link(cyan_obj)
+    cyan_obj.location = Vector((centre[0] + r * 0.15,
+                                centre[1] + r * 0.25,
+                                centre[2] - r * 1.25))
+    _cyan_dir = (Vector(centre) - cyan_obj.location).normalized()
+    cyan_obj.rotation_euler = _cyan_dir.to_track_quat("-Z", "Y").to_euler()
+    print(f"  [LIGHT] Light_Fill_Cyan  {_CYAN_FILL_W_PER_M2:.0f} W/m²  "
+          f"rgb{_CYAN_FILL_RGB}  (cool counter-fill)", flush=True)
+
     # Interior fill — point light placed inside the phi-cut opening so it
     # illuminates inward-facing surfaces the exterior area lights can't reach.
     _phi_fill_rad = math.radians((phi_min + phi_max) / 2.0) if not no_phi_cut \
@@ -4248,7 +4575,7 @@ def create_blender_scene(
                               math.radians(35.0))
 
     # Move all lights into the Lights collection
-    for light_obj in (key_obj, fill_obj, rim_obj, kicker_obj,
+    for light_obj in (key_obj, fill_obj, rim_obj, kicker_obj, cyan_obj,
                       interior_obj, ip_obj, sun_obj):
         if light_obj is not None:
             _link_to_collection(light_obj, col_lights)
