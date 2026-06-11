@@ -69,8 +69,9 @@ open /Applications/ColliderVis.app
   switch so you can view the bare detector.
 - **Stage**: the detector floats in a smooth, softly lit dome over an
   "infinite" glass floor at the beam plane (y = 0) — in third-person mode
-  you walk right up to the interaction point. Events emerge from the IP
-  with a quick, subtle grow-in animation.
+  you walk right up to the interaction point. Events propagate from the IP: trajectories draw on along their
+  path length at fixed speed, and calorimeter hits light up when that
+  front reaches them.
 - On macOS the app runs on **native Metal** (Godot's default on Apple
   Silicon since 4.4) — check the GPU/driver line in Settings to confirm.
 

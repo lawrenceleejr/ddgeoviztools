@@ -83,6 +83,9 @@ func _ready() -> void:
 	if not event_files.is_empty() and not _args.has("no-event"):
 		_show_event(0)
 	_spawn_cameras()
+	# Default render scale: low-ish — a big frame-rate win that the TAA
+	# upscale hides well; raise it in Settings on fast GPUs.
+	set_render_scale(0.6)
 	match String(_args.get("mode", "orbit")):
 		"fly":
 			cycle_camera_mode()
@@ -124,9 +127,11 @@ func _parse_user_args() -> Dictionary:
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _setup_shader_globals() -> void:
-	# Phi-cutaway parameters shared by every detector material.
+	# Phi-cutaway parameters shared by every detector material, plus the
+	# event propagation-reveal front (huge = everything visible).
 	for params in [["cv_phi_min", phi_min], ["cv_phi_max", phi_max],
-			["cv_cutaway_enabled", 1.0 if cutaway_enabled else 0.0]]:
+			["cv_cutaway_enabled", 1.0 if cutaway_enabled else 0.0],
+			["cv_event_reveal", 1e9]]:
 		RenderingServer.global_shader_parameter_add(
 			params[0], RenderingServer.GLOBAL_VAR_TYPE_FLOAT, params[1])
 

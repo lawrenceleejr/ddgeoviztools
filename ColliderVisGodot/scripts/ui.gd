@@ -33,8 +33,8 @@ const HEADER_SIZE := 19
 
 ## Post-FX defaults (restored when an effect checkbox is re-enabled).
 const FX_DEFAULTS := {
-	"flare_strength": 0.10,
-	"motion_blur_scale": 0.7,
+	"flare_strength": 0.03,
+	"motion_blur_scale": 0.2,
 	"ca_strength": 0.45,
 	"grain_amount": 0.008,
 	"vignette_intensity": 0.28,
@@ -299,7 +299,7 @@ func _build_menu() -> void:
 	q_row.add_child(q_opt)
 	s.add_child(q_row)
 
-	_labeled_slider(s, "Render scale", 0.5, 1.0, 0.05, 1.0,
+	_labeled_slider(s, "Render scale", 0.5, 1.0, 0.05, 0.6,
 		func(v: float): main.set_render_scale(v))
 	_labeled_slider(s, "Light brightness", 0.4, 1.6, 0.05, main.light_scale,
 		func(v: float): main.set_light_scale(v))

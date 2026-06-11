@@ -23,6 +23,13 @@ const CALO_CUBE_M := 0.06
 const CALO_COLD := Color(0.0, 0.1, 0.5)
 const CALO_HOT := Color(1.5, 1.2, 0.8)
 
+## Propagation speed of the reveal front (metres of detector per second of
+## display time): the whole ~4 m event plays out in about half a second.
+const REVEAL_SPEED := 9.0
+
+var _reveal := 1e9          # current front distance (m); huge = fully shown
+var _max_extent := 0.0      # furthest arc length / hit distance in the event
+
 const PDG_NAMES := {
 	11: "e-", -11: "e+", 13: "mu-", -13: "mu+", 15: "tau-", -15: "tau+",
 	22: "gamma", 111: "pi0", 211: "pi+", -211: "pi-", 130: "K0L",
@@ -62,13 +69,26 @@ func load_event(path: String) -> bool:
 	return true
 
 
-## Quick, subtle "emergence" animation: the whole event grows out of the
-## interaction point, as if the collision just happened.
-func play_emergence(duration := 0.45) -> void:
-	scale = Vector3.ONE * 0.02
-	var tw := create_tween()
-	tw.tween_property(self, "scale", Vector3.ONE, duration) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+## Propagation animation: every trajectory draws on from the origin along
+## its path length at a fixed speed, and each calorimeter hit appears only
+## when that fixed-speed front (straight-line from the IP) reaches it.
+## Driven through the cv_event_reveal global shader parameter.
+func play_emergence() -> void:
+	_reveal = 0.0
+	RenderingServer.global_shader_parameter_set("cv_event_reveal", 0.0)
+	set_process(true)
+
+
+func _ready() -> void:
+	set_process(false)
+
+
+func _process(delta: float) -> void:
+	_reveal += REVEAL_SPEED * delta
+	RenderingServer.global_shader_parameter_set("cv_event_reveal", _reveal)
+	if _reveal > _max_extent + 0.5:
+		RenderingServer.global_shader_parameter_set("cv_event_reveal", 1e9)
+		set_process(false)
 
 
 # ── Tracks ────────────────────────────────────────────────────────────────────
@@ -97,14 +117,12 @@ func _build_tracks(tracks: Variant) -> int:
 			continue
 		var mi := MeshInstance3D.new()
 		mi.mesh = mesh
-		var mat := StandardMaterial3D.new()
-		mat.albedo_color = Color(color, 1.0).darkened(0.85)
-		mat.metallic = 0.0
-		mat.roughness = 0.4
-		mat.emission_enabled = true
-		mat.emission = color
+		var mat := ShaderMaterial.new()
+		mat.shader = load("res://shaders/track.gdshader")
+		mat.set_shader_parameter("albedo", Color(color, 1.0).darkened(0.85))
+		mat.set_shader_parameter("emission_color", color)
 		# Momentum-scaled glow (UE: EmissiveIntensity = p * scale, clamped).
-		mat.emission_energy_multiplier = clampf(momentum * 0.6, 1.2, 10.0)
+		mat.set_shader_parameter("emission_energy", clampf(momentum * 0.6, 1.2, 10.0))
 		mi.material_override = mat
 		# DYNAMIC: events change — they must never bake into the VoxelGI field.
 		mi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
@@ -124,11 +142,16 @@ func _to_points(raw: Variant) -> PackedVector3Array:
 
 
 ## Sweeps a circle along a polyline using parallel-transport frames.
+## UV.x of every vertex carries its arc length from the first point, which
+## the track shader uses for the constant-speed propagation reveal.
 func _tube_mesh(pts: PackedVector3Array, radius: float) -> ArrayMesh:
 	var n := pts.size()
-	# Tangents per point.
+	# Tangents and cumulative arc lengths per point.
 	var tangents := PackedVector3Array()
 	tangents.resize(n)
+	var arc := PackedFloat32Array()
+	arc.resize(n)
+	arc[0] = 0.0
 	for i in n:
 		var t: Vector3
 		if i == 0:
@@ -138,6 +161,9 @@ func _tube_mesh(pts: PackedVector3Array, radius: float) -> ArrayMesh:
 		else:
 			t = pts[i + 1] - pts[i - 1]
 		tangents[i] = t.normalized() if t.length() > 1e-9 else Vector3.FORWARD
+		if i > 0:
+			arc[i] = arc[i - 1] + pts[i].distance_to(pts[i - 1])
+	_max_extent = maxf(_max_extent, arc[n - 1])
 	# Initial frame.
 	var normal := tangents[0].cross(Vector3.UP)
 	if normal.length() < 1e-4:
@@ -159,7 +185,7 @@ func _tube_mesh(pts: PackedVector3Array, radius: float) -> ArrayMesh:
 		for j in TUBE_SIDES:
 			var a := TAU * float(j) / float(TUBE_SIDES)
 			var dir := (normal * cos(a) + binormal * sin(a)).normalized()
-			ring.append([pts[i] + dir * radius, dir])
+			ring.append([pts[i] + dir * radius, dir, arc[i]])
 		rings.append(ring)
 	for i in n - 1:
 		for j in TUBE_SIDES:
@@ -176,23 +202,25 @@ func _tube_mesh(pts: PackedVector3Array, radius: float) -> ArrayMesh:
 		var sgn: float = cap[1]
 		var center := pts[idx]
 		var cn := tangents[idx] * sgn
+		var cuv := Vector2(arc[idx], 0)
 		for j in TUBE_SIDES:
 			var j2 := (j + 1) % TUBE_SIDES
 			st.set_normal(cn)
+			st.set_uv(cuv)
 			st.add_vertex(center)
 			if sgn > 0.0:
-				st.set_normal(cn); st.add_vertex(rings[idx][j][0])
-				st.set_normal(cn); st.add_vertex(rings[idx][j2][0])
+				st.set_normal(cn); st.set_uv(cuv); st.add_vertex(rings[idx][j][0])
+				st.set_normal(cn); st.set_uv(cuv); st.add_vertex(rings[idx][j2][0])
 			else:
-				st.set_normal(cn); st.add_vertex(rings[idx][j2][0])
-				st.set_normal(cn); st.add_vertex(rings[idx][j][0])
+				st.set_normal(cn); st.set_uv(cuv); st.add_vertex(rings[idx][j2][0])
+				st.set_normal(cn); st.set_uv(cuv); st.add_vertex(rings[idx][j][0])
 	return st.commit()
 
 
 func _emit_tri(st: SurfaceTool, a: Array, b: Array, c: Array) -> void:
-	st.set_normal(a[1]); st.add_vertex(a[0])
-	st.set_normal(b[1]); st.add_vertex(b[0])
-	st.set_normal(c[1]); st.add_vertex(c[0])
+	st.set_normal(a[1]); st.set_uv(Vector2(a[2], 0)); st.add_vertex(a[0])
+	st.set_normal(b[1]); st.set_uv(Vector2(b[2], 0)); st.add_vertex(b[0])
+	st.set_normal(c[1]); st.set_uv(Vector2(c[2], 0)); st.add_vertex(c[0])
 
 
 # ── Calorimeter hits ─────────────────────────────────────────────────────────
@@ -220,6 +248,7 @@ func _build_calo_hits(hits: Variant) -> int:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
+	mm.use_custom_data = true
 	var cube := BoxMesh.new()
 	cube.size = Vector3.ONE * CALO_CUBE_M
 	mm.mesh = cube
@@ -233,6 +262,11 @@ func _build_calo_hits(hits: Variant) -> int:
 		mm.set_instance_transform(i, xf)
 		# Alpha channel carries the normalised energy for the shader.
 		mm.set_instance_color(i, Color(col.r, col.g, col.b, t))
+		# CUSTOM.r: straight-line distance from the IP — the hit appears
+		# when the fixed-speed reveal front reaches it.
+		var d := positions[i].length()
+		mm.set_instance_custom_data(i, Color(d, 0, 0, 0))
+		_max_extent = maxf(_max_extent, d)
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	var mat := ShaderMaterial.new()
@@ -269,20 +303,21 @@ func _build_mc_particles(parts: Variant) -> int:
 		var b := Vector3(float(e[0]), float(e[1]), float(e[2])) * MM_TO_M
 		if a.distance_to(b) < 1e-4:
 			continue
+		# UV.x = distance from the IP, for the propagation reveal.
+		st.set_uv(Vector2(a.length(), 0))
 		st.add_vertex(a)
+		st.set_uv(Vector2(b.length(), 0))
 		st.add_vertex(b)
+		_max_extent = maxf(_max_extent, b.length())
 		count += 1
 	if count == 0:
 		return 0
 	var mi := MeshInstance3D.new()
 	mi.mesh = st.commit()
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = Color(MC_COLOR, 0.55)
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.emission_enabled = true
-	mat.emission = MC_COLOR
-	mat.emission_energy_multiplier = 1.4
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://shaders/mc_line.gdshader")
+	mat.set_shader_parameter("line_color", Color(MC_COLOR, 0.55))
+	mat.set_shader_parameter("emission_energy", 1.4)
 	mi.material_override = mat
 	add_child(mi)
 	return count
