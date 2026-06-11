@@ -103,6 +103,21 @@ func _unhandled_input(event: InputEvent) -> void:
 				_idle_time = 0.0
 		return
 
+	# macOS trackpads / Magic Mouse deliver vertical scroll as pan gestures
+	# (and pinch as magnify), not wheel clicks — support all of them.
+	if event is InputEventPanGesture and not fly_mode:
+		var pg := event as InputEventPanGesture
+		distance = clampf(distance * (1.0 + pg.delta.y * 0.05),
+			MIN_DISTANCE, MAX_DISTANCE)
+		_idle_time = 0.0
+		return
+	if event is InputEventMagnifyGesture and not fly_mode:
+		var mg := event as InputEventMagnifyGesture
+		distance = clampf(distance / maxf(mg.factor, 0.01),
+			MIN_DISTANCE, MAX_DISTANCE)
+		_idle_time = 0.0
+		return
+
 	if event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
 		if fly_mode:

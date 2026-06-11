@@ -16,7 +16,7 @@ const NEGATIVE_TRACK_COLOR := Color(0.1, 0.7, 1.0)   # cyan-blue
 const NEUTRAL_TRACK_COLOR := Color(1.0, 1.0, 1.0)
 const MC_COLOR := Color(0.45, 0.45, 0.95)
 
-const TRACK_RADIUS_M := 0.008
+const TRACK_RADIUS_M := 0.004
 const TUBE_SIDES := 8
 const CALO_CUBE_M := 0.06
 
