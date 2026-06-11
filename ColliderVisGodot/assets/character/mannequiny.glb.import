@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://bc75ibpl3avru"
-path="res://.godot/imported/Knight.glb-a79902c7124d4be03019b312ffe0b847.scn"
+uid="uid://bw3nm37p0qimo"
+path="res://.godot/imported/mannequiny.glb-81fcadf107a9e1f774ef5d0ee0de9d82.scn"
 
 [deps]
 
-source_file="res://assets/character/Knight.glb"
-dest_files=["res://.godot/imported/Knight.glb-a79902c7124d4be03019b312ffe0b847.scn"]
+source_file="res://assets/character/mannequiny.glb"
+dest_files=["res://.godot/imported/mannequiny.glb-81fcadf107a9e1f774ef5d0ee0de9d82.scn"]
 
 [params]
 

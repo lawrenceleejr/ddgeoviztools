@@ -97,7 +97,8 @@ func _build_tracks(tracks: Variant) -> int:
 		# Momentum-scaled glow (UE: EmissiveIntensity = p * scale, clamped).
 		mat.emission_energy_multiplier = clampf(momentum * 0.6, 1.2, 10.0)
 		mi.material_override = mat
-		mi.gi_mode = GeometryInstance3D.GI_MODE_STATIC
+		# DYNAMIC: events change — they must never bake into the VoxelGI field.
+		mi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
 		add_child(mi)
 		count += 1
 	return count

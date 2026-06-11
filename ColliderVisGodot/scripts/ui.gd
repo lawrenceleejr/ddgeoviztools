@@ -13,6 +13,7 @@ var main: Node3D = null          # main.gd
 var status: Label
 var menu_root: Control
 var file_dialog: FileDialog
+var detector_dialog: FileDialog
 var error_dialog: AcceptDialog
 var event_info: RichTextLabel
 var event_spin: SpinBox
@@ -161,6 +162,8 @@ func _build_menu() -> void:
 
 	# ── Detector ──
 	var det := _section(col, "DETECTOR")
+	det.add_child(_button("Load detector folder…  (.gltf per sub-detector)",
+		_on_open_detector))
 	var det_row := HBoxContainer.new()
 	det_row.add_theme_constant_override("separation", 6)
 	det_row.add_child(_button("Show all", func(): main.set_all_groups(true)))
@@ -207,6 +210,22 @@ func _build_menu() -> void:
 		+ "C cutaway · [ ] opening · H HUD · Esc menu")
 	help.add_child(h)
 
+	# ── Credits ──
+	var cred := _section(col, "CREDITS")
+	var c := RichTextLabel.new()
+	c.bbcode_enabled = true
+	c.fit_content = true
+	c.add_theme_font_size_override("normal_font_size", 11)
+	c.text = ("Character: [url=https://github.com/gdquest-demos/godot-3d-mannequin]"
+		+ "\"Mannequiny\"[/url] by [url=https://www.gdquest.com/]GDQuest and "
+		+ "contributors[/url] — licensed [url=https://creativecommons.org/"
+		+ "licenses/by/4.0/]CC-BY 4.0[/url]\n"
+		+ "Built with [url=https://godotengine.org]Godot Engine[/url]\n"
+		+ "Geometry pipeline: ddgeoviztools (DD4hep/ddsim → glTF)\n"
+		+ "Event model: EDM4HEP / key4hep")
+	c.meta_clicked.connect(func(meta): OS.shell_open(str(meta)))
+	cred.add_child(c)
+
 
 # ── dialogs ──────────────────────────────────────────────────────────────────
 
@@ -221,6 +240,14 @@ func _build_dialogs() -> void:
 	file_dialog.file_selected.connect(_on_file_selected)
 	add_child(file_dialog)
 
+	detector_dialog = FileDialog.new()
+	detector_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	detector_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	detector_dialog.title = "Pick a folder of sub-detector .gltf files"
+	detector_dialog.size = Vector2(900, 600)
+	detector_dialog.dir_selected.connect(func(dir: String): main.load_detector_dir(dir))
+	add_child(detector_dialog)
+
 	error_dialog = AcceptDialog.new()
 	error_dialog.title = "ColliderVis"
 	add_child(error_dialog)
@@ -228,6 +255,18 @@ func _build_dialogs() -> void:
 
 func _on_open_file() -> void:
 	file_dialog.popup_centered()
+
+
+func _on_open_detector() -> void:
+	detector_dialog.popup_centered()
+
+
+## Called when the detector group set changes (new geometry loaded).
+func reset_detector_list() -> void:
+	for child in det_box.get_children():
+		child.queue_free()
+	det_checks.clear()
+	refresh()
 
 
 func _on_file_selected(path: String) -> void:

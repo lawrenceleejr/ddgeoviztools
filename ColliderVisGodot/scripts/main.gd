@@ -51,6 +51,8 @@ var orbit_camera: Camera3D = null
 var character: CharacterBody3D = null
 var ui: CanvasLayer = null
 var post_fx_mat: ShaderMaterial = null
+var environment: Environment = null
+var voxel_gi: VoxelGI = null
 var cam_mode: CamMode = CamMode.ORBIT
 var cutaway_enabled := true
 var phi_min := 0.0
@@ -67,6 +69,7 @@ func _ready() -> void:
 	_build_hall()
 	_build_light_rig()
 	_load_geometry(String(_args.get("geometry", DEFAULT_GEOMETRY_DIR)))
+	_setup_baked_gi()
 	for g in String(_args.get("hide", "")).split(",", false):
 		if detector_groups.has(g):
 			for node in detector_groups[g]:
@@ -195,6 +198,50 @@ func _build_environment() -> void:
 	we.name = "WorldEnvironment"
 	we.environment = env
 	add_child(we)
+	environment = env
+
+
+## Bake high-quality GI for the (static) detector + hall. VoxelGI gives
+## markedly better indirect light and rough reflections than SDFGI for a
+## bounded scene like ours; the voxel field is baked once at startup (and
+## re-baked when new geometry is loaded), which is fine because the
+## detector doesn't move. `--gi=sdfgi` skips the bake and keeps SDFGI;
+## if the bake fails for any reason SDFGI stays on as the fallback.
+func _setup_baked_gi() -> void:
+	if String(_args.get("gi", "voxel")) != "voxel":
+		return
+	voxel_gi = VoxelGI.new()
+	voxel_gi.name = "VoxelGI"
+	# Cover the hall with some headroom; subdiv 256 -> ~16 cm voxels.
+	voxel_gi.size = Vector3(HALL_HALF_X * 2.0 + 2.0,
+		HALL_CEIL_Y - HALL_FLOOR_Y + 2.0, HALL_HALF_Z * 2.0 + 2.0)
+	voxel_gi.position = Vector3(0, (HALL_FLOOR_Y + HALL_CEIL_Y) / 2.0, 0)
+	voxel_gi.subdiv = VoxelGI.SUBDIV_256
+	add_child(voxel_gi)
+	_rebake_gi()
+
+	# Sharp specular reflections on the polished metal, refreshed once.
+	var probe := ReflectionProbe.new()
+	probe.name = "HallReflectionProbe"
+	probe.update_mode = ReflectionProbe.UPDATE_ONCE
+	probe.size = voxel_gi.size
+	probe.position = voxel_gi.position
+	probe.box_projection = true
+	probe.intensity = 0.8
+	add_child(probe)
+
+
+func _rebake_gi() -> void:
+	if voxel_gi == null:
+		return
+	var t0 := Time.get_ticks_msec()
+	voxel_gi.bake(self)
+	if voxel_gi.data != null:
+		environment.sdfgi_enabled = false
+		print("ColliderVis: VoxelGI baked in %.1f s" % ((Time.get_ticks_msec() - t0) / 1000.0))
+	else:
+		environment.sdfgi_enabled = true
+		push_warning("ColliderVis: VoxelGI bake produced no data; keeping SDFGI")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -359,6 +406,10 @@ func _load_geometry(dir: String) -> void:
 	if loaded.is_empty():
 		push_warning("ColliderVis: no .gltf geometry found in '%s'" % dir)
 		return
+	_register_geometry(loaded)
+
+
+func _register_geometry(loaded: Dictionary) -> void:
 	for det_name in loaded:
 		var node: Node3D = loaded[det_name]
 		add_child(node)
@@ -378,6 +429,28 @@ func _group_for(det_name: String) -> String:
 		if det_name.ends_with(suffix):
 			return det_name.substr(0, det_name.length() - suffix.length())
 	return det_name
+
+
+## Swap in a different detector at runtime from a directory of per-sub-
+## detector glTF files (the output of `./run.sh split-convert`), then
+## re-bake the GI around the new geometry.
+func load_detector_dir(dir: String) -> void:
+	var loader := DetectorLoader.new()
+	var loaded: Dictionary = loader.load_directory(dir)
+	if loaded.is_empty():
+		_error("No .gltf/.glb sub-detector files found in:\n%s" % dir)
+		return
+	for g in detector_groups:
+		for node in detector_groups[g]:
+			(node as Node3D).queue_free()
+	detector_groups.clear()
+	group_order.clear()
+	_register_geometry(loaded)
+	# Let the freed geometry actually leave the tree before re-voxelizing.
+	await get_tree().process_frame
+	_rebake_gi()
+	if ui != null:
+		ui.reset_detector_list()
 
 
 func set_group_visible(group: String, vis: bool) -> void:

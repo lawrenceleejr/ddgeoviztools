@@ -74,9 +74,11 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers xvfb
           chmod +x ColliderVisGodot/build/ColliderVis-Linux.x86_64
+          # 25 frames: VoxelGI needs no temporal convergence (unlike SDFGI),
+          # and per-frame cone tracing is expensive on software Vulkan.
           timeout 600 xvfb-run -a -s "-screen 0 1280x720x24" \
             ColliderVisGodot/build/ColliderVis-Linux.x86_64 \
-            --resolution 1280x720 -- --screenshot=$PWD/verify.png --frames=80
+            --resolution 1280x720 -- --screenshot=$PWD/verify.png --frames=25
           test -f verify.png
 
       - name: Upload macOS app

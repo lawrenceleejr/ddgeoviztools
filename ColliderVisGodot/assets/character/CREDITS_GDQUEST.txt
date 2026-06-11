@@ -1,0 +1,5 @@
+Character model: "Mannequiny" from the GDQuest godot-3d-mannequin project
+https://github.com/gdquest-demos/godot-3d-mannequin
+
+License: CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+Attribution: GDQuest and contributors (https://www.gdquest.com/)
