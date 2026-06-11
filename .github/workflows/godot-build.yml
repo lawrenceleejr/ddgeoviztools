@@ -289,8 +289,12 @@ jobs:
         run: |
           mkdir -p ColliderVisGodot/build/ios
           ~/godot-mac/Godot.app/Contents/MacOS/Godot --headless --path ColliderVisGodot \
-            --export-release "iOS" build/ios/ColliderVis.ipa || true
-          test -d ColliderVisGodot/build/ios/ColliderVis.xcodeproj
+            --export-release "iOS" build/ios/ColliderVis.ipa 2>&1 | tee /tmp/ios_export.log || true
+          # The export must not have raised export errors, and the pbxproj
+          # must be a complete, parseable plist (a failed export leaves a
+          # damaged project behind).
+          ! grep -q 'Project export for preset "iOS" failed' /tmp/ios_export.log
+          plutil -lint ColliderVisGodot/build/ios/ColliderVis.xcodeproj/project.pbxproj
 
       - name: Build unsigned IPA
         run: |
