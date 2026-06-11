@@ -63,13 +63,18 @@ func load_directory(dir: String) -> Dictionary:
 	if da == null:
 		push_warning("DetectorLoader: cannot open directory '%s'" % dir)
 		return out
-	var files := []
+	var files := {}
 	for f in da.get_files():
+		# In exported builds imported resources are listed with .remap /
+		# .import suffixes; strip them to recover the logical file name.
+		if f.ends_with(".remap") or f.ends_with(".import"):
+			f = f.substr(0, f.rfind("."))
 		var ext := f.get_extension().to_lower()
 		if ext == "gltf" or ext == "glb":
-			files.append(f)
-	files.sort()
-	for f in files:
+			files[f] = true
+	var names := files.keys()
+	names.sort()
+	for f in names:
 		var det_name: String = f.get_basename()
 		var node := _load_gltf(dir.path_join(f), det_name)
 		if node != null:
@@ -78,13 +83,22 @@ func load_directory(dir: String) -> Dictionary:
 
 
 func _load_gltf(path: String, det_name: String) -> Node3D:
-	var doc := GLTFDocument.new()
-	var state := GLTFState.new()
-	var err := doc.append_from_file(path, state)
-	if err != OK:
-		push_warning("DetectorLoader: failed to read '%s' (error %d)" % [path, err])
-		return null
-	var scene := doc.generate_scene(state)
+	var scene: Node = null
+	# Prefer the engine-imported scene (works in exported builds, where the
+	# raw glTF is remapped away); fall back to runtime glTF parsing for
+	# external --geometry directories and headless runs without an import.
+	if ResourceLoader.exists(path, "PackedScene"):
+		var ps: PackedScene = load(path)
+		if ps != null:
+			scene = ps.instantiate()
+	if scene == null:
+		var doc := GLTFDocument.new()
+		var state := GLTFState.new()
+		var err := doc.append_from_file(path, state)
+		if err != OK:
+			push_warning("DetectorLoader: failed to read '%s' (error %d)" % [path, err])
+			return null
+		scene = doc.generate_scene(state)
 	if scene == null:
 		push_warning("DetectorLoader: '%s' produced no scene" % path)
 		return null

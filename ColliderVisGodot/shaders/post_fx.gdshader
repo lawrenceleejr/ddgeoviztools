@@ -12,8 +12,8 @@ uniform sampler2D screen_tex : hint_screen_texture, filter_linear;
 uniform vec2 motion_vec = vec2(0.0);     // screen-space camera motion this frame
 uniform float motion_blur_scale = 1.0;
 
-uniform float flare_strength = 0.35;
-uniform float flare_threshold = 0.78;    // post-tonemap luminance cut for flare sources
+uniform float flare_strength = 0.22;
+uniform float flare_threshold = 0.84;    // post-tonemap luminance cut for flare sources
 
 uniform float ca_strength = 0.7;         // chromatic aberration (px at corners)
 uniform float vignette_intensity = 0.35;

@@ -21,6 +21,7 @@ extends Node3D
 ##   --hud                keep the UI overlay visible in the screenshot
 ##   --hide=<groups>      comma-separated sub-detector groups to start hidden
 ##   --no-event           don't auto-load the first event
+##   --mode=<orbit|fly|walk>  starting camera mode (default orbit)
 
 const DetectorLoader := preload("res://scripts/detector_loader.gd")
 const EventDisplay := preload("res://scripts/event_display.gd")
@@ -74,6 +75,12 @@ func _ready() -> void:
 	if not event_files.is_empty() and not _args.has("no-event"):
 		_show_event(0)
 	_spawn_cameras()
+	match String(_args.get("mode", "orbit")):
+		"fly":
+			cycle_camera_mode()
+		"walk":
+			cycle_camera_mode()
+			cycle_camera_mode()
 	_build_post_fx()
 	ui = UI.new()
 	ui.name = "UI"
@@ -566,7 +573,7 @@ func cycle_camera_mode() -> void:
 			if character == null:
 				character = Character.new()
 				character.name = "Explorer"
-				character.position = Vector3(7.0, HALL_FLOOR_Y + 1.2, 9.0)
+				character.position = Vector3(9.5, HALL_FLOOR_Y + 1.2, 4.0)
 				add_child(character)
 			character.visible = true
 			character.camera.current = true

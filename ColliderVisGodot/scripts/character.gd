@@ -11,8 +11,8 @@ const GRAVITY := 12.0
 const TURN_LERP := 10.0
 const LOOK_SPEED := 0.0035
 
-var cam_yaw := 0.0
-var cam_pitch := -0.18
+var cam_yaw := 1.16    # spawn looking at the detector from the default spawn point
+var cam_pitch := -0.12
 var _phase := 0.0
 var _speed_blend := 0.0   # 0 idle .. 1 run, smoothed
 
@@ -36,6 +36,7 @@ var camera: Camera3D
 func _ready() -> void:
 	_build_body()
 	_build_camera()
+	rig.rotation.y = cam_yaw + PI   # face away from the camera at spawn
 	var shape := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
 	capsule.radius = 0.3
@@ -148,9 +149,9 @@ func _build_camera() -> void:
 	camera.position = Vector3(0.45, 0.15, 0)   # slight shoulder offset
 	var attrs := CameraAttributesPractical.new()
 	attrs.dof_blur_far_enabled = true
-	attrs.dof_blur_far_distance = 14.0
-	attrs.dof_blur_far_transition = 10.0
-	attrs.dof_blur_amount = 0.06
+	attrs.dof_blur_far_distance = 18.0
+	attrs.dof_blur_far_transition = 14.0
+	attrs.dof_blur_amount = 0.04
 	camera.attributes = attrs
 	spring.add_child(camera)
 
