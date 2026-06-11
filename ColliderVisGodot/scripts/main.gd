@@ -319,9 +319,27 @@ func _build_stage() -> void:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Light rig — warm key panel, cool cyan wall strips, rim accent
-# (ported from AColliderVisGameMode::SetupAtmosphere)
+# Light rig — symmetric warm blackbody softbox array
 # ──────────────────────────────────────────────────────────────────────────────
+
+## Planckian-locus colour for a blackbody emitter (Tanner Helland fit).
+static func blackbody(kelvin: float) -> Color:
+	var t := clampf(kelvin, 1000.0, 12000.0) / 100.0
+	var r: float
+	var g: float
+	var b: float
+	if t <= 66.0:
+		r = 255.0
+		g = clampf(99.4708025861 * log(t) - 161.1195681661, 0.0, 255.0)
+		if t <= 19.0:
+			b = 0.0
+		else:
+			b = clampf(138.5177312231 * log(t - 10.0) - 305.0447927307, 0.0, 255.0)
+	else:
+		r = clampf(329.698727446 * pow(t - 60.0, -0.1332047592), 0.0, 255.0)
+		g = clampf(288.1221695283 * pow(t - 60.0, -0.0755148492), 0.0, 255.0)
+		b = 255.0
+	return Color(r / 255.0, g / 255.0, b / 255.0)
 
 func _add_fixture_panel(pos: Vector3, size: Vector3, color: Color,
 		energy: float) -> void:
@@ -365,39 +383,39 @@ func _add_spot(pos: Vector3, color: Color, energy: float, angle_deg: float,
 
 
 func _build_light_rig() -> void:
-	const KEY_WARM := Color(1.0, 0.83, 0.64)    # ~4400 K clean-room panel
-	const COOL_CYAN := Color(0.70, 0.90, 1.0)   # ~7000 K wall strips
-	const RIM_COOL := Color(0.92, 0.96, 1.0)    # ~6500 K rim accent
+	# Everything sits on the blackbody locus — a warm studio. Placement is
+	# fully symmetric under x -> -x and z -> -z.
+	var key_color := blackbody(4100.0)     # overhead softboxes
+	var side_color := blackbody(4800.0)    # neutral-warm side strips
+	var end_color := blackbody(4500.0)     # end panels down the beam axis
+	var under_color := blackbody(3400.0)   # faint warm under-glow
 
-	# Key — big warm overhead softbox, offset so the detector gets shape.
-	var key_pos := Vector3(-5.0, RIG_CEIL_Y - 0.2, 2.0)
-	_add_spot(key_pos, KEY_WARM, 110.0, 110.0, 35.0, 1.2, 0.5)
-	_add_fixture_panel(Vector3(key_pos.x, RIG_CEIL_Y + 0.1, key_pos.z),
-		Vector3(5.0, 0.1, 3.0), KEY_WARM, 2.0)
+	# Four overhead softbox panels in a symmetric 2x2 array.
+	for sx in [-1.0, 1.0]:
+		for sz in [-1.0, 1.0]:
+			var p := Vector3(sx * 5.5, RIG_CEIL_Y - 0.2, sz * 6.5)
+			_add_spot(p, key_color, 42.0, 110.0, 35.0, 1.4, 0.4)
+			_add_fixture_panel(Vector3(p.x, RIG_CEIL_Y + 0.1, p.z),
+				Vector3(3.0, 0.1, 2.2), key_color, 2.0)
 
-	# Cool cyan strip softboxes on both sides (long, narrow, low energy).
-	# Fill lights skip shadow maps — only the key, rim, and IP cast.
+	# Long strip softboxes on both ±X sides (no shadow maps — fill only).
 	for sx in [-1.0, 1.0]:
 		var p := Vector3(sx * (RIG_HALF_X - 0.3), 2.5, 0.0)
-		_add_spot(p, COOL_CYAN, 55.0, 120.0, 30.0, 1.0, 0.3, false)
+		_add_spot(p, side_color, 40.0, 120.0, 30.0, 1.0, 0.3, false)
 		_add_fixture_panel(Vector3(sx * (RIG_HALF_X + 0.1), 2.5, 0.0),
-			Vector3(0.1, 0.5, 12.0), COOL_CYAN, 1.6)
+			Vector3(0.1, 0.5, 12.0), side_color, 1.6)
 
-	# Neutral bounce cards on the ±Z ends so the barrel faces never go black.
+	# Matching end panels on ±Z so the barrel faces never go black.
 	for sz in [-1.0, 1.0]:
-		var p := Vector3(2.0, 4.0, sz * (RIG_HALF_Z - 0.5))
-		_add_spot(p, Color(0.95, 0.97, 1.0), 28.0, 100.0, 34.0, 0.9, 0.2, false)
+		var p := Vector3(0.0, 5.0, sz * (RIG_HALF_Z - 0.5))
+		_add_spot(p, end_color, 30.0, 100.0, 34.0, 1.0, 0.2, false)
+		_add_fixture_panel(Vector3(0.0, 5.0, sz * (RIG_HALF_Z + 0.1)),
+			Vector3(4.0, 2.6, 0.1), end_color, 1.4)
 
-	# Rim accent from behind/above — separates the detector from the dome.
-	var rim_pos := Vector3(-8.0, 6.5, -(RIG_HALF_Z - 1.0))
-	_add_spot(rim_pos, RIM_COOL, 40.0, 90.0, 38.0, 0.8, 0.25)
-	_add_fixture_panel(Vector3(-8.0, 6.5, -(RIG_HALF_Z + 0.1)),
-		Vector3(2.0, 6.0, 0.1), RIM_COOL, 1.2)
-
-	# Faint under-glow below the glass so the lower barrel half reads.
+	# Faint warm under-glow below the glass so the lower half reads.
 	var under := OmniLight3D.new()
 	under.position = Vector3(0, -5.5, 0)
-	under.light_color = Color(0.45, 0.62, 0.85)
+	under.light_color = under_color
 	under.light_energy = 4.0
 	under.omni_range = 14.0
 	under.shadow_enabled = false
