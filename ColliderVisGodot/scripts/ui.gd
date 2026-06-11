@@ -322,8 +322,8 @@ func _build_menu() -> void:
 	h.add_theme_font_size_override("font_size", 14)
 	h.add_theme_color_override("font_color", Color(0.6, 0.7, 0.8))
 	h.text = ("Esc — menu + cursor · mouse drives the camera otherwise\n"
-		+ "Hold RMB — smooth zoom to examine details\n"
-		+ "Orbit: mouse orbits · wheel distance · MMB pan\n"
+		+ "LMB — next event · Hold RMB — zoom to examine\n"
+		+ "Orbit: mouse orbits · scroll/pinch distance · MMB pan\n"
 		+ "Fly: WASD + QE · Shift fast · mouse look\n"
 		+ "Walk: WASD · Shift run · Space jump\n"
 		+ "Space next event · B previous event\n"

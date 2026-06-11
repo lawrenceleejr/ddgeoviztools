@@ -840,6 +840,14 @@ func _ui_refresh() -> void:
 		ui.refresh()
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	# LMB click (while the captured mouse is driving a camera) = next event.
+	var mb := event as InputEventMouseButton
+	if mb != null and mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT \
+			and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		show_relative_event(1)
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	var k := event as InputEventKey
 	if k == null or not k.pressed or k.echo:
