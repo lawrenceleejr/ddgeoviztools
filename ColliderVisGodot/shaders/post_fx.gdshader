@@ -38,16 +38,21 @@ void fragment() {
 	vec2 centered = uv - 0.5;
 	float r2 = dot(centered, centered);
 
-	// ── Camera motion blur — 6 taps along the camera's screen-space motion ──
+	// ── Camera motion blur — 4 taps, skipped entirely when still ──
 	vec2 mb = motion_vec * motion_blur_scale;
 	mb = clamp(mb, vec2(-0.035), vec2(0.035));
-	vec3 col = vec3(0.0);
-	const int MB_TAPS = 6;
-	for (int i = 0; i < MB_TAPS; i++) {
-		float t = (float(i) / float(MB_TAPS - 1)) - 0.5;
-		col += texture(screen_tex, uv + mb * t).rgb;
+	vec3 col;
+	if (dot(mb, mb) > 1e-9) {
+		col = vec3(0.0);
+		const int MB_TAPS = 4;
+		for (int i = 0; i < MB_TAPS; i++) {
+			float t = (float(i) / float(MB_TAPS - 1)) - 0.5;
+			col += texture(screen_tex, uv + mb * t).rgb;
+		}
+		col /= float(MB_TAPS);
+	} else {
+		col = texture(screen_tex, uv).rgb;
 	}
-	col /= float(MB_TAPS);
 
 	// ── Chromatic aberration — quadratic toward the edges ──
 	vec2 px = ca_strength / vec2(textureSize(screen_tex, 0));
@@ -55,28 +60,31 @@ void fragment() {
 	col.r = mix(col.r, texture(screen_tex, uv + shift).r, 0.85);
 	col.b = mix(col.b, texture(screen_tex, uv - shift).b, 0.85);
 
-	// ── Lens flare: ghosts marching through the lens centre + halo ──
-	vec3 flare = vec3(0.0);
-	vec2 ghost_vec = (vec2(0.5) - uv) * 0.6;
-	vec2 guv = uv;
-	for (int i = 0; i < 4; i++) {
-		guv += ghost_vec;
-		float w = pow(1.0 - length(vec2(0.5) - guv) / 0.71, 4.0);
-		flare += bright(guv) * max(w, 0.0) * 0.6;
+	// ── Lens flare: ghosts + halo + anamorphic streak ──
+	// Entire block skipped (uniform branch) when flares are disabled.
+	if (flare_strength > 0.001) {
+		vec3 flare = vec3(0.0);
+		vec2 ghost_vec = (vec2(0.5) - uv) * 0.6;
+		vec2 guv = uv;
+		for (int i = 0; i < 3; i++) {
+			guv += ghost_vec;
+			float w = pow(1.0 - length(vec2(0.5) - guv) / 0.71, 4.0);
+			flare += bright(guv) * max(w, 0.0) * 0.6;
+		}
+		// Halo ring on the opposite side of the lens centre.
+		vec2 halo_uv = uv + normalize(ghost_vec + vec2(1e-5)) * 0.42;
+		flare += bright(halo_uv) * pow(1.0 - abs(length(centered) - 0.35) * 4.0, 3.0) * 0.4;
+		// Anamorphic horizontal streak from blown highlights.
+		vec3 streak = vec3(0.0);
+		for (int i = 1; i <= 3; i++) {
+			float o = float(i) * float(i) * 0.011;
+			streak += bright(uv + vec2(o, 0.0));
+			streak += bright(uv - vec2(o, 0.0));
+		}
+		flare += streak * vec3(0.35, 0.55, 1.0) * 0.14;   // cool-blue streaks
+		// Tint ghosts slightly toward the lens-coating purple/cyan.
+		col += flare * flare_strength * vec3(0.85, 0.95, 1.15);
 	}
-	// Halo ring on the opposite side of the lens centre.
-	vec2 halo_uv = uv + normalize(ghost_vec + vec2(1e-5)) * 0.42;
-	flare += bright(halo_uv) * pow(1.0 - abs(length(centered) - 0.35) * 4.0, 3.0) * 0.4;
-	// Anamorphic horizontal streak from blown highlights.
-	vec3 streak = vec3(0.0);
-	for (int i = 1; i <= 5; i++) {
-		float o = float(i) * float(i) * 0.006;
-		streak += bright(uv + vec2(o, 0.0));
-		streak += bright(uv - vec2(o, 0.0));
-	}
-	flare += streak * vec3(0.35, 0.55, 1.0) * 0.10;   // cool-blue streaks
-	// Tint ghosts slightly toward the lens-coating purple/cyan.
-	col += flare * flare_strength * vec3(0.85, 0.95, 1.15);
 
 	// ── Vignette ──
 	float vig = 1.0 - vignette_intensity * pow(r2 * 2.0, vignette_softness * 0.5);

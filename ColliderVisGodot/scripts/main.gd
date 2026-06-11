@@ -54,6 +54,7 @@ var ui: CanvasLayer = null
 var post_fx_mat: ShaderMaterial = null
 var environment: Environment = null
 var voxel_gi: VoxelGI = null
+var glass_floor: MeshInstance3D = null
 var rig_lights: Array = []          # [[Light3D, base_energy], ...]
 var light_scale := 0.85             # settings: global rig brightness
 var show_events := true             # settings: event display on/off
@@ -97,6 +98,8 @@ func _ready() -> void:
 		ui.visible = false
 	if _args.has("screenshot"):
 		_run_screenshot_mode()
+	else:
+		_sync_mouse_mode()   # menu starts closed -> mouse drives the camera
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -165,18 +168,19 @@ func _build_environment() -> void:
 	env.ssr_fade_out = 2.0
 	env.ssr_depth_tolerance = 0.4
 
-	# Bloom — the emissive particle tracks should glow hard.
+	# Bloom — restrained: only genuinely hot emissives (tracks, hit cores)
+	# halo, and only gently.
 	env.glow_enabled = true
 	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
-	env.glow_intensity = 0.9
-	env.glow_strength = 1.0
-	env.glow_bloom = 0.02
-	env.glow_hdr_threshold = 1.35
-	env.set_glow_level(1, 0.6)
-	env.set_glow_level(2, 0.9)
+	env.glow_intensity = 0.55
+	env.glow_strength = 0.95
+	env.glow_bloom = 0.0
+	env.glow_hdr_threshold = 1.5
+	env.set_glow_level(1, 0.5)
+	env.set_glow_level(2, 0.8)
 	env.set_glow_level(3, 1.0)
-	env.set_glow_level(4, 0.7)
-	env.set_glow_level(5, 0.5)
+	env.set_glow_level(4, 0.55)
+	env.set_glow_level(5, 0.3)
 
 	# Indoor laboratory haze: subtle — just enough for the practical lights
 	# to draw visible volumetric shafts without milking out the scene.
@@ -222,7 +226,10 @@ func _setup_baked_gi() -> void:
 	# stays outside the field; it's ambient-lit, not GI-driven).
 	voxel_gi.size = Vector3(RIG_HALF_X * 2.0 + 2.0, 17.0, RIG_HALF_Z * 2.0 + 2.0)
 	voxel_gi.position = Vector3(0, 1.0, 0)
-	voxel_gi.subdiv = VoxelGI.SUBDIV_256
+	# 128³ halves the per-pixel cone-trace cost vs 256³ and bakes in a
+	# fraction of the time; with GI at half resolution the visual
+	# difference on a 9 m detector is minor.
+	voxel_gi.subdiv = VoxelGI.SUBDIV_128
 	add_child(voxel_gi)
 	_rebake_gi()
 
@@ -278,16 +285,21 @@ func _build_stage() -> void:
 	glass.mesh = plane
 	var gm := StandardMaterial3D.new()
 	gm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	gm.albedo_color = Color(0.75, 0.85, 0.95, 0.05)
+	gm.albedo_color = Color(0.75, 0.85, 0.95, 0.022)   # barely-there
 	gm.metallic = 0.0
 	# Specular survives alpha transparency at full strength, so the glass
 	# needs a genuinely soft, weak sheen or every spot blows out on it.
-	gm.roughness = 0.32
-	gm.metallic_specular = 0.08
+	gm.roughness = 0.4
+	gm.metallic_specular = 0.04
 	gm.cull_mode = BaseMaterial3D.CULL_DISABLED   # visible from below too
 	glass.material_override = gm
 	glass.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 	glass.position = Vector3.ZERO
+	# Only rendered in third-person mode — orbit/fly views see no floor at
+	# all (the collision plane below stays active regardless; it's only
+	# ever felt by the character).
+	glass.visible = false
+	glass_floor = glass
 	add_child(glass)
 
 	# Infinite walkable plane (collision only) at y = 0.
@@ -325,7 +337,8 @@ func _add_fixture_panel(pos: Vector3, size: Vector3, color: Color,
 
 
 func _add_spot(pos: Vector3, color: Color, energy: float, angle_deg: float,
-		range_m: float, size: float, fog_energy: float) -> SpotLight3D:
+		range_m: float, size: float, fog_energy: float,
+		shadows := true) -> SpotLight3D:
 	var l := SpotLight3D.new()
 	l.position = pos
 	l.light_color = color
@@ -333,7 +346,7 @@ func _add_spot(pos: Vector3, color: Color, energy: float, angle_deg: float,
 	l.spot_angle = angle_deg
 	l.spot_range = range_m
 	l.light_size = size
-	l.shadow_enabled = true
+	l.shadow_enabled = shadows
 	l.shadow_blur = 1.5
 	l.light_volumetric_fog_energy = fog_energy
 	l.light_specular = 0.8
@@ -356,16 +369,17 @@ func _build_light_rig() -> void:
 		Vector3(5.0, 0.1, 3.0), KEY_WARM, 2.0)
 
 	# Cool cyan strip softboxes on both sides (long, narrow, low energy).
+	# Fill lights skip shadow maps — only the key, rim, and IP cast.
 	for sx in [-1.0, 1.0]:
 		var p := Vector3(sx * (RIG_HALF_X - 0.3), 2.5, 0.0)
-		_add_spot(p, COOL_CYAN, 55.0, 120.0, 30.0, 1.0, 0.3)
+		_add_spot(p, COOL_CYAN, 55.0, 120.0, 30.0, 1.0, 0.3, false)
 		_add_fixture_panel(Vector3(sx * (RIG_HALF_X + 0.1), 2.5, 0.0),
 			Vector3(0.1, 0.5, 12.0), COOL_CYAN, 1.6)
 
 	# Neutral bounce cards on the ±Z ends so the barrel faces never go black.
 	for sz in [-1.0, 1.0]:
 		var p := Vector3(2.0, 4.0, sz * (RIG_HALF_Z - 0.5))
-		_add_spot(p, Color(0.95, 0.97, 1.0), 28.0, 100.0, 34.0, 0.9, 0.2)
+		_add_spot(p, Color(0.95, 0.97, 1.0), 28.0, 100.0, 34.0, 0.9, 0.2, false)
 
 	# Rim accent from behind/above — separates the detector from the dome.
 	var rim_pos := Vector3(-8.0, 6.5, -(RIG_HALF_Z - 1.0))
@@ -755,14 +769,27 @@ func cycle_camera_mode() -> void:
 				add_child(character)
 			character.visible = true
 			character.camera.current = true
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		CamMode.WALK:
 			cam_mode = CamMode.ORBIT
 			if character != null:
 				character.visible = false
 			orbit_camera.current = true
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# The glass floor is a third-person-only cue.
+	if glass_floor != null:
+		glass_floor.visible = (cam_mode == CamMode.WALK)
+	_sync_mouse_mode()
 	_ui_refresh()
+
+
+## Cursor policy: menu open = free cursor; menu closed = captured mouse
+## driving whichever camera is active.
+func _sync_mouse_mode() -> void:
+	if _args.has("screenshot"):
+		return
+	if ui != null and ui.is_menu_open():
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	else:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func _build_post_fx() -> void:
@@ -814,14 +841,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 	match k.keycode:
 		KEY_ESCAPE:
-			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-				if cam_mode == CamMode.FLY:
-					cam_mode = CamMode.ORBIT
-					orbit_camera.set_fly(false)
-					_ui_refresh()
-			else:
-				ui.toggle_menu()
+			ui.toggle_menu()
+			_sync_mouse_mode()
 		KEY_TAB:
 			cycle_camera_mode()
 		KEY_SPACE:

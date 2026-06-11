@@ -19,6 +19,11 @@ const MODEL_PATH := "res://assets/character/mannequiny.glb"
 const MODEL_YAW_OFFSET := 0.0
 const BLEND_TIME := 0.25
 
+const BASE_FOV := 65.0
+const ZOOM_FOV := 36.0
+const BASE_ARM := 4.0
+const ZOOM_ARM := 2.4
+
 const WALK_SPEED := 3.0
 const RUN_SPEED := 6.5
 const JUMP_VELOCITY := 4.8
@@ -275,8 +280,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		var mm := event as InputEventMouseMotion
-		cam_yaw -= mm.relative.x * LOOK_SPEED
-		cam_pitch = clampf(cam_pitch - mm.relative.y * LOOK_SPEED, -1.2, 0.5)
+		var sens := LOOK_SPEED * camera.fov / BASE_FOV   # tighter while zoomed
+		cam_yaw -= mm.relative.x * sens
+		cam_pitch = clampf(cam_pitch - mm.relative.y * sens, -1.2, 0.5)
 
 
 func _physics_process(delta: float) -> void:
@@ -286,6 +292,13 @@ func _physics_process(delta: float) -> void:
 	# Camera gimbal.
 	var gimbal := spring.get_parent() as Node3D
 	gimbal.rotation = Vector3(cam_pitch, cam_yaw, 0)
+
+	# Hold-RMB examine zoom: FOV push-in + the arm tucks over the shoulder.
+	var zooming := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+		and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+	var zk := 1.0 - exp(-8.0 * delta)
+	camera.fov = lerpf(camera.fov, ZOOM_FOV if zooming else BASE_FOV, zk)
+	spring.spring_length = lerpf(spring.spring_length, ZOOM_ARM if zooming else BASE_ARM, zk)
 
 	# Movement relative to camera yaw.
 	var input_dir := Vector2.ZERO

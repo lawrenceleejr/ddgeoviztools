@@ -321,12 +321,14 @@ func _build_menu() -> void:
 	var h := Label.new()
 	h.add_theme_font_size_override("font_size", 14)
 	h.add_theme_color_override("font_color", Color(0.6, 0.7, 0.8))
-	h.text = ("Orbit: LMB drag · wheel zoom · MMB pan\n"
+	h.text = ("Esc — menu + cursor · mouse drives the camera otherwise\n"
+		+ "Hold RMB — smooth zoom to examine details\n"
+		+ "Orbit: mouse orbits · wheel distance · MMB pan\n"
 		+ "Fly: WASD + QE · Shift fast · mouse look\n"
 		+ "Walk: WASD · Shift run · Space jump\n"
 		+ "Space next event · B previous event\n"
 		+ "1–9 toggle sub-detectors · 0 show all\n"
-		+ "C cutaway · [ ] opening · H HUD · Esc menu")
+		+ "C cutaway · [ ] opening · H HUD")
 	help.add_child(h)
 
 	# ── Credits ──
@@ -411,9 +413,9 @@ func _process(delta: float) -> void:
 
 
 func toggle_menu() -> void:
+	# Mouse capture policy lives in main._sync_mouse_mode().
 	menu_root.visible = not menu_root.visible
 	if menu_root.visible:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		refresh()
 
 
