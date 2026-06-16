@@ -236,10 +236,20 @@ jobs:
       - name: Export Quest APK
         run: |
           mkdir -p ColliderVisGodot/build
+          # Meta requires a higher Android version code on every upload.
+          # Stamp a unique, monotonically-increasing code from the CI run
+          # number (offset so it's safely above any earlier manual upload).
+          VCODE=$(( 1000 + GITHUB_RUN_NUMBER ))
+          sed -i "s|^version/code=.*|version/code=${VCODE}|" ColliderVisGodot/export_presets.cfg
+          sed -i "s|^version/name=.*|version/name=\"1.0.${GITHUB_RUN_NUMBER}\"|" ColliderVisGodot/export_presets.cfg
+          echo "Quest version code: ${VCODE}"
           ~/godot-bin/godot --headless --path ColliderVisGodot \
             --install-android-build-template \
             --export-debug "Quest" build/ColliderVis-Quest.apk || true
           test -f ColliderVisGodot/build/ColliderVis-Quest.apk
+          # Confirm the manifest carries the bumped code.
+          "$ANDROID_HOME"/build-tools/*/aapt dump badging \
+            ColliderVisGodot/build/ColliderVis-Quest.apk | grep -o "versionCode='[0-9]*'"
 
       - name: Upload Quest APK
         uses: actions/upload-artifact@v4
