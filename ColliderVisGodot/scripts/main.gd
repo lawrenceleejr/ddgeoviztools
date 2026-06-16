@@ -55,6 +55,9 @@ var post_fx_mat: ShaderMaterial = null
 var environment: Environment = null
 var voxel_gi: VoxelGI = null
 var glass_floor: MeshInstance3D = null
+var dome: MeshInstance3D = null
+var passthrough_on := false
+var _bg_color := Color(0.008, 0.011, 0.018)
 var rig_lights: Array = []          # [[Light3D, base_energy], ...]
 var light_scale := 0.85             # settings: global rig brightness
 var show_events := true             # settings: event display on/off
@@ -69,8 +72,13 @@ var _prev_cam_xform := Transform3D.IDENTITY
 ## Phones/tablets and Quest: no keyboard/mouse, tight GPU budget.
 var is_mobile := OS.has_feature("mobile")
 var xr_origin: XROrigin3D = null
+var xr_camera: XRCamera3D = null
 var xr_left: XRController3D = null
 var xr_right: XRController3D = null
+var xr_ray: RayCast3D = null
+var xr_dot: MeshInstance3D = null
+var vr_menu: Node3D = null
+var _xr_trigger_down := false
 
 
 func _ready() -> void:
@@ -137,8 +145,12 @@ func _try_init_xr() -> bool:
 	xr_origin.name = "XROrigin"
 	xr_origin.position = Vector3(9.0, 0.0, 5.0)
 	add_child(xr_origin)
-	var cam := XRCamera3D.new()
-	xr_origin.add_child(cam)
+	xr_camera = XRCamera3D.new()
+	xr_origin.add_child(xr_camera)
+	# CRITICAL: the XR camera must be the current camera, otherwise the
+	# viewport keeps rendering from the static desktop camera and the HMD
+	# pose only shifts that fixed image — i.e. the scene appears head-locked.
+	xr_camera.current = true
 	for hand in ["left_hand", "right_hand"]:
 		var ctl := XRController3D.new()
 		ctl.tracker = hand
@@ -148,26 +160,120 @@ func _try_init_xr() -> bool:
 			xr_left = ctl
 		else:
 			xr_right = ctl
+
+	# Right-hand laser pointer for the in-VR menu.
+	xr_ray = RayCast3D.new()
+	xr_ray.target_position = Vector3(0, 0, -6)
+	xr_ray.collide_with_areas = false
+	xr_ray.collision_mask = 1 << 4   # only the VR menu panel
+	xr_right.add_child(xr_ray)
+	var beam := MeshInstance3D.new()
+	var bm := CylinderMesh.new()
+	bm.top_radius = 0.004
+	bm.bottom_radius = 0.004
+	bm.height = 6.0
+	beam.mesh = bm
+	beam.rotation_degrees = Vector3(-90, 0, 0)   # cylinder runs along -Z
+	beam.position = Vector3(0, 0, -3.0)
+	var beam_mat := StandardMaterial3D.new()
+	beam_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	beam_mat.albedo_color = Color(0.3, 0.8, 1.0, 0.5)
+	beam_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	beam.material_override = beam_mat
+	beam.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	xr_ray.add_child(beam)
+	xr_dot = MeshInstance3D.new()
+	var dm := SphereMesh.new()
+	dm.radius = 0.02
+	dm.height = 0.04
+	xr_dot.mesh = dm
+	var dot_mat := StandardMaterial3D.new()
+	dot_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dot_mat.albedo_color = Color(0.5, 0.9, 1.0)
+	xr_dot.material_override = dot_mat
+	xr_dot.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	xr_dot.visible = false
+	add_child(xr_dot)
+
+	# World-space VR menu (the 2D overlay can't render to a headset).
+	vr_menu = preload("res://scripts/vr_menu.gd").new()
+	add_child(vr_menu)
+	vr_menu.setup(self)
+
 	# Screen-space lens effects don't belong on a headset.
 	var fx := get_node_or_null("PostFX")
 	if fx != null:
 		fx.visible = false
 	if glass_floor != null:
 		glass_floor.visible = true
+	if _args.has("passthrough"):
+		set_passthrough(true)
 	print("ColliderVis: OpenXR session started")
 	return true
 
 
-## Quest controller map (no keyboard/menu in-headset):
-##   right trigger / A    next event        left trigger    previous event
-##   B                    previous event    X               cutaway toggle
-##   Y                    event display on/off
-##   either grip          cycle which sub-detector group is hidden
-##   left stick           glide (head-relative)
-##   right stick left/right  45-degree snap turn
+## Reset the play area so the detector sits in front of you again.
+func xr_recenter() -> void:
+	var xr := XRServer.find_interface("OpenXR")
+	if xr != null:
+		XRServer.center_on_hmd(XRServer.RESET_BUT_KEEP_TILT, true)
+
+
+## Mixed-reality passthrough: composite the headset cameras behind the scene
+## by switching the OpenXR environment blend to alpha and clearing the
+## background (the dome + glass floor hide so the detector floats in your
+## real room). Uses core XRInterface blend modes — the Meta passthrough
+## OpenXR extension (from the vendors plugin) backs ALPHA_BLEND on Quest.
+func set_passthrough(on: bool) -> void:
+	var xr := XRServer.find_interface("OpenXR")
+	var vp := get_viewport()
+	if on and xr != null:
+		var modes: Array = xr.get_supported_environment_blend_modes()
+		if not (XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND in modes):
+			_error("Passthrough isn't available on this headset/runtime.")
+			return
+		xr.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND
+		vp.transparent_bg = true
+		environment.background_mode = Environment.BG_COLOR
+		environment.background_color = Color(0, 0, 0, 0)
+		if dome != null:
+			dome.visible = false
+		if glass_floor != null:
+			glass_floor.visible = false
+		passthrough_on = true
+	else:
+		if xr != null:
+			xr.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_OPAQUE
+		vp.transparent_bg = false
+		environment.background_mode = Environment.BG_COLOR
+		environment.background_color = _bg_color
+		if dome != null:
+			dome.visible = true
+		if glass_floor != null:
+			glass_floor.visible = (cam_mode == CamMode.WALK) or xr_origin != null
+		passthrough_on = false
+
+
+## Quest controller map:
+##   Y (left)        open / close the VR menu
+##   right trigger   menu click when the menu is open, else next event
+##   A (right)       next event        B (right)   previous event
+##   X (left)        cutaway toggle
+##   left trigger    previous event
+##   either grip     cycle which sub-detector group is hidden (quick x-ray)
+##   left stick      glide (head-relative)   right stick X   45° snap turn
 var _xr_hide_idx := -1
 
 func _on_xr_button(button_name: String, hand: String) -> void:
+	# Y always toggles the menu, even while it's open.
+	if button_name == "by_button" and hand == "left_hand":
+		if vr_menu != null:
+			vr_menu.toggle(_xr_head_xform())
+		return
+	# While the menu is open the trigger is the menu click (handled per-frame
+	# in _process_xr); swallow the nav buttons so they don't also fire.
+	if vr_menu != null and vr_menu.is_open():
+		return
 	match button_name:
 		"trigger_click":
 			show_relative_event(1 if hand == "right_hand" else -1)
@@ -177,10 +283,7 @@ func _on_xr_button(button_name: String, hand: String) -> void:
 			else:
 				set_cutaway(not cutaway_enabled)   # X
 		"by_button":
-			if hand == "right_hand":
-				show_relative_event(-1)       # B
-			else:
-				set_event_display_visible(not show_events)   # Y
+			show_relative_event(-1)           # B (right)
 		"grip_click":
 			# Step an "x-ray" cursor through the groups: each press un-hides
 			# the previous group and hides the next one; wraps to all-on.
@@ -193,6 +296,12 @@ func _on_xr_button(button_name: String, hand: String) -> void:
 				set_group_visible(group_order[_xr_hide_idx], false)
 
 
+func _xr_head_xform() -> Transform3D:
+	if xr_camera != null:
+		return xr_camera.global_transform
+	return Transform3D.IDENTITY
+
+
 const XR_MOVE_SPEED := 2.5
 const XR_SNAP_DEG := 45.0
 var _xr_snap_ready := true
@@ -200,15 +309,36 @@ var _xr_snap_ready := true
 func _process_xr(delta: float) -> void:
 	if xr_origin == null:
 		return
+
+	# Laser pointer + trigger-as-click while the VR menu is open.
+	if vr_menu != null and vr_menu.is_open() and xr_ray != null:
+		xr_ray.force_raycast_update()
+		var hit: bool = xr_ray.is_colliding() and xr_ray.get_collider() == vr_menu.body
+		var on_panel := false
+		if hit:
+			var p: Vector3 = xr_ray.get_collision_point()
+			on_panel = vr_menu.point(p)
+			xr_dot.global_position = p
+		xr_dot.visible = on_panel
+		var t_down: bool = xr_right != null and xr_right.is_button_pressed("trigger_click")
+		if t_down != _xr_trigger_down:
+			_xr_trigger_down = t_down
+			vr_menu.click(t_down)
+		# Don't also move/turn while pointing at the menu.
+		return
+	else:
+		_xr_trigger_down = false
+		if xr_dot != null:
+			xr_dot.visible = false
+
 	# Left stick: glide relative to where you're looking.
 	if xr_left != null:
 		var mv := xr_left.get_vector2("primary")
 		if mv.length() > 0.12:
-			var cam := xr_origin.get_child(0) as XRCamera3D
-			var fwd := -cam.global_transform.basis.z
+			var fwd := -xr_camera.global_transform.basis.z
 			fwd.y = 0.0
 			fwd = fwd.normalized()
-			var right := cam.global_transform.basis.x
+			var right := xr_camera.global_transform.basis.x
 			right.y = 0.0
 			right = right.normalized()
 			xr_origin.position += (fwd * mv.y + right * mv.x) * XR_MOVE_SPEED * delta
@@ -394,7 +524,7 @@ func _build_stage() -> void:
 	var dome_mesh := SphereMesh.new()
 	dome_mesh.radius = DOME_RADIUS
 	dome_mesh.height = DOME_RADIUS * 2.0
-	var dome := MeshInstance3D.new()
+	dome = MeshInstance3D.new()
 	dome.name = "Dome"
 	dome.mesh = dome_mesh
 	var dome_mat := ShaderMaterial.new()

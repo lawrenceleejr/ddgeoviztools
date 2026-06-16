@@ -145,10 +145,14 @@ Useful flags (after `--`): `--events=…`, `--geometry=…`, `--hide=Group1,Grou
   plugin (downloaded by CI; gitignored locally). Sideload with
   `adb install ColliderVis-Quest.apk` (developer mode). In the headset:
   left stick glides, right stick snap-turns 45°; right trigger / A =
-  next event, B = previous; left trigger / X = cutaway; Y = event
-  display on/off; grip steps an "x-ray" cursor through the sub-detector
-  groups. Tuned for smoothness: Mobile renderer, 0.7 render scale,
-  aggressive dynamic foveation, MSAA 2x.
+  next event, B = previous; left trigger = previous; X = cutaway;
+  grip steps an "x-ray" cursor through the sub-detector groups.
+  **Y opens the in-VR menu** — a world-space panel you point at with the
+  right-hand laser (trigger to click): prev/next event, event display,
+  cutaway +/-, brightness & render-scale sliders, per-sub-detector
+  toggles, recenter, and **Passthrough (mixed reality)** to see the
+  detector floating in your real room. Tuned for smoothness: Mobile
+  renderer, 0.7 render scale, dynamic foveation, MSAA 2x.
 - **iOS (iPhone + iPad)**: `ColliderVis-iOS-unsigned` is an unsigned IPA
   built with xcodebuild — sideload it with AltStore/Sideloadly, or take
   the `ColliderVis-iOS-XcodeProject` artifact, open it in Xcode, set your
