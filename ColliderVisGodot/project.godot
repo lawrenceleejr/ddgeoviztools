@@ -32,6 +32,10 @@ window/stretch/aspect="expand"
 ; OpenXR only on Android (Quest); desktop runs flat with no XR runtime noise.
 openxr/enabled=false
 openxr/enabled.android=true
+; Controller bindings (buttons/sticks). Without this resource the runtime
+; has no action bindings: head tracking still works, but every button and
+; thumbstick read is dead. Generated via OpenXRActionMap.create_default_action_sets().
+openxr/default_action_map="res://openxr_action_map.tres"
 shaders/enabled=false
 shaders/enabled.android=true
 ; Aggressive dynamic foveation — big fragment-cost win on Quest.
