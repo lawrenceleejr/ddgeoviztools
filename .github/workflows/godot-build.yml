@@ -247,9 +247,13 @@ jobs:
             --install-android-build-template \
             --export-debug "Quest" build/ColliderVis-Quest.apk || true
           test -f ColliderVisGodot/build/ColliderVis-Quest.apk
-          # Confirm the manifest carries the bumped code.
-          "$ANDROID_HOME"/build-tools/*/aapt dump badging \
-            ColliderVisGodot/build/ColliderVis-Quest.apk | grep -o "versionCode='[0-9]*'"
+          # Confirm the manifest carries the bumped code (informational only;
+          # pick a single aapt — the glob matches several build-tools dirs —
+          # and never fail the build on the check itself).
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1)
+          [ -n "$AAPT" ] && "$AAPT" dump badging \
+            ColliderVisGodot/build/ColliderVis-Quest.apk \
+            | grep -o "versionCode='[0-9]*'" || true
 
       - name: Upload Quest APK
         uses: actions/upload-artifact@v4
