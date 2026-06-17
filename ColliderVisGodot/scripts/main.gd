@@ -142,7 +142,7 @@ func _try_init_xr() -> bool:
 	# cheap on the Quest tiler so it stays on; the render scale absorbs the
 	# fragment cost of the cull_disabled detector overdraw.
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
-	vp.scaling_3d_scale = 0.6
+	vp.scaling_3d_scale = 0.5
 	vp.msaa_3d = Viewport.MSAA_2X
 	# Stand on the glass at the beam plane, a few metres from the barrel.
 	xr_origin = XROrigin3D.new()
@@ -398,58 +398,72 @@ func _build_environment() -> void:
 	env.ambient_light_color = Color(0.72, 0.80, 0.92)
 	env.ambient_light_energy = 0.26
 
-	# Real-time global illumination: light bounces off the hall and the
-	# detector's metal surfaces; emissive tracks tint their surroundings.
-	env.sdfgi_enabled = true
-	env.sdfgi_use_occlusion = true
-	env.sdfgi_bounce_feedback = 0.6
-	env.sdfgi_cascades = 4
-	env.sdfgi_min_cell_size = 0.12
-	env.sdfgi_energy = 1.1
+	if is_mobile:
+		# Quest / phone run the Forward Mobile renderer, which supports none of
+		# the GI or screen-space effects below — and if a Forward+ path ever
+		# leaks onto the headset they are an instant frame-rate sentence
+		# (SDFGI alone ray-marches every pixel). Force them all off and lean on
+		# a brighter flat ambient instead. Tonemap + colour grade still apply.
+		env.ambient_light_energy = 0.6
+		env.sdfgi_enabled = false
+		env.ssao_enabled = false
+		env.ssil_enabled = false
+		env.ssr_enabled = false
+		env.glow_enabled = false
+		env.volumetric_fog_enabled = false
+	else:
+		# Real-time global illumination: light bounces off the hall and the
+		# detector's metal surfaces; emissive tracks tint their surroundings.
+		env.sdfgi_enabled = true
+		env.sdfgi_use_occlusion = true
+		env.sdfgi_bounce_feedback = 0.6
+		env.sdfgi_cascades = 4
+		env.sdfgi_min_cell_size = 0.12
+		env.sdfgi_energy = 1.1
 
-	# Contact shadows in detector crevices. SSIL is expensive and off by
-	# default ("Quality" preset re-enables it) — VoxelGI covers indirect.
-	# Gentle AO — strong settings read as dirty/noisy splotches on the
-	# clean surfaces; the baked GI already grounds the geometry.
-	env.ssao_enabled = true
-	env.ssao_radius = 1.2
-	env.ssao_intensity = 1.1
-	env.ssao_power = 1.5
-	env.ssil_enabled = false
-	env.ssil_radius = 3.0
-	env.ssil_intensity = 1.0
+		# Contact shadows in detector crevices. SSIL is expensive and off by
+		# default ("Quality" preset re-enables it) — VoxelGI covers indirect.
+		# Gentle AO — strong settings read as dirty/noisy splotches on the
+		# clean surfaces; the baked GI already grounds the geometry.
+		env.ssao_enabled = true
+		env.ssao_radius = 1.2
+		env.ssao_intensity = 1.1
+		env.ssao_power = 1.5
+		env.ssil_enabled = false
+		env.ssil_radius = 3.0
+		env.ssil_intensity = 1.0
 
-	# Screen-space reflections on the polished metal and the glass floor.
-	env.ssr_enabled = true
-	env.ssr_max_steps = 48
-	env.ssr_fade_in = 0.15
-	env.ssr_fade_out = 2.0
-	env.ssr_depth_tolerance = 0.4
+		# Screen-space reflections on the polished metal and the glass floor.
+		env.ssr_enabled = true
+		env.ssr_max_steps = 48
+		env.ssr_fade_in = 0.15
+		env.ssr_fade_out = 2.0
+		env.ssr_depth_tolerance = 0.4
 
-	# Bloom — restrained: only genuinely hot emissives (tracks, hit cores)
-	# halo, and only gently.
-	env.glow_enabled = true
-	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
-	env.glow_intensity = 0.55
-	env.glow_strength = 0.95
-	env.glow_bloom = 0.0
-	env.glow_hdr_threshold = 1.5
-	env.set_glow_level(1, 0.5)
-	env.set_glow_level(2, 0.8)
-	env.set_glow_level(3, 1.0)
-	env.set_glow_level(4, 0.55)
-	env.set_glow_level(5, 0.3)
+		# Bloom — restrained: only genuinely hot emissives (tracks, hit cores)
+		# halo, and only gently.
+		env.glow_enabled = true
+		env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
+		env.glow_intensity = 0.55
+		env.glow_strength = 0.95
+		env.glow_bloom = 0.0
+		env.glow_hdr_threshold = 1.5
+		env.set_glow_level(1, 0.5)
+		env.set_glow_level(2, 0.8)
+		env.set_glow_level(3, 1.0)
+		env.set_glow_level(4, 0.55)
+		env.set_glow_level(5, 0.3)
 
-	# Indoor laboratory haze: subtle — just enough for the practical lights
-	# to draw visible volumetric shafts without milking out the scene.
-	env.volumetric_fog_enabled = true
-	env.volumetric_fog_density = 0.0028
-	env.volumetric_fog_albedo = Color(0.5, 0.6, 0.7)
-	env.volumetric_fog_emission = Color(0.0, 0.0, 0.0)
-	env.volumetric_fog_anisotropy = 0.55
-	env.volumetric_fog_length = 48.0
-	env.volumetric_fog_gi_inject = 0.25
-	env.volumetric_fog_ambient_inject = 0.0
+		# Indoor laboratory haze: subtle — just enough for the practical lights
+		# to draw visible volumetric shafts without milking out the scene.
+		env.volumetric_fog_enabled = true
+		env.volumetric_fog_density = 0.0028
+		env.volumetric_fog_albedo = Color(0.5, 0.6, 0.7)
+		env.volumetric_fog_emission = Color(0.0, 0.0, 0.0)
+		env.volumetric_fog_anisotropy = 0.55
+		env.volumetric_fog_length = 48.0
+		env.volumetric_fog_gi_inject = 0.25
+		env.volumetric_fog_ambient_inject = 0.0
 
 	# Filmic response with graceful highlight rolloff for the HDR emissives.
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
@@ -646,6 +660,23 @@ func _build_light_rig() -> void:
 	var side_color := blackbody(4800.0)    # neutral-warm side strips
 	var end_color := blackbody(4500.0)     # end panels down the beam axis
 	var under_color := blackbody(3400.0)   # faint warm under-glow
+
+	if is_mobile:
+		# Forward Mobile does per-pixel lighting; with the cull_disabled
+		# detector overdraw, every extra light is a big fragment cost on the
+		# Quest. Run a minimal shadowless fill rig (the brighter ambient set in
+		# _build_environment carries the rest) instead of the 10-light studio.
+		_add_spot(Vector3(-5.5, RIG_CEIL_Y - 0.2, 0.0), key_color, 60.0, 120.0, 45.0, 1.4, 0.0, false)
+		_add_spot(Vector3(5.5, RIG_CEIL_Y - 0.2, 0.0), key_color, 60.0, 120.0, 45.0, 1.4, 0.0, false)
+		_add_spot(Vector3(0.0, 4.0, 9.0), end_color, 45.0, 110.0, 45.0, 1.0, 0.0, false)
+		ip_light = OmniLight3D.new()
+		ip_light.position = Vector3.ZERO
+		ip_light.light_color = Color(1.0, 0.72, 0.42)
+		ip_light.light_energy = 0.0
+		ip_light.omni_range = 11.0
+		ip_light.shadow_enabled = false
+		add_child(ip_light)
+		return
 
 	# Four overhead softbox panels in a symmetric 2x2 array.
 	for sx in [-1.0, 1.0]:

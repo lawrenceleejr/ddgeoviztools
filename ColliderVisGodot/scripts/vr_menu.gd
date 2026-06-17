@@ -23,6 +23,8 @@ var _det_box: VBoxContainer
 var _det_checks: Dictionary = {}
 var _mouse_in := false
 var _last_uv := Vector2.ZERO
+var _perf_label: Label
+var _perf_t := 0.0
 
 
 func setup(p_main: Node3D) -> void:
@@ -60,6 +62,18 @@ func setup(p_main: Node3D) -> void:
 	col.shape = box
 	body.add_child(col)
 	add_child(body)
+
+
+func _process(delta: float) -> void:
+	if not visible or _perf_label == null:
+		return
+	_perf_t += delta
+	if _perf_t < 0.4:
+		return
+	_perf_t = 0.0
+	var method := RenderingServer.get_current_rendering_method()
+	_perf_label.text = "%d FPS   ·   renderer: %s" % [
+		Engine.get_frames_per_second(), method]
 
 
 func is_open() -> bool:
@@ -157,6 +171,13 @@ func _build_ui() -> void:
 	title.add_theme_font_size_override("font_size", 40)
 	title.add_theme_color_override("font_color", Color(0.88, 0.95, 1.0))
 	col.add_child(title)
+
+	# Live performance readout (FPS + active renderer) — diagnostic.
+	_perf_label = Label.new()
+	_perf_label.add_theme_font_size_override("font_size", 24)
+	_perf_label.add_theme_color_override("font_color", Color(0.65, 0.95, 0.7))
+	_perf_label.text = "…"
+	col.add_child(_perf_label)
 
 	var ev := HBoxContainer.new()
 	ev.add_theme_constant_override("separation", 14)
