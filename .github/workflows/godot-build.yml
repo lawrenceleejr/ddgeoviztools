@@ -263,30 +263,59 @@ jobs:
       - name: Export Quest APK
         run: |
           mkdir -p ColliderVisGodot/build
-          # Meta requires a higher Android version code on every upload.
-          # Stamp a unique, monotonically-increasing code from the CI run
-          # number (offset so it's safely above any earlier manual upload).
           VCODE=$(( 1000 + GITHUB_RUN_NUMBER ))
           sed -i "s|^version/code=.*|version/code=${VCODE}|" ColliderVisGodot/export_presets.cfg
           sed -i "s|^version/name=.*|version/name=\"1.0.${GITHUB_RUN_NUMBER}\"|" ColliderVisGodot/export_presets.cfg
-          # Inject the release keystore directly into the preset — Godot's
-          # --export-release does not fall back to editor settings for the
-          # release keystore; it requires the path in the preset itself.
           sed -i "s|^keystore/release=\"\"|keystore/release=\"$HOME/release.keystore\"|" ColliderVisGodot/export_presets.cfg
           sed -i "s|^keystore/release_user=\"\"|keystore/release_user=\"$KS_ALIAS\"|" ColliderVisGodot/export_presets.cfg
           sed -i "s|^keystore/release_password=\"\"|keystore/release_password=\"$KS_PASS\"|" ColliderVisGodot/export_presets.cfg
           echo "Quest version code: ${VCODE}"
+
+          # Install the android build template first so we can patch
+          # AndroidManifest.xml before gradle runs.
           ~/godot-bin/godot --headless --path ColliderVisGodot \
-            --install-android-build-template \
+            --install-android-build-template || true
+
+          # Ensure all required Meta Quest manifest entries are present in the
+          # build template. Godot's own export code adds VR headtracking and
+          # the VR intent category when enable_meta_plugin=true, but
+          # com.oculus.supportedDevices (and the Samsung VR-mode flag) are
+          # normally injected by the GodotOpenXRVendors export plugin running
+          # on the host — a Linux GDExtension binary that may not load in
+          # headless CI. We add all four entries statically here so they are
+          # guaranteed to survive to the final APK regardless; Android handles
+          # duplicate declarations gracefully (first declaration wins).
+          MANIFEST="ColliderVisGodot/android/build/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            grep -q 'com.oculus.intent.category.VR' "$MANIFEST" || \
+              sed -i 's|android.intent.category.LAUNCHER" />|android.intent.category.LAUNCHER" />\n                <category android:name="com.oculus.intent.category.VR" />|' "$MANIFEST"
+            grep -q 'android.hardware.vr.headtracking' "$MANIFEST" || \
+              sed -i 's|</manifest>|    <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />\n</manifest>|' "$MANIFEST"
+            grep -q 'com.samsung.android.vr.application.mode' "$MANIFEST" || \
+              sed -i 's|</application>|        <meta-data android:name="com.samsung.android.vr.application.mode" android:value="vr_only" />\n    </application>|' "$MANIFEST"
+            grep -q 'com.oculus.supportedDevices' "$MANIFEST" || \
+              sed -i 's|</application>|        <meta-data android:name="com.oculus.supportedDevices" android:value="quest\|quest2\|questpro\|quest3" />\n    </application>|' "$MANIFEST"
+            echo "--- Meta manifest entries in template ---"
+            grep -E '(oculus|vr_only|headtracking)' "$MANIFEST" || echo "  (none; may be inside Godot placeholder tokens)"
+          else
+            echo "WARNING: $MANIFEST not found after template install"
+          fi
+
+          ~/godot-bin/godot --headless --path ColliderVisGodot \
             --export-release "Quest" build/ColliderVis-Quest.apk || true
           test -f ColliderVisGodot/build/ColliderVis-Quest.apk
-          # Confirm the manifest carries the bumped code (informational only;
-          # pick a single aapt — the glob matches several build-tools dirs —
-          # and never fail the build on the check itself).
+
+          # Verify the final APK carries the required Meta entries and version.
           AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1)
-          [ -n "$AAPT" ] && "$AAPT" dump badging \
-            ColliderVisGodot/build/ColliderVis-Quest.apk \
-            | grep -o "versionCode='[0-9]*'" || true
+          if [ -n "$AAPT" ]; then
+            "$AAPT" dump badging ColliderVisGodot/build/ColliderVis-Quest.apk \
+              | grep -o "versionCode='[0-9]*'" || true
+            echo "--- Meta manifest check in final APK ---"
+            "$AAPT" dump xmltree ColliderVisGodot/build/ColliderVis-Quest.apk \
+              AndroidManifest.xml 2>/dev/null \
+              | grep -E '(oculus|vr_only|headtracking)' \
+              || echo "WARNING: expected Meta entries not found in final APK"
+          fi
 
       - name: Upload Quest APK
         uses: actions/upload-artifact@v4
