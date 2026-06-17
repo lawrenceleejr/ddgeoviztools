@@ -59,6 +59,7 @@ var dome: MeshInstance3D = null
 var passthrough_on := false
 var _bg_color := Color(0.008, 0.011, 0.018)
 var rig_lights: Array = []          # [[Light3D, base_energy], ...]
+var _shadow_casters: Array = []     # lights that cast real-time shadows
 var light_scale := 0.85             # settings: global rig brightness
 var show_events := true             # settings: event display on/off
 var cam_mode: CamMode = CamMode.ORBIT
@@ -102,6 +103,7 @@ func _ready() -> void:
 	set_render_scale(0.5 if is_mobile else 0.6)
 	if is_mobile:
 		apply_quality("performance")
+		_optimize_geometry_for_mobile()
 	match String(_args.get("mode", "orbit")):
 		"fly":
 			cycle_camera_mode()
@@ -136,9 +138,11 @@ func _try_init_xr() -> bool:
 	var vp := get_viewport()
 	vp.use_xr = true
 	# Headset perf: low render scale (dynamic foveation does the rest, see
-	# project.godot) with a little MSAA — aliasing is brutal in VR.
+	# project.godot) with a little MSAA — aliasing is brutal in VR. MSAA is
+	# cheap on the Quest tiler so it stays on; the render scale absorbs the
+	# fragment cost of the cull_disabled detector overdraw.
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
-	vp.scaling_3d_scale = 0.7
+	vp.scaling_3d_scale = 0.6
 	vp.msaa_3d = Viewport.MSAA_2X
 	# Stand on the glass at the beam plane, a few metres from the barrel.
 	xr_origin = XROrigin3D.new()
@@ -623,6 +627,8 @@ func _add_spot(pos: Vector3, color: Color, energy: float, angle_deg: float,
 	l.spot_range = range_m
 	l.light_size = size * 1.8   # bigger virtual source = softer penumbrae
 	l.shadow_enabled = shadows
+	if shadows:
+		_shadow_casters.append(l)
 	l.shadow_blur = 3.0
 	l.light_volumetric_fog_energy = fog_energy
 	l.light_specular = 0.8
@@ -685,6 +691,7 @@ func _build_light_rig() -> void:
 	ip_light.shadow_enabled = true
 	ip_light.light_volumetric_fog_energy = 0.8
 	add_child(ip_light)
+	_shadow_casters.append(ip_light)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1013,13 +1020,21 @@ func apply_quality(preset: String) -> void:
 			environment.ssr_enabled = false
 			environment.ssao_enabled = false
 			environment.volumetric_fog_enabled = false
-			vp.msaa_3d = Viewport.MSAA_DISABLED
+			# Real-time shadow maps re-render the whole 1.8M-tri detector once
+			# per shadow-casting light — ruinous on the Quest tiler GPU. Drop
+			# them (and glow) in performance mode; the ambient + direct light
+			# rig still reads fine.
+			_set_shadows(false)
+			environment.glow_enabled = false
+			vp.msaa_3d = Viewport.MSAA_2X if get_viewport().use_xr else Viewport.MSAA_DISABLED
 		"balanced":
 			environment.ssil_enabled = false
 			environment.ssr_enabled = true
 			environment.ssr_max_steps = 48
 			environment.ssao_enabled = true
 			environment.volumetric_fog_enabled = true
+			_set_shadows(true)
+			environment.glow_enabled = true
 			vp.msaa_3d = Viewport.MSAA_2X
 		"quality":
 			environment.ssil_enabled = true
@@ -1027,7 +1042,32 @@ func apply_quality(preset: String) -> void:
 			environment.ssr_max_steps = 96
 			environment.ssao_enabled = true
 			environment.volumetric_fog_enabled = true
+			_set_shadows(true)
+			environment.glow_enabled = true
 			vp.msaa_3d = Viewport.MSAA_4X
+
+
+func _set_shadows(on: bool) -> void:
+	for l in _shadow_casters:
+		if is_instance_valid(l):
+			(l as Light3D).shadow_enabled = on
+
+
+## Aggressive mesh LOD on phones/headsets: a low lod_bias drops to coarser
+## auto-generated LODs at much shorter distances, trimming the ~1.9M-tri
+## detector for everything that isn't right in front of you. No-op if the
+## imported meshes carry no LOD chain.
+func _optimize_geometry_for_mobile() -> void:
+	for g in detector_groups:
+		for node in detector_groups[g]:
+			_set_lod_bias_recursive(node as Node, 0.35)
+
+
+func _set_lod_bias_recursive(node: Node, bias: float) -> void:
+	if node is MeshInstance3D:
+		(node as MeshInstance3D).lod_bias = bias
+	for c in node.get_children():
+		_set_lod_bias_recursive(c, bias)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
