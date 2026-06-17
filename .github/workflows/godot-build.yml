@@ -71,19 +71,9 @@ jobs:
           ~/godot-bin/godot --headless --path ColliderVisGodot \
             --export-release "Linux" build/ColliderVis-Linux.x86_64
 
-      # Render one frame with the software Vulkan driver (lavapipe) as a
-      # smoke test that the exported content actually loads and lights up.
-      - name: Verification render
-        run: |
-          sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers xvfb
-          chmod +x ColliderVisGodot/build/ColliderVis-Linux.x86_64
-          # 25 frames: VoxelGI needs no temporal convergence (unlike SDFGI),
-          # and per-frame cone tracing is expensive on software Vulkan.
-          timeout 600 xvfb-run -a -s "-screen 0 1280x720x24" \
-            ColliderVisGodot/build/ColliderVis-Linux.x86_64 \
-            --resolution 1280x720 -- --screenshot=$PWD/verify.png --frames=25
-          test -f verify.png
-
+      # Upload the real deliverables BEFORE the smoke test so they are always
+      # retrievable even if the (software-rendered) verification step is slow
+      # or fails on a particular runner.
       - name: Upload macOS app
         uses: actions/upload-artifact@v4
         with:
@@ -95,6 +85,24 @@ jobs:
         with:
           name: ColliderVis-Linux
           path: ColliderVisGodot/build/ColliderVis-Linux.x86_64
+
+      # Render a few frames with the software Vulkan driver (lavapipe) as a
+      # smoke test that the exported content actually loads and lights up.
+      # Kept deliberately cheap: lavapipe is a CPU rasteriser, so we render
+      # at a small resolution for a handful of frames. The screenshot path in
+      # main.gd also forces native-scale bilinear (FSR2's compute pass is the
+      # single most expensive thing on lavapipe) while keeping the baked
+      # VoxelGI, so the frame still shows real lighting. stdbuf keeps Godot's
+      # stdout line-buffered so progress is visible live in the CI log.
+      - name: Verification render
+        timeout-minutes: 12
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers xvfb
+          chmod +x ColliderVisGodot/build/ColliderVis-Linux.x86_64
+          timeout 540 xvfb-run -a -s "-screen 0 640x360x24" \
+            stdbuf -oL -eL ColliderVisGodot/build/ColliderVis-Linux.x86_64 \
+            --resolution 640x360 -- --screenshot=$PWD/verify.png --frames=6
+          test -f verify.png
 
       - name: Upload verification render
         uses: actions/upload-artifact@v4

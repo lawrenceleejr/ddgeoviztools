@@ -1208,6 +1208,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 func _run_screenshot_mode() -> void:
 	var path := String(_args["screenshot"])
 	var frames := int(String(_args.get("frames", "150")))
+	# This path runs in CI on Mesa's software Vulkan (lavapipe), where the
+	# FSR2 upscaling compute pass costs far more than it saves and can stall
+	# the smoke test past its timeout. Render at native scale with plain
+	# bilinear (no FSR2, no TAA accumulation) so each frame is cheap; the
+	# baked VoxelGI is kept so the screenshot still shows real lighting.
+	var vp := get_viewport()
+	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+	vp.scaling_3d_scale = 1.0
+	vp.use_taa = false
 	print("ColliderVis: rendering %d frames, then saving %s" % [frames, path])
 	for i in frames:
 		await get_tree().process_frame
