@@ -270,8 +270,23 @@ jobs:
           export/android/debug_keystore_pass = "$KS_PASS"
           EOF
 
-      - name: Bundle detector geometry
-        run: cp gltf/*.gltf ColliderVisGodot/assets/detector/
+      - name: Bundle detector geometry (decimated for Quest)
+        run: |
+          # The raw detector is ~1.9M triangles of CAD-derived geometry — far
+          # too heavy for a standalone Quest GPU (it ran at ~2 fps). gltfpack's
+          # aggressive simplifier (-sa) crushes it to ~8% (~155k tris),
+          # collapsing even the disconnected calorimeter cells, and emits no
+          # glTF extension Godot can't import (-noq, no compression). Desktop
+          # builds keep the full-resolution mesh.
+          curl -sSL -o /tmp/gp.zip "https://github.com/zeux/meshoptimizer/releases/download/v0.20/gltfpack-ubuntu.zip"
+          unzip -oq /tmp/gp.zip -d /tmp/gp && chmod +x /tmp/gp/gltfpack
+          mkdir -p ColliderVisGodot/assets/detector
+          for f in gltf/*.gltf; do
+            b=$(basename "$f" .gltf)
+            /tmp/gp/gltfpack -i "$f" -o "ColliderVisGodot/assets/detector/$b.glb" -si 0.1 -sa -noq
+          done
+          echo "Decimated detector files:"
+          ls -la ColliderVisGodot/assets/detector/*.glb | awk '{print $5, $9}'
 
       - name: Import project
         run: ~/godot-bin/godot --headless --path ColliderVisGodot --import || true
@@ -460,8 +475,20 @@ jobs:
           unzip -q /tmp/templates.tpz -d /tmp/templates
           mv /tmp/templates/templates/* "$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable/"
 
-      - name: Bundle detector geometry
-        run: cp gltf/*.gltf ColliderVisGodot/assets/detector/
+      - name: Bundle detector geometry (decimated for iOS)
+        run: |
+          # Phones/tablets need the same drastic decimation as the Quest: the
+          # raw ~1.9M-tri detector is crushed to ~8% (~155k tris) with
+          # gltfpack's aggressive simplifier. (macOS desktop build keeps full.)
+          curl -sSL -o /tmp/gp.zip "https://github.com/zeux/meshoptimizer/releases/download/v0.20/gltfpack-macos.zip"
+          unzip -oq /tmp/gp.zip -d /tmp/gp && chmod +x /tmp/gp/gltfpack
+          xattr -dr com.apple.quarantine /tmp/gp/gltfpack 2>/dev/null || true
+          mkdir -p ColliderVisGodot/assets/detector
+          for f in gltf/*.gltf; do
+            b=$(basename "$f" .gltf)
+            /tmp/gp/gltfpack -i "$f" -o "ColliderVisGodot/assets/detector/$b.glb" -si 0.1 -sa -noq
+          done
+          ls -la ColliderVisGodot/assets/detector/*.glb | awk '{print $5, $9}'
 
       - name: Import project
         run: ~/godot-mac/Godot.app/Contents/MacOS/Godot --headless --path ColliderVisGodot --import || true
