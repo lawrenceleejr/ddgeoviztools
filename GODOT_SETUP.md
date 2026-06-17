@@ -157,22 +157,35 @@ Useful flags (after `--`): `--events=…`, `--geometry=…`, `--hide=Group1,Grou
   **Signing & Meta Horizon store uploads.** The APK is release-signed with
   a fixed, committed keystore (`ColliderVisGodot/release.keystore`, alias
   and password `collidervis`) so that *every* CI build carries the **same
-  signing certificate**. This matters because Meta locks an app to the
-  certificate of its first uploaded build — if later builds are signed with
-  a different key, the web uploader hangs at *"validating package
-  contents"* instead of erroring. (The earlier CI regenerated a random
-  keystore each run, so only the very first upload ever went through.) To
-  use your own key instead, set the repo secrets `QUEST_KEYSTORE_B64`
-  (base64 of your `.keystore`), `QUEST_KEYSTORE_ALIAS`, and
-  `QUEST_KEYSTORE_PASS`; they override the committed key. If a Meta app has
-  already recorded a *different* certificate from a previous upload, you
-  must create a fresh app/release channel to adopt this key — Meta won't
-  accept a re-signed build on the existing app. If the web uploader still
-  stalls, use Meta's command-line uploader
-  (`ovr-platform-util upload-quest-build`), which Meta recommends for
-  larger packages and which avoids the flaky web validation step. The CI
-  log prints the certificate SHA-256 and `apksigner` scheme results for
-  every build so you can confirm the key is stable and v2-signed.
+  signing certificate** (Meta locks an app to the certificate of its first
+  uploaded build). To use your own key, set the repo secrets
+  `QUEST_KEYSTORE_B64` (base64 of your `.keystore`), `QUEST_KEYSTORE_ALIAS`,
+  and `QUEST_KEYSTORE_PASS`; they override the committed key. The CI log
+  prints the certificate SHA-256 and `apksigner` scheme results so you can
+  confirm the key is stable and v2-signed.
+
+  **If the web uploader hangs at "validating package contents":** this is a
+  well-documented problem with Meta's *browser* uploader, not with the APK.
+  (The CI APK has been verified directly: v2-signed,
+  `supportedDevices=quest2|quest3|quest3s|questpro`, target SDK 34, single
+  arm64 ABI, `installLocation=auto`, only the standard OpenXR permissions —
+  a textbook Godot/OpenXR Quest build.) Use Meta's **command-line uploader**
+  instead, which Meta itself recommends and which returns a real error
+  rather than hanging:
+
+  ```bash
+  ovr-platform-util upload-quest-build \
+    --app-id <APP_ID> --app-secret <APP_SECRET> \
+    --apk ColliderVis-Quest.apk --channel ALPHA \
+    --age-group TEENS_AND_ADULTS --notes "manual upload"
+  ```
+
+  (App ID and secret are on your app's **API** tab in the Meta dashboard.)
+  CI can also do this for you: set the `META_APP_ID` and `META_APP_SECRET`
+  repository secrets, then start the workflow manually (**Actions → Godot
+  builds → Run workflow**). On a manual run the `quest` job builds the APK
+  and uploads it to the ALPHA channel via `ovr-platform-util`; ordinary
+  pushes only build the artifact and never upload.
 - **iOS (iPhone + iPad)**: `ColliderVis-iOS-unsigned` is an unsigned IPA
   built with xcodebuild — sideload it with AltStore/Sideloadly, or take
   the `ColliderVis-iOS-XcodeProject` artifact, open it in Xcode, set your

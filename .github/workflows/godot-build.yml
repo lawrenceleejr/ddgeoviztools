@@ -334,6 +334,43 @@ jobs:
           name: ColliderVis-Quest
           path: ColliderVisGodot/build/ColliderVis-Quest.apk
 
+      # Push the freshly-built APK straight to Meta Horizon with Meta's own
+      # command-line uploader (ovr-platform-util), bypassing the web
+      # uploader whose "validating package contents" step is a known black
+      # box that hangs without a clear error. This runs ONLY when you start
+      # the workflow manually (Actions → Run workflow) AND you have set the
+      # META_APP_ID / META_APP_SECRET repository secrets — normal pushes
+      # just build the artifact, they never upload.
+      # App ID and secret come from your app's API tab in the Meta dashboard.
+      - name: Check for Meta upload credentials
+        id: metacreds
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          META_APP_ID: ${{ secrets.META_APP_ID }}
+          META_APP_SECRET: ${{ secrets.META_APP_SECRET }}
+        run: |
+          if [ -n "$META_APP_ID" ] && [ -n "$META_APP_SECRET" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "META_APP_ID / META_APP_SECRET not set — skipping upload."
+          fi
+
+      - name: Set up ovr-platform-util
+        if: steps.metacreds.outputs.have == 'true'
+        uses: RageAgainstThePixel/setup-ovr-platform-util@v1
+
+      - name: Upload build to Meta Horizon (ALPHA channel)
+        if: steps.metacreds.outputs.have == 'true'
+        run: |
+          ovr-platform-util upload-quest-build \
+            --app-id "${{ secrets.META_APP_ID }}" \
+            --app-secret "${{ secrets.META_APP_SECRET }}" \
+            --apk ColliderVisGodot/build/ColliderVis-Quest.apk \
+            --channel ALPHA \
+            --age-group TEENS_AND_ADULTS \
+            --notes "CI build ${{ github.run_number }}"
+
   # iOS (iPhone + iPad): export the Xcode project, compile it unsigned on a
   # macOS runner. The unsigned IPA can be sideloaded (AltStore/Sideloadly)
   # or the Xcode project opened and signed with your own Apple ID.
