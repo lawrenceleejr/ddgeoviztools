@@ -233,9 +233,16 @@ jobs:
               -keypass "$KS_PASS" -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=ColliderVis,O=UTK,C=US"
           fi
+          # Expose alias/pass to subsequent steps via GITHUB_ENV.
+          # The keystore file itself lives at ~/release.keystore for the
+          # lifetime of this job runner.
+          echo "KS_ALIAS=$KS_ALIAS" >> "$GITHUB_ENV"
+          echo "KS_PASS=$KS_PASS"   >> "$GITHUB_ENV"
           mkdir -p ~/.config/godot
-          # Write both debug and release to the same keystore so the gradle
-          # release build is fully signed (Meta Horizon rejects debug APKs).
+          # Editor settings: covers the debug path and gives Godot the SDK
+          # location; the release keystore is injected directly into the
+          # preset below (Godot headless does not fall back to editor settings
+          # for release exports, only debug).
           cat > ~/.config/godot/editor_settings-4.6.tres <<EOF
           [gd_resource type="EditorSettings" format=3]
 
@@ -245,9 +252,6 @@ jobs:
           export/android/debug_keystore = "$HOME/release.keystore"
           export/android/debug_keystore_user = "$KS_ALIAS"
           export/android/debug_keystore_pass = "$KS_PASS"
-          export/android/release_keystore = "$HOME/release.keystore"
-          export/android/release_keystore_user = "$KS_ALIAS"
-          export/android/release_keystore_pass = "$KS_PASS"
           EOF
 
       - name: Bundle detector geometry
@@ -265,6 +269,12 @@ jobs:
           VCODE=$(( 1000 + GITHUB_RUN_NUMBER ))
           sed -i "s|^version/code=.*|version/code=${VCODE}|" ColliderVisGodot/export_presets.cfg
           sed -i "s|^version/name=.*|version/name=\"1.0.${GITHUB_RUN_NUMBER}\"|" ColliderVisGodot/export_presets.cfg
+          # Inject the release keystore directly into the preset — Godot's
+          # --export-release does not fall back to editor settings for the
+          # release keystore; it requires the path in the preset itself.
+          sed -i "s|^keystore/release=\"\"|keystore/release=\"$HOME/release.keystore\"|" ColliderVisGodot/export_presets.cfg
+          sed -i "s|^keystore/release_user=\"\"|keystore/release_user=\"$KS_ALIAS\"|" ColliderVisGodot/export_presets.cfg
+          sed -i "s|^keystore/release_password=\"\"|keystore/release_password=\"$KS_PASS\"|" ColliderVisGodot/export_presets.cfg
           echo "Quest version code: ${VCODE}"
           ~/godot-bin/godot --headless --path ColliderVisGodot \
             --install-android-build-template \
