@@ -305,6 +305,33 @@ jobs:
             --export-release "Quest" build/ColliderVis-Quest.apk || true
           test -f ColliderVisGodot/build/ColliderVis-Quest.apk
           APK=ColliderVisGodot/build/ColliderVis-Quest.apk
+
+          # ── Manifest post-patch ───────────────────────────────────────────
+          # Meta requires android:excludeFromRecents="true" on the *launching*
+          # activity. Godot's launcher is an <activity-alias>, and Godot only
+          # writes excludeFromRecents onto the target <activity>, never the
+          # alias — so the alias fails Meta's check. Godot exposes no setting
+          # for this, so decode the APK with apktool, add the attribute to the
+          # alias, rebuild, then re-sign with the same release keystore.
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)
+          curl -sSL -o /tmp/apktool.jar \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar"
+          rm -rf /tmp/dec
+          java -jar /tmp/apktool.jar d -f -s -o /tmp/dec "$APK"
+          grep -q 'activity-alias[^>]*excludeFromRecents' /tmp/dec/AndroidManifest.xml \
+            || sed -i 's|<activity-alias |<activity-alias android:excludeFromRecents="true" |' \
+                 /tmp/dec/AndroidManifest.xml
+          java -jar /tmp/apktool.jar b /tmp/dec -o /tmp/cv_patched.apk --use-aapt2
+          "$BT/zipalign" -p -f 4 /tmp/cv_patched.apk "$APK"
+          # Re-sign with the stable release key. v2 scheme only (v3 disabled):
+          # Meta validates against v1/v2, and a v3-only signature reads as
+          # "v2=false" to Meta's checker.
+          "$BT/apksigner" sign \
+            --ks "$HOME/release.keystore" --ks-pass pass:"$KS_PASS" \
+            --ks-key-alias "$KS_ALIAS" --key-pass pass:"$KS_PASS" \
+            --v2-signing-enabled true --v3-signing-enabled false --v4-signing-enabled false \
+            "$APK"
+
           # Verify the final APK meets Meta Horizon's Application Manifest
           # Requirements. These checks FAIL the build if violated, so a bad
           # APK never reaches an upload:
@@ -312,6 +339,7 @@ jobs:
           #   - targetSdkVersion must be 32-34 (we set 34)
           #   - android.hardware.vr.headtracking must be required="true"
           #     (boundary_mode=Disabled makes the vendors plugin emit this)
+          #   - the launcher activity-alias must have excludeFromRecents=true
           AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1)
           if [ -n "$AAPT" ]; then
             BADGING=$("$AAPT" dump badging "$APK" 2>/dev/null)
@@ -327,6 +355,14 @@ jobs:
             # required="true" encodes as 0xffffffff; required="false" as 0x0.
             if echo "$HT" | grep -q '0x0$'; then
               echo "ERROR: vr.headtracking is required=false — Meta rejects this. Check boundary_mode."; exit 1
+            fi
+            echo "--- launcher activity-alias excludeFromRecents (must be true) ---"
+            ALIAS_EFR=$("$AAPT" dump xmltree "$APK" AndroidManifest.xml 2>/dev/null \
+              | sed -n '/E: activity-alias/,/E: intent-filter/p' \
+              | grep -o 'excludeFromRecents.*0x[0-9a-f]*' | grep -o '0x[0-9a-f]*$')
+            echo "alias excludeFromRecents = ${ALIAS_EFR:-<absent>}"
+            if [ "$ALIAS_EFR" != "0xffffffff" ]; then
+              echo "ERROR: launcher alias excludeFromRecents is not true — apktool patch failed."; exit 1
             fi
             echo "--- other Meta manifest entries ---"
             "$AAPT" dump xmltree "$APK" AndroidManifest.xml 2>/dev/null \
