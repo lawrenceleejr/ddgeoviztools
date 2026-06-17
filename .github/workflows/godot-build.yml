@@ -304,18 +304,33 @@ jobs:
             --install-android-build-template \
             --export-release "Quest" build/ColliderVis-Quest.apk || true
           test -f ColliderVisGodot/build/ColliderVis-Quest.apk
-          # Verify the final APK carries the bumped version code and the
-          # Meta entries the OpenXR vendors plugin should have injected.
-          # Informational only — never fail the build on the dump itself.
+          APK=ColliderVisGodot/build/ColliderVis-Quest.apk
+          # Verify the final APK meets Meta Horizon's Application Manifest
+          # Requirements. These checks FAIL the build if violated, so a bad
+          # APK never reaches an upload:
+          #   - minSdkVersion must be 29-34   (we set 29)
+          #   - targetSdkVersion must be 32-34 (we set 34)
+          #   - android.hardware.vr.headtracking must be required="true"
+          #     (boundary_mode=Disabled makes the vendors plugin emit this)
           AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1)
           if [ -n "$AAPT" ]; then
-            "$AAPT" dump badging ColliderVisGodot/build/ColliderVis-Quest.apk \
-              | grep -o "versionCode='[0-9]*'" || true
-            echo "--- Meta manifest entries in final APK ---"
-            "$AAPT" dump xmltree ColliderVisGodot/build/ColliderVis-Quest.apk \
-              AndroidManifest.xml 2>/dev/null \
-              | grep -E '(oculus|vr_only|headtracking|supportedDevices)' \
-              || echo "  (none found — vendors plugin may not have injected them)"
+            BADGING=$("$AAPT" dump badging "$APK" 2>/dev/null)
+            echo "$BADGING" | grep -oE "versionCode='[0-9]*'|sdkVersion:'[0-9]*'|targetSdkVersion:'[0-9]*'" || true
+            MINSDK=$(echo "$BADGING" | grep -oE "sdkVersion:'[0-9]*'" | grep -oE "[0-9]+")
+            if [ "${MINSDK:-0}" -lt 29 ]; then
+              echo "ERROR: minSdkVersion ${MINSDK} < 29 — Meta will reject the manifest."; exit 1
+            fi
+            echo "--- vr.headtracking required attribute (must be true) ---"
+            HT=$("$AAPT" dump xmltree "$APK" AndroidManifest.xml 2>/dev/null \
+              | grep -A1 'android.hardware.vr.headtracking' | grep -i 'required')
+            echo "$HT"
+            # required="true" encodes as 0xffffffff; required="false" as 0x0.
+            if echo "$HT" | grep -q '0x0$'; then
+              echo "ERROR: vr.headtracking is required=false — Meta rejects this. Check boundary_mode."; exit 1
+            fi
+            echo "--- other Meta manifest entries ---"
+            "$AAPT" dump xmltree "$APK" AndroidManifest.xml 2>/dev/null \
+              | grep -E '(oculus|supportedDevices|BOUNDARYLESS)' || true
           fi
           # Confirm the APK is signed with v2 (Meta requires v1 or v2) and
           # print the signing certificate digest — it MUST be identical on
