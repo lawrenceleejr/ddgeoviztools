@@ -224,23 +224,31 @@ jobs:
           QUEST_KEYSTORE_ALIAS: ${{ secrets.QUEST_KEYSTORE_ALIAS }}
           QUEST_KEYSTORE_PASS: ${{ secrets.QUEST_KEYSTORE_PASS }}
         run: |
-          # Use a persistent release keystore from repository secrets when
-          # available (required for Meta Horizon store — the signing key must
-          # stay constant across uploads).  Fall back to a freshly generated
-          # keystore for pull-request / development builds where store upload
-          # is not the goal.
+          # The signing certificate MUST stay identical across every build:
+          # Meta locks an app to the certificate of its first uploaded APK,
+          # and any later build signed with a different key is rejected
+          # (the web uploader hangs at "validating package contents" rather
+          # than erroring cleanly). Previously this step generated a fresh
+          # random keystore on every run, so only the very first upload ever
+          # succeeded — every build after it had a mismatched certificate.
+          #
+          # Now we use a stable key: the committed ColliderVisGodot/release.keystore
+          # (alias/pass "collidervis") by default, or a keystore supplied via
+          # repository secrets if you'd rather not use the committed one.
           if [ -n "$QUEST_KEYSTORE_B64" ]; then
             echo "$QUEST_KEYSTORE_B64" | base64 -d > ~/release.keystore
             KS_ALIAS="${QUEST_KEYSTORE_ALIAS:-collidervis}"
             KS_PASS="${QUEST_KEYSTORE_PASS:-collidervis}"
           else
+            cp ColliderVisGodot/release.keystore ~/release.keystore
             KS_ALIAS="collidervis"
             KS_PASS="collidervis"
-            keytool -genkeypair -v -keystore ~/release.keystore \
-              -storepass "$KS_PASS" -alias "$KS_ALIAS" \
-              -keypass "$KS_PASS" -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=ColliderVis,O=UTK,C=US"
           fi
+          # Print the certificate fingerprint so every build's signing key is
+          # auditable from the CI log (it must match across builds).
+          echo "--- signing certificate ---"
+          keytool -list -v -keystore ~/release.keystore -storepass "$KS_PASS" \
+            2>/dev/null | grep -E "Alias|SHA256:" || true
           # Expose alias/pass to subsequent steps via GITHUB_ENV.
           # The keystore file itself lives at ~/release.keystore for the
           # lifetime of this job runner.
@@ -308,6 +316,16 @@ jobs:
               AndroidManifest.xml 2>/dev/null \
               | grep -E '(oculus|vr_only|headtracking|supportedDevices)' \
               || echo "  (none found — vendors plugin may not have injected them)"
+          fi
+          # Confirm the APK is signed with v2 (Meta requires v1 or v2) and
+          # print the signing certificate digest — it MUST be identical on
+          # every build, or Meta rejects/hangs the upload.
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          if [ -n "$APKSIGNER" ]; then
+            echo "--- APK signature schemes + certificate ---"
+            "$APKSIGNER" verify --verbose --print-certs \
+              ColliderVisGodot/build/ColliderVis-Quest.apk \
+              | grep -iE "scheme v[0-9]|SHA-256 digest" || true
           fi
 
       - name: Upload Quest APK
