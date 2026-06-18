@@ -34,7 +34,10 @@ func setup(p_main: Node3D) -> void:
 	sub_vp = SubViewport.new()
 	sub_vp.size = Vector2i(VP_W, VP_H)
 	sub_vp.transparent_bg = true
-	sub_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	# Start disabled — the menu is hidden most of the time. Re-rendering this
+	# 760x1040 viewport every frame while invisible is a wasted render pass
+	# on the Quest. open()/close() flip this; point()/click() poke UPDATE_ONCE.
+	sub_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	sub_vp.gui_embed_subwindows = false
 	add_child(sub_vp)
 	_build_ui()
@@ -71,9 +74,12 @@ func _process(delta: float) -> void:
 	if _perf_t < 0.4:
 		return
 	_perf_t = 0.0
-	var method := RenderingServer.get_current_rendering_method()
-	_perf_label.text = "%d FPS   ·   renderer: %s" % [
-		Engine.get_frames_per_second(), method]
+	# On a correctly-configured Quest build this should read "mobile · vulkan".
+	# "forward_plus" or "opengl3" here means the export/renderer is misconfigured.
+	_perf_label.text = "%d FPS   ·   %s · %s" % [
+		Engine.get_frames_per_second(),
+		RenderingServer.get_current_rendering_method(),
+		RenderingServer.get_current_rendering_driver_name()]
 
 
 func is_open() -> bool:
@@ -99,12 +105,14 @@ func open(head_xform: Transform3D) -> void:
 	pos.y = head_xform.origin.y - 0.1
 	look_at_from_position(pos, head_xform.origin, Vector3.UP)
 	rotate_object_local(Vector3.UP, PI)   # show the +Z (un-mirrored) face
+	sub_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_refresh()
 	visible = true
 
 
 func close() -> void:
 	visible = false
+	sub_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 
 ## Map a world-space ray hit on the panel to a SubViewport mouse-move.

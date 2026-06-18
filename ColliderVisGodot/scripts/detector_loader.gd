@@ -9,6 +9,8 @@ extends RefCounted
 const MM_TO_M := 0.001
 
 const DETECTOR_SHADER := "res://shaders/detector.gdshader"
+# Cheaper matte/Lambert variant (specular disabled) for the Quest/phone tiler.
+const DETECTOR_SHADER_MOBILE := "res://shaders/detector_mobile.gdshader"
 
 ## keyword list -> [base color, metallic, roughness]
 const DETECTOR_MATERIALS := [
@@ -129,7 +131,7 @@ func _material_for(det_name: String) -> ShaderMaterial:
 		_fallback_idx += 1
 		chosen = fb
 	var mat := ShaderMaterial.new()
-	mat.shader = load(DETECTOR_SHADER)
+	mat.shader = load(DETECTOR_SHADER_MOBILE if OS.has_feature("mobile") else DETECTOR_SHADER)
 	mat.set_shader_parameter("albedo", chosen[0])
 	mat.set_shader_parameter("metallic", chosen[1])
 	mat.set_shader_parameter("roughness", chosen[2])

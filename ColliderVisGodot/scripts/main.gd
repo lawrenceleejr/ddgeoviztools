@@ -101,16 +101,24 @@ func _ready() -> void:
 	# Default render scale: low-ish on desktop (FSR2 hides it well);
 	# floor it on mobile where smoothness beats resolution.
 	set_render_scale(0.5 if is_mobile else 0.6)
+	_build_post_fx()
+	# Initialize XR FIRST — head tracking (xr_camera.current = true) must be
+	# established before any of the mobile-optimization code below runs. If
+	# that code ever errors, the headset must NOT be left rendering from the
+	# static desktop camera (which looks exactly like broken head tracking).
+	var xr_ok := false
+	if not _args.has("screenshot"):
+		xr_ok = _try_init_xr()
 	if is_mobile:
 		apply_quality("performance")
 		_optimize_geometry_for_mobile()
-	match String(_args.get("mode", "orbit")):
-		"fly":
-			cycle_camera_mode()
-		"walk":
-			cycle_camera_mode()
-			cycle_camera_mode()
-	_build_post_fx()
+	if not xr_ok:
+		match String(_args.get("mode", "orbit")):
+			"fly":
+				cycle_camera_mode()
+			"walk":
+				cycle_camera_mode()
+				cycle_camera_mode()
 	ui = UI.new()
 	ui.name = "UI"
 	add_child(ui)
@@ -119,7 +127,7 @@ func _ready() -> void:
 		ui.visible = false
 	if _args.has("screenshot"):
 		_run_screenshot_mode()
-	elif _try_init_xr():
+	elif xr_ok:
 		pass   # VR session running; flat-screen input stays available too
 	else:
 		_sync_mouse_mode()   # menu starts closed -> mouse drives the camera
@@ -137,10 +145,19 @@ func _try_init_xr() -> bool:
 		return false
 	var vp := get_viewport()
 	vp.use_xr = true
-	# Headset perf: low render scale (dynamic foveation does the rest, see
-	# project.godot) with a little MSAA — aliasing is brutal in VR. MSAA is
-	# cheap on the Quest tiler so it stays on; the render scale absorbs the
-	# fragment cost of the cull_disabled detector overdraw.
+	# Foveated rendering. CRITICAL: on the Forward Mobile renderer the
+	# `xr/openxr/foveation_level` project setting does NOTHING — foveation is
+	# driven by Variable Rate Shading. Without this the whole frame renders at
+	# full rate edge-to-edge (a big, previously-missed GPU cost on the Quest).
+	vp.vrs_mode = Viewport.VRS_XR
+	# OpenXR runs its own frame pacing; Godot's vsync fights it and adds
+	# latency/judder. Hand timing to the runtime.
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	# Match physics to the headset refresh so tracked motion stays smooth.
+	Engine.physics_ticks_per_second = 72
+	# Headset perf: low render scale + a little MSAA (cheap on the tiler since
+	# it resolves in tile memory). The render scale absorbs the fragment cost
+	# of the cull_disabled detector overdraw; VRS above drops peripheral cost.
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
 	vp.scaling_3d_scale = 0.5
 	vp.msaa_3d = Viewport.MSAA_2X
@@ -1196,6 +1213,10 @@ func _build_post_fx() -> void:
 
 func _process(_delta: float) -> void:
 	_process_xr(_delta)
+	# The lens/motion-blur post pass is disabled on mobile (post_fx layer is
+	# hidden), so don't waste per-frame work computing motion vectors for it.
+	if is_mobile:
+		return
 	# Feed the camera's screen-space motion to the motion-blur pass.
 	var cam := current_camera()
 	if cam == null or post_fx_mat == null:

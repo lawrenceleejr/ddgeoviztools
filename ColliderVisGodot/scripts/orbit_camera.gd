@@ -47,10 +47,14 @@ func _ready() -> void:
 	fov = BASE_FOV
 	near = 0.05
 	far = 200.0
-	_attrs = CameraAttributesPractical.new()
-	_attrs.dof_blur_far_enabled = true
-	_attrs.dof_blur_amount = 0.07
-	attributes = _attrs
+	# Depth-of-field is a full-screen blur pass — far too expensive for the
+	# Quest/phone tiler, and this camera isn't even current in an XR session.
+	# Only enable it on desktop.
+	if not OS.has_feature("mobile"):
+		_attrs = CameraAttributesPractical.new()
+		_attrs.dof_blur_far_enabled = true
+		_attrs.dof_blur_amount = 0.07
+		attributes = _attrs
 	_apply_orbit(true)
 
 
@@ -194,8 +198,9 @@ func _process(delta: float) -> void:
 				position += dir.normalized() * speed * delta
 				_idle_time = 0.0
 		# DOF: focus mid-field while flying.
-		_attrs.dof_blur_far_distance = 16.0
-		_attrs.dof_blur_far_transition = 12.0
+		if _attrs != null:
+			_attrs.dof_blur_far_distance = 16.0
+			_attrs.dof_blur_far_transition = 12.0
 		return
 
 	# Idle auto-orbit — slow cinematic turntable drift.
@@ -213,5 +218,6 @@ func _process(delta: float) -> void:
 
 	# DOF bokeh tracks the subject: focus starts past the orbit target so
 	# the detector stays crisp while the dome melts away.
-	_attrs.dof_blur_far_distance = _s_distance * 1.45
-	_attrs.dof_blur_far_transition = _s_distance * 1.1
+	if _attrs != null:
+		_attrs.dof_blur_far_distance = _s_distance * 1.45
+		_attrs.dof_blur_far_transition = _s_distance * 1.1

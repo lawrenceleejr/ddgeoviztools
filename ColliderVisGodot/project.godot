@@ -38,9 +38,15 @@ openxr/enabled.android=true
 openxr/default_action_map="res://openxr_action_map.tres"
 shaders/enabled=false
 shaders/enabled.android=true
-; Aggressive dynamic foveation — big fragment-cost win on Quest.
+; Foveation. NOTE: foveation_level/_dynamic only take effect on the
+; Compatibility renderer; on the Mobile renderer (what Quest uses) foveation
+; is driven by Variable Rate Shading — set in code via Viewport.VRS_XR in
+; _try_init_xr(). These are kept for the Compatibility fallback path.
 openxr/foveation_level=3
 openxr/foveation_dynamic=true
+; Submit the depth buffer so the runtime can reproject accurately when a
+; frame misses timing (reduces judder under load).
+openxr/submit_depth_buffer=true
 
 [rendering]
 
@@ -50,7 +56,9 @@ renderer/rendering_method="forward_plus"
 renderer/rendering_method.mobile="mobile"
 textures/vram_compression/import_etc2_astc=true
 anti_aliasing/quality/msaa_3d=1
-anti_aliasing/quality/use_taa=true
+; TAA conflicts with stereo + reprojection on the headset and adds blur; the
+; desktop FSR2 path toggles TAA per render-scale in set_render_scale() instead.
+anti_aliasing/quality/use_taa=false
 lights_and_shadows/directional_shadow/size=4096
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=2
 lights_and_shadows/positional_shadow/atlas_size=4096
