@@ -145,21 +145,14 @@ func _try_init_xr() -> bool:
 		return false
 	var vp := get_viewport()
 	vp.use_xr = true
-	# NOTE: Variable Rate Shading foveation (Viewport.VRS_XR) is intentionally
-	# NOT enabled here. On Godot 4.6 + the Vulkan Mobile renderer it triggers a
-	# known rendering failure on Quest (black screen — Godot issue #112988), and
-	# that is exactly what we hit. Foveation must instead come from the OpenXR
-	# vendors plugin / a future fixed build. Leaving VRS disabled so the headset
-	# actually renders.
-	vp.vrs_mode = Viewport.VRS_DISABLED
-	# OpenXR runs its own frame pacing; Godot's vsync fights it and adds
-	# latency/judder. Hand timing to the runtime.
-	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
-	# Match physics to the headset refresh so tracked motion stays smooth.
-	Engine.physics_ticks_per_second = 72
+	# NOTE: this XR render path is deliberately kept minimal — exactly the
+	# configuration that last rendered in stereo on the headset. Several
+	# "optimizations" (VRS_XR foveation, vsync override, depth-buffer
+	# submission) each caused a fully black, frozen headset on Godot 4.6 +
+	# Quest, so they are intentionally NOT set here. Do not re-add them
+	# without testing on-device.
 	# Headset perf: low render scale + a little MSAA (cheap on the tiler since
-	# it resolves in tile memory). The render scale absorbs the fragment cost
-	# of the cull_disabled detector overdraw; VRS above drops peripheral cost.
+	# it resolves in tile memory).
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
 	vp.scaling_3d_scale = 0.5
 	vp.msaa_3d = Viewport.MSAA_2X
