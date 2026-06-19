@@ -145,11 +145,13 @@ func _try_init_xr() -> bool:
 		return false
 	var vp := get_viewport()
 	vp.use_xr = true
-	# Foveated rendering. CRITICAL: on the Forward Mobile renderer the
-	# `xr/openxr/foveation_level` project setting does NOTHING — foveation is
-	# driven by Variable Rate Shading. Without this the whole frame renders at
-	# full rate edge-to-edge (a big, previously-missed GPU cost on the Quest).
-	vp.vrs_mode = Viewport.VRS_XR
+	# NOTE: Variable Rate Shading foveation (Viewport.VRS_XR) is intentionally
+	# NOT enabled here. On Godot 4.6 + the Vulkan Mobile renderer it triggers a
+	# known rendering failure on Quest (black screen — Godot issue #112988), and
+	# that is exactly what we hit. Foveation must instead come from the OpenXR
+	# vendors plugin / a future fixed build. Leaving VRS disabled so the headset
+	# actually renders.
+	vp.vrs_mode = Viewport.VRS_DISABLED
 	# OpenXR runs its own frame pacing; Godot's vsync fights it and adds
 	# latency/judder. Hand timing to the runtime.
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
