@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mcp-unreal": {
+      "type": "stdio",
+      "command": "${MCP_UNREAL_BIN:-mcp-unreal}",
+      "args": [],
+      "env": {
+        "MCP_UNREAL_PROJECT": "${MCP_UNREAL_PROJECT:-}"
+      }
+    }
+  }
+}

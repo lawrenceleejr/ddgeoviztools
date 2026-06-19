@@ -1,1 +1,22 @@
+# Python
+__pycache__/
+*.pyc
 src/__pycache__/
+
+# Unreal Engine — generated / machine-local
+ColliderVis/Binaries/
+ColliderVis/Build/
+ColliderVis/Intermediate/
+ColliderVis/Saved/
+ColliderVis/DerivedDataCache/
+ColliderVis/.vs/
+ColliderVis/*.xcodeproj/
+ColliderVis/*.xcworkspace/
+
+# Vendored third-party UE plugin (installed per-machine, see MCP_SETUP.md)
+ColliderVis/Plugins/MCPUnreal/
+
+# Packaged builds + pipeline outputs
+Builds/
+ue5_meshes/
+renders/
