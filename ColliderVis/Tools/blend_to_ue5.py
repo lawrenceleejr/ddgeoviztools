@@ -17,7 +17,7 @@ manifest.json schema:
   "sub_detectors": [
     {
       "name": "ECalBarrel",
-      "gltf_file": "ECalBarrel.gltf",
+      "gltf_file": "ECalBarrel.glb",
       "base_color": [r, g, b, a],
       "metallic": 0.10,
       "roughness": 0.35,
@@ -176,6 +176,7 @@ def export_object_as_gltf(obj, output_path: Path, context):
     # Export selection as GLTF
     bpy.ops.export_scene.gltf(
         filepath=str(output_path),
+        export_format='GLB',          # binary glTF — single .glb file (matches gltf_file in manifest)
         use_selection=True,
         export_apply=True,
         export_materials='EXPORT',
@@ -310,7 +311,7 @@ def main():
 
     for obj in objects:
         name = obj.name
-        gltf_filename = f"{name}.gltf"
+        gltf_filename = f"{name}.glb"
         gltf_path = output_dir / gltf_filename
 
         print(f"  Exporting: {name} → {gltf_filename}")

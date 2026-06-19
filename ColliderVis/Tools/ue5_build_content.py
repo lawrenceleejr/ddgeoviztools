@@ -78,8 +78,8 @@ FLIP_Y = True
 # Photometric approximations (Blender radiometric watts -> UE photometric units).
 # Exact Cycles<->Lumen matching is impossible across renderers; these are tunable
 # starting points, refined visually via the mcp-unreal capture_viewport loop.
-LUMENS_PER_WATT = 120.0   # AREA / POINT / SPOT  (Blender W -> UE lumens)
-LUX_PER_WM2     = 120.0   # SUN                  (Blender W/m^2 -> UE lux)
+LUMENS_PER_WATT = 24.0    # AREA / POINT / SPOT  (Blender W -> UE lumens) — tuned at human scale inside the spherical hall (120 blew out, 8 too dark, 40 a touch hot)
+LUX_PER_WM2     = 180.0   # SUN                  (Blender W/m^2 -> UE lux)
 
 # Number-row FKey names (UE EKeys use spelled-out names).
 _NUM_KEYS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five",
@@ -528,8 +528,13 @@ def _key(name):
     return k
 
 
-def _mod_negate():
-    return unreal.InputModifierNegate()
+def _mod_negate(x=True, y=True, z=True):
+    m = unreal.InputModifierNegate()   # plain instance (NOT new_object — bX/bY/bZ can't be set on a template)
+    try:
+        m.set_editor_property("x", x); m.set_editor_property("y", y); m.set_editor_property("z", z)
+    except Exception:
+        pass
+    return m
 
 
 def _mod_swizzle():
@@ -547,25 +552,25 @@ def _mod_scalar(v):
 
 
 def _add_mapping(imc, action, key, modifiers=None, triggers=None):
+    # NOTE: imc.map_key() returns a *by-value* FEnhancedActionKeyMapping struct, so setting
+    # modifiers on its result never reaches the stored mapping (and the key itself often fails
+    # to persist). Build the mapping struct ourselves and append it to the array instead.
     if action is None or key is None:
         return False
     try:
-        m = imc.map_key(action, key)
+        m = unreal.EnhancedActionKeyMapping()
+        m.set_editor_property("action", action)
+        m.set_editor_property("key", key)
         if modifiers:
-            if _set_prop(m, modifiers, "modifiers") is None:
-                try:
-                    m.modifiers = modifiers
-                except Exception:
-                    pass
+            m.set_editor_property("modifiers", modifiers)
         if triggers:
-            if _set_prop(m, triggers, "triggers") is None:
-                try:
-                    m.triggers = triggers
-                except Exception:
-                    pass
+            m.set_editor_property("triggers", triggers)
+        arr = list(imc.get_editor_property("mappings"))
+        arr.append(m)
+        imc.set_editor_property("mappings", arr)
         return True
     except Exception as e:
-        _warn("map_key failed (%s): %s" % (key, e))
+        _warn("add_mapping failed (%s): %s" % (key, e))
         return False
 
 
@@ -608,11 +613,14 @@ def stage_input(report):
         # IMC_Default (desktop) — fully built incl. modifiers.
         try:
             imc = _make_imc("IMC_Default")
-            _add_mapping(imc, actions.get("IA_Move"), _key("W"))
-            _add_mapping(imc, actions.get("IA_Move"), _key("S"), [_mod_negate()])
-            _add_mapping(imc, actions.get("IA_Move"), _key("A"), [_mod_swizzle(), _mod_negate()])
-            _add_mapping(imc, actions.get("IA_Move"), _key("D"), [_mod_swizzle()])
-            _add_mapping(imc, actions.get("IA_Look"), _key("Mouse2D"))
+            # Move() reads Value.Y as forward, Value.X as right. A key fills X by default,
+            # so forward/back (W/S) need a YXZ swizzle to land on Y; left (A) negates X.
+            _add_mapping(imc, actions.get("IA_Move"), _key("W"), [_mod_swizzle()])
+            _add_mapping(imc, actions.get("IA_Move"), _key("S"), [_mod_swizzle(), _mod_negate()])
+            _add_mapping(imc, actions.get("IA_Move"), _key("A"), [_mod_negate()])
+            _add_mapping(imc, actions.get("IA_Move"), _key("D"))
+            # Invert mouse Y so pushing the mouse up looks up.
+            _add_mapping(imc, actions.get("IA_Look"), _key("Mouse2D"), [_mod_negate(False, True, False)])
             _add_mapping(imc, actions.get("IA_Jump"), _key("SpaceBar"))
             _add_mapping(imc, actions.get("IA_SwitchMode"), _key("Tab"))
             # Hold Right Mouse Button to dynamically zoom the camera in for detail.
@@ -862,6 +870,9 @@ def _light_component(actor):
 
 def _configure_light(comp, L):
     t = L["type"]
+    # Movable: this is a Lumen (fully dynamic GI) project, so there is nothing to bake — keeping
+    # lights Stationary makes "Build Lighting" nag and fail (Nanite meshes have no lightmap UVs).
+    _set_prop(comp, unreal.ComponentMobility.MOVABLE, "mobility")
     temp = L.get("temperature_k")
     if temp:
         _set_prop(comp, True, "use_temperature")
