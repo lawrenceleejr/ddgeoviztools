@@ -101,36 +101,35 @@ func _ready() -> void:
 	# Default render scale: low-ish on desktop (FSR2 hides it well);
 	# floor it on mobile where smoothness beats resolution.
 	set_render_scale(0.5 if is_mobile else 0.6)
-	_build_post_fx()
-	# Initialize XR FIRST — head tracking (xr_camera.current = true) must be
-	# established before any of the mobile-optimization code below runs. If
-	# that code ever errors, the headset must NOT be left rendering from the
-	# static desktop camera (which looks exactly like broken head tracking).
-	var xr_ok := false
-	if not _args.has("screenshot"):
-		xr_ok = _try_init_xr()
 	if is_mobile:
 		apply_quality("performance")
-		_optimize_geometry_for_mobile()
-	if not xr_ok:
-		match String(_args.get("mode", "orbit")):
-			"fly":
-				cycle_camera_mode()
-			"walk":
-				cycle_camera_mode()
-				cycle_camera_mode()
+	match String(_args.get("mode", "orbit")):
+		"fly":
+			cycle_camera_mode()
+		"walk":
+			cycle_camera_mode()
+			cycle_camera_mode()
+	_build_post_fx()
 	ui = UI.new()
 	ui.name = "UI"
 	add_child(ui)
 	ui.build(self)
 	if _args.has("screenshot") and not _args.has("hud"):
 		ui.visible = false
+	# _try_init_xr() is called LAST so that xr_camera.current = true is the
+	# final word on which camera is active — running it earlier let later
+	# setup (ui.build etc.) steal `current` back to the desktop camera, which
+	# is exactly the head-locked symptom. This is the order that head-tracks.
 	if _args.has("screenshot"):
 		_run_screenshot_mode()
-	elif xr_ok:
+	elif _try_init_xr():
 		pass   # VR session running; flat-screen input stays available too
 	else:
 		_sync_mouse_mode()   # menu starts closed -> mouse drives the camera
+	# Mesh-LOD tweak runs dead last — after XR is fully up — so that even if it
+	# ever errors it can never prevent head-tracking initialization.
+	if is_mobile:
+		_optimize_geometry_for_mobile()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
