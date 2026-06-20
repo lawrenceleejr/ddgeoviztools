@@ -265,6 +265,18 @@ first-and-last-slice representation so its instrumented structure stays
 visible. Pass `--no-calo-layer-bbox` to use the first+last-slice
 representation for ECAL/HCAL too (more detail, more polygons).
 
+### Tracker module simplification
+
+The trackers (Vertex, InnerTrackers, OuterTrackers) follow the analogous
+DD4hep pattern: each `<module>` is built from several `<module_component>`
+slabs (silicon, kapton, glue, support…). Under `--simplify` (**on by
+default**) the conversion **stops at the module level**: every tracker module
+is kept as a single envelope shape and all of its internal components are
+dropped — even when a component carries its own sub-structure. This keeps the
+full cylindrical/disk module pattern visible while never descending below the
+module. Detector-, layer- and disk-level Air/Vacuum containers become
+assemblies (no mesh), and module supports/cables keep only their envelope.
+
 ---
 
 ### `blender-scene`

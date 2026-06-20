@@ -615,6 +615,11 @@ def _simplify_gdml_envelopes(
             matref = vol_el.find("materialref")
         return matref.get("ref") if matref is not None else None
 
+    def _is_module_name(name):
+        # DD4hep/k4geo tracker <module>s flatten to volumes whose name carries
+        # "module" (e.g. InnerTrackerBarrelModule_01, SiVertexEndcapModule1_0).
+        return name is not None and "module" in name.lower()
+
     _AIR_MATERIALS = {"Air", "Vacuum", "G4_AIR", "G4_Galactic"}
 
     total_removed = 0
@@ -783,6 +788,31 @@ def _simplify_gdml_envelopes(
 
         pvs = _get_pvs(vol_el)
         mat = _material(vol_el)
+
+        # ---- Explicit module-level stop ----
+        # A tracker <module> is built from several <module_component> slabs
+        # (silicon, kapton, glue, …) which flatten to `component*` volumes
+        # here.  As soon as we reach a module we collapse it to its own
+        # envelope solid and drop everything beneath it — even if a component
+        # carries its own sub-structure — so the visualisation never descends
+        # below the module level.  We only skip this when a child is itself a
+        # module or an assembly (i.e. this volume is a structural group of
+        # modules, not a leaf module), in which case we recurse to reach the
+        # real modules.
+        if pvs and _is_module_name(vol_name):
+            child_is_structural = any(
+                (cv := vol_index.get(_volref(pv))) is not None
+                and (_is_assembly(cv) or _is_module_name(cv.get("name")))
+                for pv in pvs if _volref(pv) is not None
+            )
+            if not child_is_structural:
+                _remove_pvs(vol_el)
+                # Keep the (Air/Vacuum) module envelope visible past the final
+                # Air→assembly pass.
+                _keep_solid.add(vol_name)
+                print(f"  [TRK-SIMPL] {vol_name}: module → envelope "
+                      f"({len(pvs)} component(s) dropped)", flush=True)
+                return
 
         if mat in _AIR_MATERIALS:
             # Check if all children are leaves (no grandchildren) FIRST,
