@@ -546,6 +546,18 @@ def _simplify_gdml_envelopes(
         print("  [SIMPLIFY] lxml not available — skipping", flush=True)
         return gdml_path
 
+    # Calorimeter layer-bounding-box mode (ON by default).  When enabled, each
+    # ECAL/HCAL sampling layer is collapsed to a single shape — its own layer
+    # envelope solid — and all of its internal slices are dropped.  This turns
+    # O(thousands) of slice meshes into O(layers) shapes, keeping the GLTF
+    # triangle/draw-call count low enough for live Unreal Engine rendering.
+    # The yoke is deliberately excluded (it keeps the first+last-slice look).
+    # Toggled via the --calo-layer-bbox / --no-calo-layer-bbox CLI flags, which
+    # set this env var (propagates into spawn subprocesses, like NSLICE).
+    import os as _os
+    _bbox_env = _os.environ.get("DDGEOVIZTOOLS_CALO_LAYER_BBOX", "1").strip().lower()
+    calo_layer_bbox = _bbox_env not in ("0", "false", "no", "off", "")
+
     tree = etree.parse(str(gdml_path))
     root = tree.getroot()
 
@@ -638,7 +650,7 @@ def _simplify_gdml_envelopes(
     # Calorimeter: envelope → stave(s) → stave_inner → layers → slices
     # Keep first + last slice per layer; layer envelope → assembly.
     # ------------------------------------------------------------------
-    def _simplify_calo(vol_name):
+    def _simplify_calo(vol_name, layer_bbox=False):
         nonlocal total_removed
         if vol_name in _visited:
             return
@@ -661,7 +673,7 @@ def _simplify_gdml_envelopes(
             for pv in _get_pvs(vol_el):
                 cn = _volref(pv)
                 if cn:
-                    _simplify_calo(cn)
+                    _simplify_calo(cn, layer_bbox)
             return
 
         if not _has_solid(vol_el):
@@ -685,24 +697,41 @@ def _simplify_gdml_envelopes(
                 break
 
         if children_are_slices:
-            # Layer — keep only first and last slice so the sampling
-            # structure is visible, and convert the layer itself to an
-            # <assembly> so its Air bounding-box won't render.
             pvs_list = list(pvs)
-            if len(pvs_list) > 2:
-                for pv in pvs_list[1:-1]:
+            if layer_bbox:
+                # Layer bounding-box mode (ECAL/HCAL): drop every slice and
+                # keep the layer's own envelope solid so the whole layer
+                # renders as a single low-poly shape.  This is the cheapest
+                # faithful representation — one shape per layer instead of one
+                # mesh per slice — which is what keeps the Unreal triangle and
+                # draw-call budget manageable.
+                for pv in pvs_list:
                     vol_el.remove(pv)
                     total_removed += 1
-                print(f"  [CALO-SIMPL]   → layer: kept first+last "
-                      f"({len(pvs_list)} → 2 slices)", flush=True)
-            # Strip the layer's own solid/material so only slices render
-            for child_tag in ("solidref", "materialref"):
-                el = vol_el.find(tag(child_tag))
-                if el is None:
-                    el = vol_el.find(child_tag)
-                if el is not None:
-                    vol_el.remove(el)
-            vol_el.tag = "assembly"
+                # Protect this solid from the final Air→assembly pass; without
+                # it the Air-material layer envelope would be stripped and
+                # nothing would render for the layer.
+                _keep_solid.add(vol_name)
+                print(f"  [CALO-SIMPL]   → layer: bounding box "
+                      f"({len(pvs_list)} slices → 1 envelope)", flush=True)
+            else:
+                # Layer — keep only first and last slice so the sampling
+                # structure is visible, and convert the layer itself to an
+                # <assembly> so its Air bounding-box won't render.
+                if len(pvs_list) > 2:
+                    for pv in pvs_list[1:-1]:
+                        vol_el.remove(pv)
+                        total_removed += 1
+                    print(f"  [CALO-SIMPL]   → layer: kept first+last "
+                          f"({len(pvs_list)} → 2 slices)", flush=True)
+                # Strip the layer's own solid/material so only slices render
+                for child_tag in ("solidref", "materialref"):
+                    el = vol_el.find(tag(child_tag))
+                    if el is None:
+                        el = vol_el.find(child_tag)
+                    if el is not None:
+                        vol_el.remove(el)
+                vol_el.tag = "assembly"
         else:
             # Container (stave_outer, stave_inner, endcap) — recurse.
             # If it's an Air volume, convert to assembly so its bounding
@@ -721,7 +750,7 @@ def _simplify_gdml_envelopes(
                 cn = _volref(pv)
                 if cn:
                     child_names.append(cn)
-                    _simplify_calo(cn)
+                    _simplify_calo(cn, layer_bbox)
             unique = len(set(child_names))
             if unique < len(child_names):
                 print(f"  [CALO-SIMPL]   → container: {len(child_names)} physvols "
@@ -847,6 +876,12 @@ def _simplify_gdml_envelopes(
     _CALO_NAMES = (
         "ecal", "hcal", "yoke", "calo", "calorimeter", "muon",
     )
+    # Calorimeter systems that get the one-bounding-box-per-layer treatment
+    # when calo_layer_bbox is enabled.  The yoke (and muon system) are
+    # deliberately excluded — the user wants only ECAL/HCAL collapsed.
+    _CALO_BBOX_NAMES = (
+        "ecal", "hcal",
+    )
     _TRACKER_NAMES = (
         "tracker", "vertex", "innertrackers", "outertrackers",
     )
@@ -863,9 +898,13 @@ def _simplify_gdml_envelopes(
         name_lower = child_name.lower()
 
         if any(k in name_lower for k in _CALO_NAMES):
-            print(f"  [SIMPLIFY] {child_name}: calorimeter "
-                  f"(first+last slice per layer)", flush=True)
-            _simplify_calo(child_name)
+            use_bbox = calo_layer_bbox and any(
+                k in name_lower for k in _CALO_BBOX_NAMES
+            )
+            mode = ("one bounding box per layer" if use_bbox
+                    else "first+last slice per layer")
+            print(f"  [SIMPLIFY] {child_name}: calorimeter ({mode})", flush=True)
+            _simplify_calo(child_name, layer_bbox=use_bbox)
             # --- Post-simplification physvol summary for diagnostics ---
             def _dump_pvs(vname, depth=0):
                 vel = vol_index.get(vname)

@@ -120,6 +120,8 @@ def cmd_split(args: argparse.Namespace) -> int:
 def cmd_convert(args: argparse.Namespace) -> int:
     import os
     os.environ["DDGEOVIZTOOLS_NSLICE"] = str(args.nslice)
+    calo_layer_bbox = not getattr(args, "no_calo_layer_bbox", False)
+    os.environ["DDGEOVIZTOOLS_CALO_LAYER_BBOX"] = "1" if calo_layer_bbox else "0"
 
     from gdml_converter import convert_gdml
 
@@ -139,6 +141,10 @@ def cmd_convert(args: argparse.Namespace) -> int:
     print(f"Converting {args.gdml_file}  →  {output_path}  [{fmt.upper()}]", flush=True)
     if simplify:
         print("  Simplify mode: keeping envelope shapes only (no internal structure)", flush=True)
+        if calo_layer_bbox:
+            print("  ECAL/HCAL: one bounding box per layer (slices dropped; yoke excluded)", flush=True)
+        else:
+            print("  ECAL/HCAL: first+last slice per layer", flush=True)
     if chunk_timeout:
         print(f"  chunk-timeout: {chunk_timeout}s per auto-split chunk", flush=True)
     if skip_existing:
@@ -168,6 +174,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
 def cmd_split_convert(args: argparse.Namespace) -> int:
     import os
     os.environ["DDGEOVIZTOOLS_NSLICE"] = str(args.nslice)
+    calo_layer_bbox = not getattr(args, "no_calo_layer_bbox", False)
+    # Set before the worker pool is spawned so child processes inherit it.
+    os.environ["DDGEOVIZTOOLS_CALO_LAYER_BBOX"] = "1" if calo_layer_bbox else "0"
 
     from gdml_splitter import split_gdml
 
@@ -216,6 +225,10 @@ def cmd_split_convert(args: argparse.Namespace) -> int:
     print(f"[2/2] Converting to {fmt.upper()} → {output_dir}/", flush=True)
     if simplify:
         print(f"      simplify: envelope shapes only (no internal structure)", flush=True)
+        if calo_layer_bbox:
+            print(f"      ECAL/HCAL: one bounding box per layer (slices dropped; yoke excluded)", flush=True)
+        else:
+            print(f"      ECAL/HCAL: first+last slice per layer", flush=True)
     if timeout:
         print(f"      timeout: {timeout}s per detector", flush=True)
     if chunk_timeout:
@@ -465,6 +478,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable physics-aware simplification (full detail, slower).",
     )
     p_conv.add_argument(
+        "--calo-layer-bbox", action="store_true", default=True,
+        help=(
+            "Calorimeter layer bounding-box mode (ON by default): collapse each "
+            "ECAL/HCAL sampling layer to a single bounding-box shape (its layer "
+            "envelope) and drop all internal slices.  Turns O(thousands) of "
+            "slice meshes into O(layers) shapes for low-poly live rendering "
+            "(e.g. Unreal Engine).  The yoke is excluded.  Requires --simplify."
+        ),
+    )
+    p_conv.add_argument(
+        "--no-calo-layer-bbox", action="store_true",
+        help=(
+            "Disable calorimeter layer bounding-box mode; keep the first and "
+            "last slice of each ECAL/HCAL layer instead (more detail, more polys)."
+        ),
+    )
+    p_conv.add_argument(
         "--chunk-timeout", type=int, default=1200, metavar="SECS",
         dest="chunk_timeout",
         help=(
@@ -555,6 +585,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_sc.add_argument(
         "--no-simplify", action="store_true",
         help="Disable physics-aware simplification (full detail, slower).",
+    )
+    p_sc.add_argument(
+        "--calo-layer-bbox", action="store_true", default=True,
+        help=(
+            "Calorimeter layer bounding-box mode (ON by default): collapse each "
+            "ECAL/HCAL sampling layer to a single bounding-box shape (its layer "
+            "envelope) and drop all internal slices.  Turns O(thousands) of "
+            "slice meshes into O(layers) shapes for low-poly live rendering "
+            "(e.g. Unreal Engine).  The yoke is excluded.  Requires --simplify."
+        ),
+    )
+    p_sc.add_argument(
+        "--no-calo-layer-bbox", action="store_true",
+        help=(
+            "Disable calorimeter layer bounding-box mode; keep the first and "
+            "last slice of each ECAL/HCAL layer instead (more detail, more polys)."
+        ),
     )
     p_sc.add_argument(
         "--chunk-timeout", type=int, default=1200, metavar="SECS",

@@ -212,6 +212,9 @@ output/
 |------|---------|-------------|
 | `--output` | *(required)* | Output file path (`.obj`, `.gltf`, `.glb`, `.vtp`) |
 | `--format` | *(from extension)* | Force output format regardless of extension |
+| `--simplify` / `--no-simplify` | on | Physics-aware simplification: keep envelope shapes only (no internal structure). |
+| `--calo-layer-bbox` / `--no-calo-layer-bbox` | on | Collapse each ECAL/HCAL sampling layer to a single bounding-box shape (its layer envelope) and drop all internal slices. See [Calorimeter layer simplification](#calorimeter-layer-simplification). Requires `--simplify`. |
+| `--nslice` | `128` | Azimuthal segments for tessellating curved solids. |
 
 **Supported formats:**
 
@@ -237,7 +240,30 @@ output/
 | `--format` | `gltf` | Mesh format for all sub-detectors |
 | `--depth` | `1` | Split depth (see `split`) |
 | `--detectors` | all | Comma-separated LV name filter |
+| `--calo-layer-bbox` / `--no-calo-layer-bbox` | on | Collapse each ECAL/HCAL layer to a single bounding-box shape (see [below](#calorimeter-layer-simplification)). |
 | `--fail-fast` | off | Abort on first conversion error (default: warn and continue) |
+
+---
+
+### Calorimeter layer simplification
+
+The HCAL and ECAL are built from O(50) sampling **layers**, each of which is
+itself made of several thin **slices** (absorber, scintillator, PCB, …).
+Writing every slice out produces thousands of meshes per sub-detector and
+tens of millions of triangles once the full azimuthal pattern is unrolled —
+far too heavy for a live rendering engine such as Unreal.
+
+With `--calo-layer-bbox` (**on by default**, requires `--simplify`), each
+ECAL/HCAL layer is collapsed to a **single bounding-box shape** — its own
+layer-envelope solid — and all of its internal slices are dropped. This turns
+each `HCalEndcap` from many thousands of slice meshes into ~O(100) layer
+shapes (one per layer), keeping the triangle and draw-call counts low while
+preserving the visible layer structure.
+
+The **yoke is deliberately excluded** from this collapse: it keeps the
+first-and-last-slice representation so its instrumented structure stays
+visible. Pass `--no-calo-layer-bbox` to use the first+last-slice
+representation for ECAL/HCAL too (more detail, more polygons).
 
 ---
 
