@@ -7,10 +7,11 @@ public class ColliderVisEditorTarget : TargetRules
 		Type = TargetType.Editor;
 		// See ColliderVis.Target.cs for the rationale behind these values —
 		// the editor and game targets share their build-settings version.
-		// V6 is required when sharing UnrealEditor binaries on UE 5.7+;
-		// V5 mixed with the engine's V6 settings triggers "modifies the
-		// values of properties: UndefinedIdentifierWarningLevel" from UBT.
-		DefaultBuildSettings = BuildSettingsVersion.V6;
+		// V7 is required when sharing UnrealEditor binaries on UE 5.8+;
+		// an older version mixed with the engine's V7 settings triggers
+		// "modifies the values of properties: UnreachableCode/ReturnType/
+		// DanglingWarningLevel" from UBT.
+		DefaultBuildSettings = BuildSettingsVersion.V7;
 		IncludeOrderVersion  = EngineIncludeOrderVersion.Latest;
 		ExtraModuleNames.Add("ColliderVis");
 	}

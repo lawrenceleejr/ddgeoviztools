@@ -1,0 +1,3199 @@
+{
+  "event_number": 4,
+  "run_number": 1,
+  "_label": "busy_bib",
+  "tracks": [
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -364.15,
+          -172.37,
+          174.0
+        ],
+        [
+          -738.9,
+          -344.74,
+          323.8
+        ],
+        [
+          -1122.65,
+          -517.11,
+          448.78
+        ],
+        [
+          -1513.75,
+          -689.48,
+          548.39
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 10.059,
+      "pdg": 211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -547.9,
+          -332.49,
+          378.49
+        ],
+        [
+          -1069.87,
+          -664.98,
+          792.01
+        ],
+        [
+          -1563.67,
+          -997.46,
+          1238.78
+        ]
+      ],
+      "charge": -1.0,
+      "momentum_gev": 17.061,
+      "pdg": -211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -307.16,
+          -257.8,
+          134.68
+        ],
+        [
+          -622.46,
+          -515.6,
+          248.99
+        ],
+        [
+          -944.57,
+          -773.4,
+          342.43
+        ],
+        [
+          -1272.1,
+          -1031.2,
+          414.6
+        ],
+        [
+          -1603.65,
+          -1289.0,
+          465.2
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 9.696,
+      "pdg": 211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -246.41,
+          -288.63,
+          130.72
+        ],
+        [
+          -500.84,
+          -577.27,
+          245.04
+        ],
+        [
+          -762.2,
+          -865.9,
+          342.47
+        ],
+        [
+          -1029.37,
+          -1154.53,
+          422.6
+        ],
+        [
+          -1301.21,
+          -1443.17,
+          485.09
+        ],
+        [
+          -1576.56,
+          -1731.8,
+          529.67
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 9.2,
+      "pdg": 211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -182.77,
+          -211.58,
+          76.31
+        ],
+        [
+          -360.15,
+          -423.15,
+          164.4
+        ],
+        [
+          -531.39,
+          -634.73,
+          263.91
+        ],
+        [
+          -695.76,
+          -846.3,
+          374.41
+        ],
+        [
+          -852.54,
+          -1057.88,
+          495.42
+        ],
+        [
+          -1001.08,
+          -1269.45,
+          626.42
+        ],
+        [
+          -1140.73,
+          -1481.03,
+          766.86
+        ],
+        [
+          -1270.9,
+          -1692.6,
+          916.14
+        ]
+      ],
+      "charge": -1.0,
+      "momentum_gev": 6.643,
+      "pdg": -211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -492.71,
+          -444.66,
+          377.12
+        ],
+        [
+          -959.7,
+          -889.31,
+          785.65
+        ],
+        [
+          -1398.97,
+          -1333.97,
+          1223.86
+        ]
+      ],
+      "charge": -1.0,
+      "momentum_gev": 17.497,
+      "pdg": -211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -688.99,
+          -646.28,
+          325.34
+        ],
+        [
+          -1355.24,
+          -1292.57,
+          695.04
+        ]
+      ],
+      "charge": -1.0,
+      "momentum_gev": 22.901,
+      "pdg": -211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -70.27,
+          -67.91,
+          43.25
+        ],
+        [
+          -137.56,
+          -135.83,
+          90.99
+        ],
+        [
+          -201.58,
+          -203.74,
+          143.04
+        ],
+        [
+          -262.06,
+          -271.66,
+          199.16
+        ],
+        [
+          -318.74,
+          -339.57,
+          259.12
+        ],
+        [
+          -371.37,
+          -407.49,
+          322.66
+        ],
+        [
+          -419.74,
+          -475.4,
+          389.5
+        ],
+        [
+          -463.64,
+          -543.32,
+          459.37
+        ],
+        [
+          -502.87,
+          -611.23,
+          531.95
+        ],
+        [
+          -537.27,
+          -679.15,
+          606.95
+        ],
+        [
+          -566.69,
+          -747.06,
+          684.03
+        ],
+        [
+          -591.0,
+          -814.98,
+          762.88
+        ],
+        [
+          -610.11,
+          -882.89,
+          843.14
+        ],
+        [
+          -623.93,
+          -950.81,
+          924.48
+        ],
+        [
+          -632.39,
+          -1018.72,
+          1006.56
+        ],
+        [
+          -635.47,
+          -1086.64,
+          1089.01
+        ],
+        [
+          -633.16,
+          -1154.55,
+          1171.48
+        ],
+        [
+          -625.45,
+          -1222.47,
+          1253.63
+        ],
+        [
+          -612.38,
+          -1290.38,
+          1335.1
+        ],
+        [
+          -594.02,
+          -1358.29,
+          1415.54
+        ]
+      ],
+      "charge": -1.0,
+      "momentum_gev": 2.449,
+      "pdg": -211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -266.85,
+          -156.06,
+          157.01
+        ],
+        [
+          -543.4,
+          -312.12,
+          296.23
+        ],
+        [
+          -828.47,
+          -468.18,
+          417.06
+        ],
+        [
+          -1120.82,
+          -624.24,
+          518.99
+        ],
+        [
+          -1419.22,
+          -780.3,
+          601.59
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 7.947,
+      "pdg": 211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          -342.56,
+          -241.87,
+          236.34
+        ],
+        [
+          -668.94,
+          -483.73,
+          494.58
+        ],
+        [
+          -977.72,
+          -725.6,
+          773.61
+        ],
+        [
+          -1267.6,
+          -967.46,
+          1072.24
+        ]
+      ],
+      "charge": -1.0,
+      "momentum_gev": 11.033,
+      "pdg": -211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          401.48,
+          -275.21,
+          -13.24
+        ],
+        [
+          802.96,
+          -550.42,
+          -0.2
+        ],
+        [
+          1202.74,
+          -825.63,
+          39.08
+        ],
+        [
+          1599.09,
+          -1100.84,
+          104.42
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 11.161,
+      "pdg": 211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          103.8,
+          -92.83,
+          6.36
+        ],
+        [
+          206.96,
+          -185.65,
+          19.49
+        ],
+        [
+          309.04,
+          -278.48,
+          39.34
+        ],
+        [
+          409.61,
+          -371.31,
+          65.83
+        ],
+        [
+          508.23,
+          -464.13,
+          98.83
+        ],
+        [
+          604.48,
+          -556.96,
+          138.22
+        ],
+        [
+          697.94,
+          -649.79,
+          183.82
+        ],
+        [
+          788.22,
+          -742.61,
+          235.43
+        ],
+        [
+          874.94,
+          -835.44,
+          292.83
+        ],
+        [
+          957.71,
+          -928.27,
+          355.79
+        ],
+        [
+          1036.19,
+          -1021.09,
+          424.02
+        ],
+        [
+          1110.04,
+          -1113.92,
+          497.24
+        ],
+        [
+          1178.94,
+          -1206.75,
+          575.13
+        ],
+        [
+          1242.61,
+          -1299.57,
+          657.37
+        ],
+        [
+          1300.75,
+          -1392.4,
+          743.59
+        ],
+        [
+          1353.13,
+          -1485.23,
+          833.43
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 3.195,
+      "pdg": 211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          363.44,
+          -292.79,
+          39.08
+        ],
+        [
+          723.54,
+          -585.57,
+          101.85
+        ],
+        [
+          1078.76,
+          -878.36,
+          188.03
+        ],
+        [
+          1427.59,
+          -1171.14,
+          297.26
+        ],
+        [
+          1768.53,
+          -1463.93,
+          429.07
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 10.735,
+      "pdg": 211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          303.21,
+          -210.43,
+          64.12
+        ],
+        [
+          601.58,
+          -420.86,
+          147.94
+        ],
+        [
+          893.83,
+          -631.29,
+          251.09
+        ],
+        [
+          1178.71,
+          -841.73,
+          373.14
+        ],
+        [
+          1454.99,
+          -1052.16,
+          513.55
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 8.586,
+      "pdg": 211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          323.25,
+          -174.7,
+          -38.56
+        ],
+        [
+          648.34,
+          -349.4,
+          -55.89
+        ],
+        [
+          973.86,
+          -524.1,
+          -51.93
+        ],
+        [
+          1298.43,
+          -698.8,
+          -26.68
+        ],
+        [
+          1620.65,
+          -873.5,
+          19.74
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 8.469,
+      "pdg": 211
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          394.84,
+          -358.59,
+          -12.28
+        ],
+        [
+          788.02,
+          -717.18,
+          -50.36
+        ],
+        [
+          1177.88,
+          -1075.78,
+          -114.07
+        ],
+        [
+          1562.73,
+          -1434.37,
+          -203.14
+        ]
+      ],
+      "charge": -1.0,
+      "momentum_gev": 12.228,
+      "pdg": -211
+    }
+  ],
+  "calo_hits": [
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1702.64,
+        -697.66,
+        893.27
+      ],
+      "energy_gev": 1.05062
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1599.9,
+        -725.34,
+        894.98
+      ],
+      "energy_gev": 0.21739
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1630.04,
+        -799.91,
+        824.41
+      ],
+      "energy_gev": 0.30278
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1712.01,
+        -798.07,
+        917.12
+      ],
+      "energy_gev": 0.68344
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1636.19,
+        -806.93,
+        734.19
+      ],
+      "energy_gev": 0.50209
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2539.61,
+        -1288.67,
+        1532.92
+      ],
+      "energy_gev": 0.64482
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2909.16,
+        -1495.92,
+        1496.36
+      ],
+      "energy_gev": 0.51839
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2884.27,
+        -1323.39,
+        1471.65
+      ],
+      "energy_gev": 0.48978
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2873.47,
+        -1398.32,
+        1449.95
+      ],
+      "energy_gev": 0.5004
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2701.81,
+        -1229.43,
+        1622.4
+      ],
+      "energy_gev": 0.73798
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2785.85,
+        -1236.35,
+        1455.18
+      ],
+      "energy_gev": 0.67956
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1542.92,
+        -939.7,
+        842.05
+      ],
+      "energy_gev": 1.0797
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1509.25,
+        -889.52,
+        965.26
+      ],
+      "energy_gev": 1.57325
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1536.77,
+        -914.54,
+        1067.72
+      ],
+      "energy_gev": 1.63106
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1587.77,
+        -936.58,
+        986.05
+      ],
+      "energy_gev": 1.53049
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1439.76,
+        -978.93,
+        1055.71
+      ],
+      "energy_gev": 2.01047
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2508.36,
+        -1700.4,
+        1650.36
+      ],
+      "energy_gev": 0.74765
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2806.99,
+        -1334.36,
+        1611.85
+      ],
+      "energy_gev": 0.6872
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2658.27,
+        -1490.47,
+        1703.2
+      ],
+      "energy_gev": 2.19373
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2644.5,
+        -1614.21,
+        1808.29
+      ],
+      "energy_gev": 1.54503
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2575.69,
+        -1752.67,
+        1617.3
+      ],
+      "energy_gev": 2.27218
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2584.53,
+        -1656.28,
+        1529.88
+      ],
+      "energy_gev": 1.22857
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1568.46,
+        -1399.11,
+        795.94
+      ],
+      "energy_gev": 0.7292
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1583.36,
+        -1456.01,
+        829.53
+      ],
+      "energy_gev": 0.57241
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1709.61,
+        -1428.43,
+        755.69
+      ],
+      "energy_gev": 0.52416
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1566.71,
+        -1498.14,
+        718.9
+      ],
+      "energy_gev": 1.04569
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1693.69,
+        -1388.37,
+        803.64
+      ],
+      "energy_gev": 0.50329
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2696.93,
+        -2596.35,
+        1145.55
+      ],
+      "energy_gev": 0.28736
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2842.59,
+        -2514.74,
+        1318.26
+      ],
+      "energy_gev": 1.09859
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2751.95,
+        -2350.16,
+        1327.84
+      ],
+      "energy_gev": 0.56255
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2663.14,
+        -2517.76,
+        1422.56
+      ],
+      "energy_gev": 1.03178
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2721.89,
+        -2409.8,
+        1589.5
+      ],
+      "energy_gev": 1.04287
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2765.94,
+        -2327.23,
+        1249.81
+      ],
+      "energy_gev": 1.02513
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1602.81,
+        -1940.33,
+        940.65
+      ],
+      "energy_gev": 0.94994
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1601.94,
+        -1925.8,
+        903.38
+      ],
+      "energy_gev": 0.54031
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1642.24,
+        -1964.31,
+        834.97
+      ],
+      "energy_gev": 0.55657
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1551.96,
+        -1964.17,
+        888.8
+      ],
+      "energy_gev": 0.84903
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1698.16,
+        -2024.77,
+        983.37
+      ],
+      "energy_gev": 0.30984
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2741.27,
+        -3127.9,
+        1625.0
+      ],
+      "energy_gev": 0.6453
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2361.88,
+        -3075.72,
+        1512.93
+      ],
+      "energy_gev": 1.14686
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2691.59,
+        -3046.29,
+        1580.14
+      ],
+      "energy_gev": 0.53583
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2566.17,
+        -3408.92,
+        1697.92
+      ],
+      "energy_gev": 0.46647
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2814.74,
+        -3180.98,
+        1647.03
+      ],
+      "energy_gev": 0.27637
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2743.35,
+        -3101.03,
+        1470.82
+      ],
+      "energy_gev": 1.22465
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1694.45,
+        -2003.13,
+        584.15
+      ],
+      "energy_gev": 0.471
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1796.43,
+        -1937.93,
+        711.67
+      ],
+      "energy_gev": 0.44509
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1758.24,
+        -1953.98,
+        598.9
+      ],
+      "energy_gev": 0.1616
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1701.15,
+        -1980.04,
+        730.94
+      ],
+      "energy_gev": 0.40482
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1835.98,
+        -2132.89,
+        786.14
+      ],
+      "energy_gev": 0.34802
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2883.76,
+        -3265.32,
+        1136.06
+      ],
+      "energy_gev": 0.59678
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2832.03,
+        -3500.46,
+        1025.63
+      ],
+      "energy_gev": 0.2942
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2885.97,
+        -3398.26,
+        782.11
+      ],
+      "energy_gev": 0.53448
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -3044.04,
+        -3319.03,
+        961.44
+      ],
+      "energy_gev": 0.35371
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2957.4,
+        -3350.44,
+        1208.07
+      ],
+      "energy_gev": 0.93924
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -3131.56,
+        -3209.72,
+        1104.59
+      ],
+      "energy_gev": 0.20276
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1523.09,
+        -1344.07,
+        1084.71
+      ],
+      "energy_gev": 1.32241
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1575.0,
+        -1246.25,
+        1134.94
+      ],
+      "energy_gev": 0.49722
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1485.87,
+        -1269.13,
+        1078.65
+      ],
+      "energy_gev": 0.68737
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1549.14,
+        -1353.66,
+        1165.25
+      ],
+      "energy_gev": 2.01894
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1458.62,
+        -1287.81,
+        1082.41
+      ],
+      "energy_gev": 0.70608
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2532.23,
+        -2123.38,
+        2031.29
+      ],
+      "energy_gev": 0.65821
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2502.28,
+        -2201.48,
+        1765.52
+      ],
+      "energy_gev": 2.49737
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2708.89,
+        -2160.75,
+        1781.7
+      ],
+      "energy_gev": 1.54136
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2665.11,
+        -2092.05,
+        1664.05
+      ],
+      "energy_gev": 0.78178
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2446.76,
+        -2267.91,
+        1669.27
+      ],
+      "energy_gev": 2.31704
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2502.43,
+        -2204.46,
+        1935.59
+      ],
+      "energy_gev": 2.42776
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1713.24,
+        -1585.92,
+        739.81
+      ],
+      "energy_gev": 2.66734
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1640.07,
+        -1608.78,
+        726.93
+      ],
+      "energy_gev": 0.80025
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1788.53,
+        -1620.04,
+        720.74
+      ],
+      "energy_gev": 1.63265
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1704.37,
+        -1595.94,
+        697.54
+      ],
+      "energy_gev": 0.51487
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1705.37,
+        -1604.2,
+        782.76
+      ],
+      "energy_gev": 1.56447
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2920.34,
+        -2601.36,
+        1403.74
+      ],
+      "energy_gev": 2.46928
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2853.49,
+        -2649.86,
+        1234.46
+      ],
+      "energy_gev": 2.21698
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2903.16,
+        -2525.6,
+        1291.0
+      ],
+      "energy_gev": 2.63982
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2903.63,
+        -2614.34,
+        1277.39
+      ],
+      "energy_gev": 3.45995
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -3069.12,
+        -2783.51,
+        1140.31
+      ],
+      "energy_gev": 1.6001
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2935.35,
+        -2603.18,
+        1407.26
+      ],
+      "energy_gev": 1.12073
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1569.31,
+        -1544.74,
+        902.6
+      ],
+      "energy_gev": 0.07223
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1537.77,
+        -1544.22,
+        891.85
+      ],
+      "energy_gev": 0.24476
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1685.77,
+        -1548.77,
+        901.91
+      ],
+      "energy_gev": 0.2392
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1533.89,
+        -1569.64,
+        894.88
+      ],
+      "energy_gev": 0.06819
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1666.73,
+        -1520.91,
+        909.5
+      ],
+      "energy_gev": 0.22432
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2938.01,
+        -2661.51,
+        1751.84
+      ],
+      "energy_gev": 0.10818
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2592.65,
+        -2604.7,
+        1329.04
+      ],
+      "energy_gev": 0.21118
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2761.12,
+        -2492.06,
+        1412.39
+      ],
+      "energy_gev": 0.13167
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2745.17,
+        -2822.4,
+        1518.37
+      ],
+      "energy_gev": 0.23561
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2727.23,
+        -2567.99,
+        1594.16
+      ],
+      "energy_gev": 0.13272
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2643.42,
+        -2463.32,
+        1671.1
+      ],
+      "energy_gev": 0.16784
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1649.51,
+        -903.32,
+        973.21
+      ],
+      "energy_gev": 0.18735
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1665.66,
+        -973.89,
+        1039.36
+      ],
+      "energy_gev": 0.26752
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1527.79,
+        -1085.41,
+        952.46
+      ],
+      "energy_gev": 0.69925
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1559.84,
+        -1030.07,
+        994.81
+      ],
+      "energy_gev": 0.85783
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1572.5,
+        -815.75,
+        1036.66
+      ],
+      "energy_gev": 0.78255
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2670.75,
+        -1533.56,
+        1717.3
+      ],
+      "energy_gev": 0.98599
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2707.49,
+        -1699.26,
+        1699.93
+      ],
+      "energy_gev": 0.37806
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2588.99,
+        -1510.12,
+        1656.76
+      ],
+      "energy_gev": 0.88131
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2701.41,
+        -1590.24,
+        1698.45
+      ],
+      "energy_gev": 1.22289
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2444.58,
+        -1471.86,
+        1713.13
+      ],
+      "energy_gev": 0.63423
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2548.72,
+        -1700.31,
+        1441.0
+      ],
+      "energy_gev": 0.40812
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1619.8,
+        -1194.53,
+        1045.04
+      ],
+      "energy_gev": 1.21194
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1509.82,
+        -1138.92,
+        924.02
+      ],
+      "energy_gev": 1.24986
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1456.97,
+        -1126.48,
+        1011.25
+      ],
+      "energy_gev": 0.69418
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1593.67,
+        -1106.5,
+        895.05
+      ],
+      "energy_gev": 0.90469
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1618.23,
+        -981.99,
+        994.72
+      ],
+      "energy_gev": 0.71159
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2812.05,
+        -1868.35,
+        1657.02
+      ],
+      "energy_gev": 0.35062
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2509.42,
+        -1620.74,
+        1705.41
+      ],
+      "energy_gev": 1.16472
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2510.26,
+        -1635.24,
+        1818.12
+      ],
+      "energy_gev": 1.48139
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2617.54,
+        -1573.44,
+        1702.55
+      ],
+      "energy_gev": 0.76884
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2705.42,
+        -1826.48,
+        1649.71
+      ],
+      "energy_gev": 0.62063
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2531.32,
+        -1773.92,
+        1721.23
+      ],
+      "energy_gev": 1.57977
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1748.3,
+        -1381.91,
+        670.76
+      ],
+      "energy_gev": 0.99351
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1790.66,
+        -1296.95,
+        654.89
+      ],
+      "energy_gev": 0.65954
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1693.09,
+        -1470.7,
+        532.12
+      ],
+      "energy_gev": 0.95717
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1743.29,
+        -1287.16,
+        755.67
+      ],
+      "energy_gev": 0.52983
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1860.3,
+        -1298.84,
+        662.06
+      ],
+      "energy_gev": 0.68837
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1613.68,
+        -1364.61,
+        754.35
+      ],
+      "energy_gev": 1.04591
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1731.54,
+        -1766.66,
+        737.68
+      ],
+      "energy_gev": 0.24978
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1714.89,
+        -1848.5,
+        763.24
+      ],
+      "energy_gev": 0.27968
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1634.33,
+        -1866.53,
+        696.69
+      ],
+      "energy_gev": 0.72511
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1715.08,
+        -1916.75,
+        797.84
+      ],
+      "energy_gev": 0.25053
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1657.65,
+        -1856.39,
+        670.95
+      ],
+      "energy_gev": 0.50109
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1881.07,
+        -1772.55,
+        698.3
+      ],
+      "energy_gev": 0.49404
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1652.06,
+        -2278.65,
+        942.23
+      ],
+      "energy_gev": 0.46215
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1699.8,
+        -2258.13,
+        967.79
+      ],
+      "energy_gev": 1.2868
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1683.23,
+        -2301.24,
+        1016.57
+      ],
+      "energy_gev": 0.96037
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1637.34,
+        -2162.11,
+        833.17
+      ],
+      "energy_gev": 0.92643
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1583.79,
+        -2279.15,
+        836.07
+      ],
+      "energy_gev": 0.5793
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1628.91,
+        -2116.3,
+        932.66
+      ],
+      "energy_gev": 0.24701
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1418.27,
+        -1572.24,
+        1048.47
+      ],
+      "energy_gev": 0.04869
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1418.11,
+        -1566.74,
+        1128.49
+      ],
+      "energy_gev": 0.04389
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1422.08,
+        -1552.59,
+        1124.66
+      ],
+      "energy_gev": 0.10593
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1357.16,
+        -1600.42,
+        1088.65
+      ],
+      "energy_gev": 0.11064
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1413.92,
+        -1447.73,
+        1135.98
+      ],
+      "energy_gev": 0.07818
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1605.99,
+        -1659.06,
+        1059.91
+      ],
+      "energy_gev": 0.04761
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1727.55,
+        -1347.01,
+        -97.27
+      ],
+      "energy_gev": 1.2591
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1919.82,
+        -1357.91,
+        8.97
+      ],
+      "energy_gev": 0.63536
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1864.9,
+        -1156.04,
+        -26.16
+      ],
+      "energy_gev": 0.82232
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1751.11,
+        -1247.41,
+        -102.78
+      ],
+      "energy_gev": 1.14263
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1916.59,
+        -1266.87,
+        -90.07
+      ],
+      "energy_gev": 0.26461
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3158.4,
+        -2118.63,
+        -144.53
+      ],
+      "energy_gev": 1.03911
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3022.47,
+        -2206.51,
+        29.19
+      ],
+      "energy_gev": 0.61216
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3100.71,
+        -2206.5,
+        -476.91
+      ],
+      "energy_gev": 1.50812
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3066.94,
+        -2219.97,
+        -186.32
+      ],
+      "energy_gev": 1.04209
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3198.05,
+        -2318.65,
+        -193.72
+      ],
+      "energy_gev": 0.50094
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3099.26,
+        -2210.17,
+        -359.72
+      ],
+      "energy_gev": 1.24334
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1929.26,
+        -1515.89,
+        52.47
+      ],
+      "energy_gev": 0.36369
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1909.61,
+        -1551.31,
+        54.43
+      ],
+      "energy_gev": 0.30224
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1814.25,
+        -1686.05,
+        61.27
+      ],
+      "energy_gev": 0.37608
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1974.76,
+        -1685.07,
+        120.97
+      ],
+      "energy_gev": 0.15099
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1864.86,
+        -1615.91,
+        59.28
+      ],
+      "energy_gev": 0.25516
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3114.13,
+        -2765.2,
+        286.52
+      ],
+      "energy_gev": 0.36098
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3168.78,
+        -2687.16,
+        242.49
+      ],
+      "energy_gev": 0.3351
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2974.11,
+        -2783.18,
+        68.32
+      ],
+      "energy_gev": 0.47937
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3126.63,
+        -2717.96,
+        37.67
+      ],
+      "energy_gev": 0.18769
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3187.07,
+        -2780.71,
+        251.81
+      ],
+      "energy_gev": 0.32118
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2923.38,
+        -2586.09,
+        59.13
+      ],
+      "energy_gev": 0.20256
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1759.55,
+        -1581.76,
+        69.17
+      ],
+      "energy_gev": 0.28205
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1836.12,
+        -1544.44,
+        203.22
+      ],
+      "energy_gev": 0.83251
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1810.9,
+        -1650.7,
+        37.08
+      ],
+      "energy_gev": 0.40463
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1841.81,
+        -1486.44,
+        251.77
+      ],
+      "energy_gev": 0.75649
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1861.85,
+        -1530.92,
+        162.24
+      ],
+      "energy_gev": 0.90553
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3280.26,
+        -2529.45,
+        313.08
+      ],
+      "energy_gev": 0.96111
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3275.14,
+        -2387.19,
+        90.53
+      ],
+      "energy_gev": 0.76178
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3196.07,
+        -2454.51,
+        215.41
+      ],
+      "energy_gev": 1.19822
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2938.14,
+        -2492.69,
+        176.15
+      ],
+      "energy_gev": 0.73425
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2815.71,
+        -2395.92,
+        290.3
+      ],
+      "energy_gev": 1.6071
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2988.46,
+        -2458.95,
+        246.4
+      ],
+      "energy_gev": 1.12564
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1691.05,
+        -1214.51,
+        273.29
+      ],
+      "energy_gev": 0.82657
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1761.0,
+        -1332.01,
+        253.64
+      ],
+      "energy_gev": 0.46435
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1863.8,
+        -1247.69,
+        470.03
+      ],
+      "energy_gev": 0.98371
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1876.61,
+        -1178.11,
+        375.03
+      ],
+      "energy_gev": 0.93811
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1888.54,
+        -1272.06,
+        349.55
+      ],
+      "energy_gev": 0.86367
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2968.86,
+        -2093.49,
+        526.04
+      ],
+      "energy_gev": 1.2708
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2983.68,
+        -1825.27,
+        551.94
+      ],
+      "energy_gev": 1.2834
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3265.13,
+        -1940.23,
+        466.05
+      ],
+      "energy_gev": 0.60979
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3103.1,
+        -2213.67,
+        379.45
+      ],
+      "energy_gev": 1.2012
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3008.88,
+        -1985.02,
+        598.32
+      ],
+      "energy_gev": 1.09855
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3097.36,
+        -1953.15,
+        599.93
+      ],
+      "energy_gev": 0.92809
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1793.75,
+        -984.54,
+        -354.8
+      ],
+      "energy_gev": 0.53498
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1863.13,
+        -1053.47,
+        -257.2
+      ],
+      "energy_gev": 0.96035
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1837.6,
+        -950.28,
+        -116.07
+      ],
+      "energy_gev": 0.44865
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1967.0,
+        -999.5,
+        -278.13
+      ],
+      "energy_gev": 0.84936
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1787.91,
+        -1064.03,
+        -263.2
+      ],
+      "energy_gev": 0.47477
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3162.64,
+        -1715.54,
+        -491.97
+      ],
+      "energy_gev": 1.27062
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3031.14,
+        -1670.0,
+        -476.26
+      ],
+      "energy_gev": 0.43346
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2756.75,
+        -1771.3,
+        -480.23
+      ],
+      "energy_gev": 1.11451
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3241.93,
+        -1719.15,
+        -318.59
+      ],
+      "energy_gev": 1.09949
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3095.14,
+        -1741.66,
+        -290.1
+      ],
+      "energy_gev": 1.20016
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2894.66,
+        -1795.97,
+        -331.32
+      ],
+      "energy_gev": 0.36676
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1873.57,
+        -1701.52,
+        -11.2
+      ],
+      "energy_gev": 1.44317
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1889.57,
+        -1706.71,
+        34.22
+      ],
+      "energy_gev": 1.45026
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1905.38,
+        -1694.25,
+        58.43
+      ],
+      "energy_gev": 0.80939
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1823.64,
+        -1614.97,
+        -73.27
+      ],
+      "energy_gev": 0.95482
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1837.79,
+        -1615.59,
+        11.97
+      ],
+      "energy_gev": 0.42523
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3037.67,
+        -2757.53,
+        37.12
+      ],
+      "energy_gev": 1.23566
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3089.7,
+        -2741.18,
+        3.65
+      ],
+      "energy_gev": 1.56159
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3116.3,
+        -2988.24,
+        3.75
+      ],
+      "energy_gev": 0.9691
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2963.22,
+        -2834.87,
+        32.47
+      ],
+      "energy_gev": 1.13772
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3182.53,
+        -2938.55,
+        40.51
+      ],
+      "energy_gev": 1.76917
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        3004.63,
+        -2904.22,
+        98.45
+      ],
+      "energy_gev": 0.44078
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1901.97,
+        -950.34,
+        58.97
+      ],
+      "energy_gev": 0.64485
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1873.41,
+        -1016.82,
+        131.68
+      ],
+      "energy_gev": 0.8228
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1804.01,
+        -1050.78,
+        273.73
+      ],
+      "energy_gev": 0.81341
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1859.04,
+        -1046.16,
+        129.1
+      ],
+      "energy_gev": 0.98016
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1802.96,
+        -1062.98,
+        254.33
+      ],
+      "energy_gev": 0.76163
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1918.93,
+        -988.38,
+        191.69
+      ],
+      "energy_gev": 1.09474
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1772.58,
+        -1623.41,
+        451.51
+      ],
+      "energy_gev": 0.79878
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1732.43,
+        -1666.76,
+        487.72
+      ],
+      "energy_gev": 1.56472
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1832.69,
+        -1730.54,
+        472.07
+      ],
+      "energy_gev": 0.68848
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1900.87,
+        -1627.23,
+        504.93
+      ],
+      "energy_gev": 0.79628
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1883.14,
+        -1590.79,
+        612.11
+      ],
+      "energy_gev": 0.52664
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1737.3,
+        -1631.97,
+        518.01
+      ],
+      "energy_gev": 1.10299
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1792.12,
+        -1834.14,
+        139.31
+      ],
+      "energy_gev": 0.74576
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1848.8,
+        -1972.84,
+        141.87
+      ],
+      "energy_gev": 0.48371
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1816.15,
+        -1946.73,
+        -54.64
+      ],
+      "energy_gev": 0.43545
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1899.59,
+        -1879.02,
+        125.5
+      ],
+      "energy_gev": 0.40682
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1846.22,
+        -2018.16,
+        -21.56
+      ],
+      "energy_gev": 1.03926
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1782.18,
+        -2016.0,
+        55.31
+      ],
+      "energy_gev": 1.24872
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -1557.82,
+        -6015.85,
+        2735.17
+      ],
+      "energy_gev": 0.04995
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        960.64,
+        -7560.48,
+        2220.43
+      ],
+      "energy_gev": 0.0543
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        2053.59,
+        -8161.58,
+        -949.89
+      ],
+      "energy_gev": 0.02665
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1054.26,
+        -5695.84,
+        2399.07
+      ],
+      "energy_gev": 0.11437
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        2009.15,
+        -6129.04,
+        1694.33
+      ],
+      "energy_gev": 0.23699
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        2765.8,
+        20053.51,
+        1612.12
+      ],
+      "energy_gev": 0.20262
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1448.5,
+        -5628.84,
+        -2387.57
+      ],
+      "energy_gev": 0.09264
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        2935.27,
+        -8516.72,
+        458.03
+      ],
+      "energy_gev": 0.06213
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -3594.42,
+        -14365.29,
+        1620.53
+      ],
+      "energy_gev": 0.22387
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1184.51,
+        -6262.29,
+        1580.66
+      ],
+      "energy_gev": 0.25569
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        2259.36,
+        -4496.33,
+        -476.94
+      ],
+      "energy_gev": 0.20094
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1694.06,
+        -10828.87,
+        -2693.06
+      ],
+      "energy_gev": 0.05284
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1081.37,
+        17126.68,
+        -2413.17
+      ],
+      "energy_gev": 0.2241
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        2495.51,
+        11523.08,
+        -1771.13
+      ],
+      "energy_gev": 0.09433
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -2664.0,
+        16218.99,
+        -474.69
+      ],
+      "energy_gev": 0.23255
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -2062.92,
+        5014.5,
+        1582.71
+      ],
+      "energy_gev": 0.07321
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -2814.02,
+        17124.73,
+        799.39
+      ],
+      "energy_gev": 0.05057
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -2319.19,
+        9320.62,
+        954.84
+      ],
+      "energy_gev": 0.07226
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -3433.28,
+        -13365.58,
+        -2093.47
+      ],
+      "energy_gev": 0.09256
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -3126.62,
+        15194.0,
+        1426.34
+      ],
+      "energy_gev": 0.02344
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        440.75,
+        9846.81,
+        1949.36
+      ],
+      "energy_gev": 0.22312
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -2056.83,
+        21027.81,
+        2725.42
+      ],
+      "energy_gev": 0.15487
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        378.77,
+        15025.24,
+        -3452.25
+      ],
+      "energy_gev": 0.08418
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        781.57,
+        5600.12,
+        -2881.85
+      ],
+      "energy_gev": 0.01129
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -3700.78,
+        22400.34,
+        -1570.66
+      ],
+      "energy_gev": 0.21178
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1170.9,
+        -7231.55,
+        -2281.02
+      ],
+      "energy_gev": 0.07657
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -1588.83,
+        16586.62,
+        -1700.76
+      ],
+      "energy_gev": 0.06347
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1272.87,
+        -6699.93,
+        1450.17
+      ],
+      "energy_gev": 0.09518
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -26.06,
+        -7230.46,
+        -3812.52
+      ],
+      "energy_gev": 0.22311
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        2549.51,
+        -5121.71,
+        516.42
+      ],
+      "energy_gev": 0.2741
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -652.27,
+        -4307.77,
+        -1928.65
+      ],
+      "energy_gev": 0.08098
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        3538.06,
+        14062.96,
+        1105.88
+      ],
+      "energy_gev": 0.14372
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -564.9,
+        -13797.76,
+        -2895.47
+      ],
+      "energy_gev": 0.04162
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        3111.88,
+        16295.82,
+        1909.51
+      ],
+      "energy_gev": 0.10465
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        500.87,
+        -5711.57,
+        -2733.58
+      ],
+      "energy_gev": 0.09306
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        223.45,
+        7969.63,
+        -4107.55
+      ],
+      "energy_gev": 0.04887
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -72.98,
+        -9083.54,
+        2760.16
+      ],
+      "energy_gev": 0.10174
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -259.45,
+        -12805.07,
+        -2941.29
+      ],
+      "energy_gev": 0.10326
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        2172.9,
+        13340.95,
+        -47.56
+      ],
+      "energy_gev": 0.14106
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        896.51,
+        7015.56,
+        2253.95
+      ],
+      "energy_gev": 0.24685
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -2778.49,
+        5952.08,
+        -399.05
+      ],
+      "energy_gev": 0.09094
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -657.05,
+        4928.07,
+        1995.0
+      ],
+      "energy_gev": 0.13647
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -2048.51,
+        4321.27,
+        -334.38
+      ],
+      "energy_gev": 0.18261
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -711.84,
+        -12504.6,
+        -3316.54
+      ],
+      "energy_gev": 0.19334
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -1754.42,
+        -4093.56,
+        -941.65
+      ],
+      "energy_gev": 0.11574
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -68.46,
+        -3815.53,
+        2022.29
+      ],
+      "energy_gev": 0.05552
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        3083.23,
+        15960.49,
+        -2569.79
+      ],
+      "energy_gev": 0.06057
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -621.65,
+        22488.52,
+        3265.87
+      ],
+      "energy_gev": 0.15376
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1008.45,
+        -12089.53,
+        -3190.21
+      ],
+      "energy_gev": 0.21356
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        3458.29,
+        -12145.28,
+        -613.02
+      ],
+      "energy_gev": 0.06832
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1346.94,
+        5038.72,
+        1501.63
+      ],
+      "energy_gev": 0.16015
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        2445.07,
+        -5586.26,
+        1306.3
+      ],
+      "energy_gev": 0.24248
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1795.23,
+        6774.69,
+        3120.06
+      ],
+      "energy_gev": 0.02601
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -442.18,
+        4075.43,
+        -2112.82
+      ],
+      "energy_gev": 0.09796
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -775.13,
+        4159.6,
+        2066.82
+      ],
+      "energy_gev": 0.09129
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -2297.53,
+        -6826.53,
+        -2381.52
+      ],
+      "energy_gev": 0.08506
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        113.45,
+        -8931.94,
+        -3843.36
+      ],
+      "energy_gev": 0.01971
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        999.01,
+        -14689.43,
+        1939.32
+      ],
+      "energy_gev": 0.01449
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        -2775.7,
+        17130.56,
+        83.29
+      ],
+      "energy_gev": 0.08559
+    },
+    {
+      "collection": "ECalEndcapHits",
+      "position": [
+        1437.41,
+        11955.08,
+        3619.99
+      ],
+      "energy_gev": 0.02173
+    }
+  ],
+  "mc_particles": []
+}

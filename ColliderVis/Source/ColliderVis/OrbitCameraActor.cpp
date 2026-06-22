@@ -29,7 +29,26 @@ AOrbitCameraActor::AOrbitCameraActor()
 	Cam->SetupAttachment(Arm, USpringArmComponent::SocketName);
 	Cam->bUsePawnControlRotation = false;
 
+	// Keep the detector origin (the orbit pivot) always in focus. The camera sits
+	// at TargetArmLength from the pivot, so the focal distance equals the arm length.
+	// A deeper f-stop keeps the whole detector crisp rather than a thin focal plane,
+	// while the global PPV still provides gentle background falloff.
+	Cam->PostProcessSettings.bOverride_DepthOfFieldFocalDistance = true;
+	Cam->PostProcessSettings.bOverride_DepthOfFieldFstop         = true;
+	Cam->PostProcessSettings.DepthOfFieldFstop                   = 8.0f;
+	Cam->PostProcessSettings.DepthOfFieldFocalDistance           = Arm->TargetArmLength;
+
 	SetActorRotation(FRotator(CurrentPitch, CurrentYaw, 0.f));
+}
+
+void AOrbitCameraActor::UpdateFocusDistance()
+{
+	// Focal distance tracks the camera-to-origin distance (= arm length) so the
+	// detector stays sharp at every zoom level.
+	if (Cam && Arm)
+	{
+		Cam->PostProcessSettings.DepthOfFieldFocalDistance = Arm->TargetArmLength;
+	}
 }
 
 void AOrbitCameraActor::AddOrbitInput(float DeltaYaw, float DeltaPitch)
@@ -44,4 +63,5 @@ void AOrbitCameraActor::AddZoom(float Delta)
 	Arm->TargetArmLength = FMath::Clamp(
 		Arm->TargetArmLength - Delta * 80.f,
 		MinRadius, MaxRadius);
+	UpdateFocusDistance();
 }

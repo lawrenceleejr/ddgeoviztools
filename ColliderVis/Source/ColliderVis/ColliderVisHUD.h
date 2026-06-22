@@ -66,9 +66,20 @@ public:
 protected:
 	virtual void BeginPlay() override;
 
+	/** Draws the persistent USMCC logo in the top-right corner every frame. */
+	virtual void DrawHUD() override;
+
 private:
 	/** Create the widget once and add it to the viewport (collapsed). */
 	void EnsureWidgetCreated();
+
+	/** Cached USMCC logo for the always-on corner watermark (loaded lazily in DrawHUD). */
+	UPROPERTY(Transient)
+	UTexture2D* CornerLogo = nullptr;
+
+	/** Corner logo size in pixels (square). */
+	UPROPERTY(EditAnywhere, Category = "ColliderVis")
+	float CornerLogoSize = 110.f;
 
 	/** Switch player controller input mode to match bInMenuOpen. */
 	void ApplyInputMode(bool bInMenuOpen);

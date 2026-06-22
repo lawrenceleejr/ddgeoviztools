@@ -5,7 +5,7 @@
 #
 # This is step 2 of the Blender -> UE5 pipeline.  The output directory is then
 # consumed by ColliderVis/Tools/ue5_build_content.py inside the UE5 editor
-# (run it directly or via the mcp-unreal `execute_script` tool).
+# (run it from the editor's Python console).
 #
 # Usage:
 #   scripts/blend_to_ue5_export.sh scene.blend [options]
@@ -153,5 +153,5 @@ docker run --rm \
 
 echo ""
 echo "  ✓  Export complete: $OUT_HOST"
-echo "     Next: in the UE5 editor (or via mcp-unreal execute_script) run"
+echo "     Next: in the UE5 editor run"
 echo "       ColliderVis/Tools/ue5_build_content.py --manifest-dir $OUT_HOST"

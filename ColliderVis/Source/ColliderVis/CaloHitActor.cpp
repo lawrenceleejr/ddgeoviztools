@@ -9,7 +9,7 @@ ACaloHitActor::ACaloHitActor()
 
 	ISMC = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("ISMC"));
 	RootComponent = ISMC;
-	ISMC->NumCustomDataFloats = 1;   // Custom Primitive Data[0] = normalised energy
+	ISMC->NumCustomDataFloats = 2;   // [0] = normalised energy, [1] = lit flag (0/1)
 }
 
 void ACaloHitActor::BeginPlay()
@@ -22,6 +22,9 @@ void ACaloHitActor::SetHits(const TArray<FEDMCaloHit>& Hits, const UEventDisplay
 	if (!Cfg || Hits.IsEmpty()) return;
 
 	ISMC->ClearInstances();
+	HitRadii.Reset();
+	HitTransforms.Reset();
+	MaxHitRadius = 0.f;
 
 	// Load cube mesh
 	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(
@@ -57,13 +60,65 @@ void ACaloHitActor::SetHits(const TArray<FEDMCaloHit>& Hits, const UEventDisplay
 		const float CubeSize  = HalfSz * SizeScale * 2.f;  // full side in cm
 
 		FTransform T;
-		T.SetLocation(H.Position * Scale);
+		const FVector WorldPos = H.Position * Scale;
+		T.SetLocation(WorldPos);
 		T.SetScale3D(FVector(CubeSize / 100.f));   // Engine cube is 100cm default
 
 		int32 Idx = ISMC->AddInstance(T);
 		// Custom Primitive Data[0] drives emissive in M_CaloHit shader
 		ISMC->SetCustomDataValue(Idx, 0, EnNorm);
+		ISMC->SetCustomDataValue(Idx, 1, 1.f); // lit by default (final state)
+
+		HitTransforms.Add(T);
+		// Radius from the collision center (world origin / detector center).
+		const float Radius = WorldPos.Size();
+		HitRadii.Add(Radius);
+		MaxHitRadius = FMath::Max(MaxHitRadius, Radius);
 	}
 
+	ISMC->MarkRenderStateDirty();
+}
+
+void ACaloHitActor::SetRevealRadius(float FrontRadius)
+{
+	for (int32 i = 0; i < HitRadii.Num(); ++i)
+	{
+		const bool bLit = HitRadii[i] <= FrontRadius;
+		// Collapse unlit instances to zero scale so they are fully invisible,
+		// restore the stored transform when the front reaches them.
+		if (bLit)
+		{
+			ISMC->UpdateInstanceTransform(i, HitTransforms[i], /*bWorldSpace*/false, /*bMarkDirty*/false, /*bTeleport*/true);
+		}
+		else
+		{
+			FTransform Hidden = HitTransforms[i];
+			Hidden.SetScale3D(FVector::ZeroVector);
+			ISMC->UpdateInstanceTransform(i, Hidden, false, false, true);
+		}
+		ISMC->SetCustomDataValue(i, 1, bLit ? 1.f : 0.f, /*bMarkRenderStateDirty*/false);
+	}
+	ISMC->MarkRenderStateDirty();
+}
+
+void ACaloHitActor::RevealAll()
+{
+	for (int32 i = 0; i < HitTransforms.Num(); ++i)
+	{
+		ISMC->UpdateInstanceTransform(i, HitTransforms[i], false, false, true);
+		ISMC->SetCustomDataValue(i, 1, 1.f, false);
+	}
+	ISMC->MarkRenderStateDirty();
+}
+
+void ACaloHitActor::HideAll()
+{
+	for (int32 i = 0; i < HitTransforms.Num(); ++i)
+	{
+		FTransform Hidden = HitTransforms[i];
+		Hidden.SetScale3D(FVector::ZeroVector);
+		ISMC->UpdateInstanceTransform(i, Hidden, false, false, true);
+		ISMC->SetCustomDataValue(i, 1, 0.f, false);
+	}
 	ISMC->MarkRenderStateDirty();
 }

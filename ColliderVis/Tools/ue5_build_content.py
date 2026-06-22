@@ -15,7 +15,7 @@ Tools/blend_to_ue5.py (per-sub-detector *.gltf + manifest.json with lights/camer
 
 How to run
 ----------
-Inside a live UE 5.7 editor (the normal path, e.g. via the mcp-unreal `execute_script` tool):
+Inside a live UE 5.7 editor (the normal path — run from the editor's Python console):
 
     import ue5_build_content as b
     b.build({"manifest_dir": "/tmp/ue5_meshes"})
@@ -77,7 +77,7 @@ FLIP_Y = True
 
 # Photometric approximations (Blender radiometric watts -> UE photometric units).
 # Exact Cycles<->Lumen matching is impossible across renderers; these are tunable
-# starting points, refined visually via the mcp-unreal capture_viewport loop.
+# starting points, refined visually via a viewport-screenshot loop.
 LUMENS_PER_WATT = 24.0    # AREA / POINT / SPOT  (Blender W -> UE lumens) — tuned at human scale inside the spherical hall (120 blew out, 8 too dark, 40 a touch hot)
 LUX_PER_WM2     = 180.0   # SUN                  (Blender W/m^2 -> UE lux)
 
@@ -686,8 +686,8 @@ def stage_data_assets(report, manifest, edm4hep_script):
         if edm4hep_script:
             _set_prop(ev, str(edm4hep_script),
                       "edm4_hep_script_path", "edm4hep_script_path", "edmhep_script_path")
-        _set_prop(ev, 2.0, "track_tube_radius")
-        _set_prop(ev, 50.0, "energy_emissive_scale")
+        _set_prop(ev, 0.0025, "track_tube_radius")   # ultra-thin glowing filament
+        _set_prop(ev, 0.5, "energy_emissive_scale")   # gentle coloured glow, not blown-out white
         _set_prop(ev, 5.0, "calo_hit_base_size")
         _set_prop(ev, 0.1, "world_scale")
         _set_prop(ev, [unreal.Name("ECalBarrelHits"), unreal.Name("HCalBarrelHits")],

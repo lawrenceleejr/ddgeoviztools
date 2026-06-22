@@ -21,10 +21,48 @@ void AMCParticleActor::SetParticles(const TArray<FEDMMCParticle>& Particles, con
 	if (!Cfg) return;
 
 	LineMesh->ClearAllMeshSections();
+	CachedStarts.Reset();
+	CachedEnds.Reset();
+	MaxRadius = 0.f;
 
 	if (!Cfg->bShowMCParticles) return;
 
-	const float Scale  = Cfg->WorldScale;
+	const float Scale = Cfg->WorldScale;
+
+	for (const FEDMMCParticle& P : Particles)
+	{
+		const FVector Start = P.Vertex    * Scale;
+		const FVector End   = P.EndVertex * Scale;
+		if (FVector::Dist(Start, End) < 1.f) continue;  // skip zero-length
+
+		CachedStarts.Add(Start);
+		CachedEnds.Add(End);
+		MaxRadius = FMath::Max(MaxRadius, End.Size());
+	}
+
+	// Default to fully drawn (final state); the animation will call HideAll first.
+	RebuildSection(TNumericLimits<float>::Max());
+}
+
+void AMCParticleActor::SetRevealRadius(float FrontRadius)
+{
+	RebuildSection(FrontRadius);
+}
+
+void AMCParticleActor::RevealAll()
+{
+	RebuildSection(TNumericLimits<float>::Max());
+}
+
+void AMCParticleActor::HideAll()
+{
+	RebuildSection(0.f);
+}
+
+void AMCParticleActor::RebuildSection(float FrontRadius)
+{
+	LineMesh->ClearAllMeshSections();
+
 	const float Radius = 1.0f;   // 1 cm tube radius
 	const int32 Sides  = 8;
 
@@ -34,21 +72,40 @@ void AMCParticleActor::SetParticles(const TArray<FEDMMCParticle>& Particles, con
 	TArray<FVector2D>  AllUVs;
 	TArray<FColor>     AllColors;
 
-	for (const FEDMMCParticle& P : Particles)
+	for (int32 i = 0; i < CachedStarts.Num(); ++i)
 	{
-		const FVector Start = P.Vertex    * Scale;
-		const FVector End   = P.EndVertex * Scale;
-		if (FVector::Dist(Start, End) < 1.f) continue;  // skip zero-length
+		const FVector Start = CachedStarts[i];
+		const FVector End   = CachedEnds[i];
 
-		// Offset indices for this cylinder's triangles
+		// Clamp the drawn end to the spherical front: grow from Start toward End
+		// until we cross FrontRadius. We march along the segment and find the
+		// fraction at which |Start + f*(End-Start)| == FrontRadius (approx via
+		// parametric clamp on the endpoint radius for simplicity & robustness).
+		FVector DrawEnd = End;
+		const float StartR = Start.Size();
+		const float EndR   = End.Size();
+
+		if (FrontRadius <= StartR)
+		{
+			continue; // front has not reached this line's start yet
+		}
+		if (FrontRadius < EndR && EndR > StartR + KINDA_SMALL_NUMBER)
+		{
+			// Linear interpolation on radius along the segment (good enough for
+			// near-radial truth lines emanating from the vertex region).
+			const float Frac = FMath::Clamp((FrontRadius - StartR) / (EndR - StartR), 0.f, 1.f);
+			DrawEnd = Start + (End - Start) * Frac;
+		}
+
+		if (FVector::Dist(Start, DrawEnd) < 1.f) continue;
+
 		const int32 BaseIdx = AllVerts.Num();
 
 		TArray<FVector>   V; TArray<int32>   T;
 		TArray<FVector>   N; TArray<FVector2D> UV;
 		TArray<FColor>    C;
-		BuildCylinder(Start, End, Radius, Sides, V, T, N, UV, C);
+		BuildCylinder(Start, DrawEnd, Radius, Sides, V, T, N, UV, C);
 
-		// Offset triangle indices
 		for (int32& Tri : T) Tri += BaseIdx;
 
 		AllVerts   .Append(V);

@@ -25,6 +25,17 @@ void ATrackActor::SetTrackData(const FEDMTrack& Track, const UEventDisplayConfig
 
 	const float Scale = Cfg->WorldScale;   // mm → cm
 
+	// --- Velocity fraction beta = v/c for propagation-time reveal ---
+	// beta = p / E, E = sqrt(p^2 + m^2). We have no per-track mass, so we
+	// approximate with a charged-pion-like rest mass; this keeps high-momentum
+	// tracks at beta ~ 1 while low-momentum tracks emerge a bit slower.
+	{
+		const float MassGeV = 0.1396f; // ~charged pion; pure visualization heuristic
+		const float P = FMath::Max(Track.MomentumGeV, 0.f);
+		const float E = FMath::Sqrt(P * P + MassGeV * MassGeV);
+		Beta = (E > KINDA_SMALL_NUMBER) ? FMath::Clamp(P / E, 0.05f, 1.f) : 1.f;
+	}
+
 	// Choose color by charge
 	FLinearColor TrackColor;
 	if      (Track.Charge > 0.f) TrackColor = Cfg->PositiveTrackColor;
@@ -58,11 +69,48 @@ void ATrackActor::SetTrackData(const FEDMTrack& Track, const UEventDisplayConfig
 		DynMat->SetScalarParameterValue(TEXT("EmissiveIntensity"), EmissiveIntensity);
 	}
 
-	// Create one SplineMeshComponent per segment
+	// Create one SplineMeshComponent per segment, tracking cumulative arc length
 	const int32 NumPoints = Spline->GetNumberOfSplinePoints();
+	SegmentEndArcLength.Reset();
+	TotalArcLength = 0.f;
 	for (int32 i = 0; i < NumPoints - 1; ++i)
 	{
 		AddSegment(i, CylinderMesh, DynMat, Cfg->TrackTubeRadius);
+
+		const FVector A = Spline->GetLocationAtSplinePoint(i,     ESplineCoordinateSpace::Local);
+		const FVector B = Spline->GetLocationAtSplinePoint(i + 1, ESplineCoordinateSpace::Local);
+		TotalArcLength += FVector::Dist(A, B);
+		SegmentEndArcLength.Add(TotalArcLength);
+	}
+}
+
+void ATrackActor::SetRevealArcLength(float RevealS)
+{
+	// Show every segment whose START arc length is within the reveal front.
+	// SegmentEndArcLength[i] is the arc length at the END of segment i, so
+	// the start of segment i is SegmentEndArcLength[i-1] (0 for i==0).
+	for (int32 i = 0; i < SegmentMeshes.Num(); ++i)
+	{
+		if (!SegmentMeshes[i]) continue;
+		const float SegStart = (i == 0) ? 0.f : SegmentEndArcLength[i - 1];
+		const bool bVisible = SegStart <= RevealS;
+		SegmentMeshes[i]->SetVisibility(bVisible);
+	}
+}
+
+void ATrackActor::RevealAll()
+{
+	for (USplineMeshComponent* SMC : SegmentMeshes)
+	{
+		if (SMC) SMC->SetVisibility(true);
+	}
+}
+
+void ATrackActor::HideAll()
+{
+	for (USplineMeshComponent* SMC : SegmentMeshes)
+	{
+		if (SMC) SMC->SetVisibility(false);
 	}
 }
 
@@ -82,10 +130,11 @@ void ATrackActor::AddSegment(int32 Idx, UStaticMesh* CylinderMesh,
 		SMC->SetMaterial(0, MatInst);
 	}
 
-	// Taper: full radius at start, diminished at end for energy dissipation look
-	const float EndRadius = FMath::Max(TubeRadius * 0.6f, 0.5f);
+	// Uniform thin tube: the track is just a curve tracing the trajectory — no
+	// taper (the old start/end taper ballooned into cones once TubeRadius got
+	// small, and represented nothing physical).
 	SMC->SetStartScale(FVector2D(TubeRadius, TubeRadius));
-	SMC->SetEndScale(FVector2D(EndRadius, EndRadius));
+	SMC->SetEndScale(FVector2D(TubeRadius, TubeRadius));
 
 	// Set spline positions and tangents
 	FVector StartPos, StartTangent, EndPos, EndTangent;

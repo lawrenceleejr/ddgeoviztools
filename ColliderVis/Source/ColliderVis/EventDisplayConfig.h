@@ -26,9 +26,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MC Particles")
 	bool bShowMCParticles = false;
 
-	/** Spline tube radius in UE cm */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tracks", meta = (ClampMin = "0.1", ClampMax = "20.0"))
-	float TrackTubeRadius = 2.0f;
+	/** Spline tube radius (scale applied to the unit cylinder cross-section). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tracks", meta = (ClampMin = "0.001", ClampMax = "20.0"))
+	float TrackTubeRadius = 0.0025f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tracks")
 	FLinearColor PositiveTrackColor = FLinearColor(1.0f, 0.4f, 0.1f);   // red-orange
@@ -39,9 +39,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tracks")
 	FLinearColor NeutralTrackColor = FLinearColor(1.0f, 1.0f, 1.0f);
 
-	/** Emissive intensity multiplier: EmissiveNits = MomentumGeV * EnergyEmissiveScale */
+	/** Emissive intensity multiplier: EmissiveNits = MomentumGeV * EnergyEmissiveScale.
+	 *  Kept low so tracks read as their charge colour with a gentle glow rather than
+	 *  blowing out to white (M_Track adds a +1.5 baseline glow, so even p=0 tracks glow). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tracks", meta = (ClampMin = "0.0"))
-	float EnergyEmissiveScale = 50.0f;
+	float EnergyEmissiveScale = 0.5f;
 
 	/** Calo hit cube half-size in UE cm */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CaloHits", meta = (ClampMin = "0.5"))

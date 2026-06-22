@@ -1,0 +1,261 @@
+{
+  "event_number": 3,
+  "run_number": 1,
+  "_label": "diphoton",
+  "tracks": [],
+  "calo_hits": [
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1972.0,
+        558.92,
+        -385.38
+      ],
+      "energy_gev": 3.68706
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1825.06,
+        536.75,
+        -262.77
+      ],
+      "energy_gev": 4.52366
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1966.95,
+        465.5,
+        -243.9
+      ],
+      "energy_gev": 1.37389
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1886.02,
+        568.01,
+        -412.03
+      ],
+      "energy_gev": 2.15325
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1914.49,
+        623.51,
+        -233.82
+      ],
+      "energy_gev": 4.49322
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1950.91,
+        453.21,
+        -330.86
+      ],
+      "energy_gev": 4.13047
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1891.97,
+        331.58,
+        -357.4
+      ],
+      "energy_gev": 5.27258
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        2178.35,
+        435.24,
+        -400.75
+      ],
+      "energy_gev": 3.91557
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1854.73,
+        452.88,
+        -369.02
+      ],
+      "energy_gev": 4.85513
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1855.79,
+        639.12,
+        -382.14
+      ],
+      "energy_gev": 1.27163
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1971.01,
+        517.15,
+        -407.01
+      ],
+      "energy_gev": 5.06876
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1977.68,
+        588.32,
+        -183.12
+      ],
+      "energy_gev": 3.56479
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1793.58,
+        646.17,
+        -245.73
+      ],
+      "energy_gev": 3.13853
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1908.22,
+        515.8,
+        -264.6
+      ],
+      "energy_gev": 1.74572
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -2015.23,
+        -622.19,
+        202.48
+      ],
+      "energy_gev": 6.76398
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1881.34,
+        -506.11,
+        165.22
+      ],
+      "energy_gev": 1.50305
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1908.77,
+        -496.37,
+        305.34
+      ],
+      "energy_gev": 3.03805
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -2129.52,
+        -526.67,
+        358.77
+      ],
+      "energy_gev": 2.95881
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -2017.5,
+        -545.35,
+        226.61
+      ],
+      "energy_gev": 3.68809
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -2043.69,
+        -505.19,
+        284.17
+      ],
+      "energy_gev": 1.61182
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1890.01,
+        -561.51,
+        184.34
+      ],
+      "energy_gev": 5.39539
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1927.9,
+        -681.37,
+        421.72
+      ],
+      "energy_gev": 5.60927
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1955.01,
+        -557.58,
+        246.61
+      ],
+      "energy_gev": 2.83934
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1927.64,
+        -540.91,
+        273.83
+      ],
+      "energy_gev": 2.81077
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1892.05,
+        -606.92,
+        197.55
+      ],
+      "energy_gev": 5.18318
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1995.78,
+        -435.25,
+        164.62
+      ],
+      "energy_gev": 6.44988
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -2026.94,
+        -661.31,
+        229.71
+      ],
+      "energy_gev": 3.19093
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1830.9,
+        -527.81,
+        353.67
+      ],
+      "energy_gev": 5.29534
+    }
+  ],
+  "mc_particles": []
+}

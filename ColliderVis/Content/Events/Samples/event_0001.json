@@ -1,0 +1,206 @@
+{
+  "event_number": 1,
+  "run_number": 1,
+  "_label": "dimuon",
+  "tracks": [
+    {
+      "points": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          -1524.82,
+          263.73,
+          -989.87
+        ]
+      ],
+      "charge": 1.0,
+      "momentum_gev": 42.108,
+      "pdg": -13
+    },
+    {
+      "points": [
+        [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        [
+          1586.3,
+          -263.73,
+          888.02
+        ]
+      ],
+      "charge": -1.0,
+      "momentum_gev": 42.108,
+      "pdg": 13
+    }
+  ],
+  "calo_hits": [
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1646.9,
+        189.61,
+        -1002.88
+      ],
+      "energy_gev": 0.26875
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        -1618.51,
+        230.67,
+        -999.64
+      ],
+      "energy_gev": 0.13082
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2604.32,
+        545.93,
+        -1453.99
+      ],
+      "energy_gev": 0.30335
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2576.64,
+        412.82,
+        -1675.37
+      ],
+      "energy_gev": 0.27536
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        -2590.33,
+        411.17,
+        -1615.38
+      ],
+      "energy_gev": 0.31539
+    },
+    {
+      "collection": "MuonHits",
+      "position": [
+        -4092.19,
+        726.12,
+        -2416.54
+      ],
+      "energy_gev": 0.07354
+    },
+    {
+      "collection": "MuonHits",
+      "position": [
+        -4219.31,
+        506.11,
+        -2540.27
+      ],
+      "energy_gev": 0.24218
+    },
+    {
+      "collection": "MuonHits",
+      "position": [
+        -4208.65,
+        675.97,
+        -2373.85
+      ],
+      "energy_gev": 0.18325
+    },
+    {
+      "collection": "MuonHits",
+      "position": [
+        -4352.73,
+        893.77,
+        -2477.53
+      ],
+      "energy_gev": 0.21777
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1595.24,
+        -205.24,
+        953.14
+      ],
+      "energy_gev": 0.16039
+    },
+    {
+      "collection": "ECalBarrelHits",
+      "position": [
+        1641.51,
+        -290.06,
+        1022.48
+      ],
+      "energy_gev": 0.2097
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2597.0,
+        -508.96,
+        1686.62
+      ],
+      "energy_gev": 0.45296
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2653.21,
+        -322.98,
+        1635.08
+      ],
+      "energy_gev": 0.45628
+    },
+    {
+      "collection": "HCalBarrelHits",
+      "position": [
+        2598.56,
+        -306.77,
+        1694.25
+      ],
+      "energy_gev": 0.53684
+    },
+    {
+      "collection": "MuonHits",
+      "position": [
+        4171.28,
+        -687.8,
+        2632.23
+      ],
+      "energy_gev": 0.12475
+    },
+    {
+      "collection": "MuonHits",
+      "position": [
+        4186.18,
+        -684.81,
+        2649.68
+      ],
+      "energy_gev": 0.06509
+    },
+    {
+      "collection": "MuonHits",
+      "position": [
+        4339.8,
+        -555.07,
+        2854.67
+      ],
+      "energy_gev": 0.08669
+    },
+    {
+      "collection": "MuonHits",
+      "position": [
+        4397.07,
+        -720.27,
+        2619.85
+      ],
+      "energy_gev": 0.21402
+    }
+  ],
+  "mc_particles": []
+}

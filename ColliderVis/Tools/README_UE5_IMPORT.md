@@ -37,8 +37,7 @@ Steps 3–7 of the old manual workflow (import GLTF, create materials / input / 
 blueprints, build the level, tag actors, spawn the Blender lights) are now done by one
 idempotent script: **`Tools/ue5_build_content.py`**.
 
-Run it inside the editor — easiest via the **mcp-unreal** `execute_script` tool (see
-`../../MCP_SETUP.md`), or from the editor's Python console:
+Run it inside the editor from the editor's Python console:
 
 ```python
 import sys; sys.path.append(r"<repo>/ColliderVis/Tools")

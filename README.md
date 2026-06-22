@@ -1,5 +1,53 @@
 # ddgeoviztools
 
+<!-- ──────────────────────────────────────────────────────────────────────── -->
+
+## Audio — replacing sounds
+
+The **ColliderVis** UE5 app ships a small set of placeholder sound effects.
+All defaults are **CC0 / public-domain** (free for any use, no attribution
+required) — see [`ColliderVis/Content/Audio/CREDITS.md`](ColliderVis/Content/Audio/CREDITS.md)
+for per-file sources and licenses.
+
+**Where the source WAVs live**
+
+    ColliderVis/Content/Audio/Source/
+        ui_click.wav        ambience_loop.wav
+        ui_hover.wav        splash_whoosh.wav
+
+**Imported `/Game/Audio/` assets** (names are a contract — C++/Blueprints
+reference them by path, so keep the names if you replace the audio):
+
+| Source WAV          | UE asset                  | Used by |
+|---------------------|---------------------------|---------|
+| `ui_click.wav`      | `/Game/Audio/S_UIClick`     | UI buttons |
+| `ui_hover.wav`      | `/Game/Audio/S_UIHover`     | UI hover |
+| `splash_whoosh.wav` | `/Game/Audio/S_SplashWhoosh`| splash screen (`USplashWidget`) |
+| `ambience_loop.wav` | `/Game/Audio/S_AmbienceLoop`| background ambience (seamless loop) |
+
+**How to replace a sound (two ways)**
+
+1. **Drop-in + re-import (recommended):** put a new WAV with the **same
+   filename** into `ColliderVis/Content/Audio/Source/`, then re-run the headless
+   importer:
+
+   ```bash
+   UnrealEditor-Cmd <path>/ColliderVis/ColliderVis.uproject \
+       -run=pythonscript -script="<path>/ColliderVis/Tools/import_audio.py"
+   ```
+
+   It re-imports in place (`replace_existing=True`), so the `/Game/Audio/...`
+   path is preserved and all existing references keep working.
+
+2. **In-editor:** right-click the asset under `/Game/Audio/` →
+   *Reimport With New File…*, or import a new WAV and rename it to the asset
+   name in the table above.
+
+If you replace the defaults, update `ColliderVis/Content/Audio/CREDITS.md` with
+the new source and license.
+
+<!-- ──────────────────────────────────────────────────────────────────────── -->
+
 CLI tools for working with ddsim/DD4hep GDML detector geometries:
 
 1. **Split** — divide a monolithic GDML into one file per sub-detector system.
