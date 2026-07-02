@@ -80,10 +80,22 @@ var xr_ray: RayCast3D = null
 var xr_dot: MeshInstance3D = null
 var vr_menu: Node3D = null
 var _xr_trigger_down := false
+var xr_active := false              # phase-A rig up and tracking
+var _xr_diag: Label3D = null        # head-locked boot/fps readout
+var _xr_diag_t := 0.0
+var _xr_diag_life := 30.0
 
 
 func _ready() -> void:
 	_args = _parse_user_args()
+	# XR rig FIRST, before anything else can go wrong: initialize OpenXR,
+	# flip the viewport to stereo, and make the XRCamera3D current. This is
+	# deliberately minimal — everything decorative (laser, menu, passthrough)
+	# happens in _finish_xr_setup() at the END of _ready. Between the two,
+	# per-frame XR code is fully null-guarded. If any later build step errors,
+	# the user is still standing in a tracked (if empty) world instead of a
+	# head-locked screenshot.
+	xr_active = _init_xr_rig()
 	_setup_shader_globals()
 	_build_environment()
 	_build_stage()
@@ -116,18 +128,18 @@ func _ready() -> void:
 	ui.build(self)
 	if _args.has("screenshot") and not _args.has("hud"):
 		ui.visible = false
-	# _try_init_xr() is called LAST so that xr_camera.current = true is the
-	# final word on which camera is active — running it earlier let later
-	# setup (ui.build etc.) steal `current` back to the desktop camera, which
-	# is exactly the head-locked symptom. This is the order that head-tracks.
+	if xr_active:
+		# The flat 2D UI (CanvasLayer) never reaches the HMD; hiding it also
+		# keeps its touch buttons from ever receiving stray input in-headset.
+		ui.visible = false
 	if _args.has("screenshot"):
 		_run_screenshot_mode()
-	elif _try_init_xr():
-		pass   # VR session running; flat-screen input stays available too
+	elif xr_active:
+		_finish_xr_setup()   # laser, in-VR menu, passthrough — rig already up
 	else:
 		_sync_mouse_mode()   # menu starts closed -> mouse drives the camera
-	# Mesh-LOD tweak runs dead last — after XR is fully up — so that even if it
-	# ever errors it can never prevent head-tracking initialization.
+	# Mesh-LOD tweak runs dead last so that even if it ever errors it can't
+	# take anything important with it.
 	if is_mobile:
 		_optimize_geometry_for_mobile()
 
@@ -136,7 +148,16 @@ func _ready() -> void:
 # VR (Meta Quest via OpenXR — enabled only in Android builds)
 # ──────────────────────────────────────────────────────────────────────────────
 
-func _try_init_xr() -> bool:
+## Phase A — the bare XR rig. Runs FIRST in _ready, before the world is
+## built, so no later step can prevent or undo head tracking. Keep this
+## function boring: interface init, stereo viewport, origin/camera/hands.
+## NOTE: the render path is deliberately minimal — exactly the configuration
+## known to render on-device. VRS_XR foveation, vsync overrides, and OpenXR
+## depth-buffer submission each produced a fully black headset on Godot 4.6 +
+## Quest. Do not re-add them without testing on hardware.
+func _init_xr_rig() -> bool:
+	if _args.has("screenshot"):
+		return false
 	var xr := XRServer.find_interface("OpenXR")
 	if xr == null:
 		return false
@@ -144,12 +165,6 @@ func _try_init_xr() -> bool:
 		return false
 	var vp := get_viewport()
 	vp.use_xr = true
-	# NOTE: this XR render path is deliberately kept minimal — exactly the
-	# configuration that last rendered in stereo on the headset. Several
-	# "optimizations" (VRS_XR foveation, vsync override, depth-buffer
-	# submission) each caused a fully black, frozen headset on Godot 4.6 +
-	# Quest, so they are intentionally NOT set here. Do not re-add them
-	# without testing on-device.
 	# Headset perf: low render scale + a little MSAA (cheap on the tiler since
 	# it resolves in tile memory).
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
@@ -175,7 +190,25 @@ func _try_init_xr() -> bool:
 			xr_left = ctl
 		else:
 			xr_right = ctl
+	# Head-locked boot/diagnostic readout: fps + active renderer + driver,
+	# visible with zero interaction for the first seconds of a session, so a
+	# misbehaving build reports its own state from inside the headset.
+	_xr_diag = Label3D.new()
+	_xr_diag.text = "ColliderVis booting…"
+	_xr_diag.font_size = 40
+	_xr_diag.pixel_size = 0.0009
+	_xr_diag.no_depth_test = true
+	_xr_diag.render_priority = 100
+	_xr_diag.position = Vector3(0, -0.14, -1.0)
+	_xr_diag.modulate = Color(0.6, 1.0, 0.7)
+	xr_camera.add_child(_xr_diag)
+	print("ColliderVis: OpenXR rig up (tracking live)")
+	return true
 
+
+## Phase B — XR conveniences built after the world exists: right-hand laser,
+## world-space menu, post-fx/floor tweaks, optional passthrough.
+func _finish_xr_setup() -> void:
 	# Right-hand laser pointer for the in-VR menu.
 	xr_ray = RayCast3D.new()
 	xr_ray.target_position = Vector3(0, 0, -6)
@@ -223,8 +256,7 @@ func _try_init_xr() -> bool:
 		glass_floor.visible = true
 	if _args.has("passthrough"):
 		set_passthrough(true)
-	print("ColliderVis: OpenXR session started")
-	return true
+	print("ColliderVis: OpenXR session ready")
 
 
 ## Reset the play area so the detector sits in front of you again.
@@ -324,6 +356,21 @@ var _xr_snap_ready := true
 func _process_xr(delta: float) -> void:
 	if xr_origin == null:
 		return
+
+	# Boot/diagnostic readout: live for the first seconds of the session (or
+	# until the menu opens — the menu has its own readout), then freed.
+	if _xr_diag != null:
+		_xr_diag_life -= delta
+		_xr_diag_t += delta
+		if _xr_diag_life <= 0.0 or (vr_menu != null and vr_menu.is_open()):
+			_xr_diag.queue_free()
+			_xr_diag = null
+		elif _xr_diag_t >= 0.5:
+			_xr_diag_t = 0.0
+			_xr_diag.text = "%d fps · %s · %s" % [
+				Engine.get_frames_per_second(),
+				RenderingServer.get_current_rendering_method(),
+				RenderingServer.get_current_rendering_driver_name()]
 
 	# Laser pointer + trigger-as-click while the VR menu is open.
 	if vr_menu != null and vr_menu.is_open() and xr_ray != null:
@@ -1120,7 +1167,10 @@ func _spawn_cameras() -> void:
 	orbit_camera = OrbitCamera.new()
 	orbit_camera.name = "OrbitCamera"
 	add_child(orbit_camera)
-	orbit_camera.current = true
+	# In an XR session the XRCamera3D (made current in _init_xr_rig) must stay
+	# the only current camera — a flat camera going current is exactly the
+	# "renders but head-locked" failure. Desktop/iOS keep the orbit camera.
+	orbit_camera.current = (xr_origin == null)
 	_prev_cam_xform = orbit_camera.global_transform
 
 
@@ -1139,6 +1189,12 @@ func camera_mode_name() -> String:
 
 
 func cycle_camera_mode() -> void:
+	# Camera modes are a flat-screen concept. In an XR session the XRCamera3D
+	# must never lose `current` — the touch UI's mode button (built on Quest
+	# because it's a mobile OS) or a stray input could otherwise hand the
+	# viewport to a static camera: the "renders but head-locked" failure.
+	if xr_active:
+		return
 	match cam_mode:
 		CamMode.ORBIT:
 			if is_mobile:

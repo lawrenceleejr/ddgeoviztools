@@ -9,6 +9,11 @@ var _done := false
 
 
 func _ready() -> void:
+	# The splash is a 2D Control — it never reaches an HMD, so on the headset
+	# it's just seconds of black before the world appears. Go straight in.
+	if OS.has_feature("mobile"):
+		_finish()
+		return
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--screenshot") or arg == "--no-splash":
 			_finish()
