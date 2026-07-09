@@ -3,6 +3,8 @@ __pycache__/
 ColliderVisGodot/.godot/
 ColliderVisGodot/build/
 ColliderVisGodot/assets/detector/*.gltf
+ColliderVisGodot/assets/detector/*.glb
+ColliderVisGodot/assets/detector/*.bin
 ColliderVisGodot/assets/detector/*.import
 ColliderVisGodot/addons/godotopenxrvendors/
 ColliderVisGodot/android/

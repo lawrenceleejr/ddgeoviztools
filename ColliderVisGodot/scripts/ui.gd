@@ -108,6 +108,12 @@ func build(p_main: Node3D) -> void:
 	if is_touch:
 		_build_touch_controls()
 	refresh()
+	# In an XR session this 2D CanvasLayer never reaches the HMD (the
+	# world-space vr_menu replaces it) and is hidden by main.gd. It's still
+	# fully built so its methods stay callable (vr_menu -> _ui_refresh), but
+	# its per-frame _process is pure wasted work on the Quest — stop it.
+	if main.get("xr_active"):
+		set_process(false)
 
 
 ## On-screen controls for keyboard-less devices: a bottom action bar

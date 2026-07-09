@@ -107,7 +107,10 @@ func _ready() -> void:
 			for node in detector_groups[g]:
 				(node as Node3D).visible = false
 	open_event_path(String(_args.get("events", DEFAULT_EVENTS_DIR)))
-	if not event_files.is_empty() and not _args.has("no-event"):
+	# Only fall back to event 0 if open_event_path didn't already display the
+	# specifically-requested event (a --events=<file>.json / .root arg shows
+	# its own index; event_index stays -1 for a bare directory).
+	if event_index < 0 and not event_files.is_empty() and not _args.has("no-event"):
 		_show_event(0)
 	_spawn_cameras()
 	# Default render scale: low-ish on desktop (FSR2 hides it well);
@@ -938,7 +941,7 @@ func _convert_and_load_root(root_path: String) -> void:
 			+ "  pip install uproot awkward")
 		return
 	_load_events_from_dir(out_dir)
-	if not event_files.is_empty():
+	if not event_files.is_empty() and not _args.has("no-event"):
 		_show_event(0)
 
 
@@ -1078,7 +1081,9 @@ func set_render_scale(f: float) -> void:
 		vp.use_taa = false
 	else:
 		vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
-		vp.use_taa = not is_mobile
+		# TAA off in any XR session too — its temporal reprojection smears in
+		# stereo (and it's unsupported on the Mobile renderer).
+		vp.use_taa = not is_mobile and not vp.use_xr
 
 
 func set_resolution_index(idx: int) -> void:
@@ -1308,8 +1313,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 	match k.keycode:
 		KEY_ESCAPE:
-			ui.toggle_menu()
-			_sync_mouse_mode()
+			# Flat menu / mouse-capture is a desktop concept; in XR the vr_menu
+			# (Y button) owns this. Don't let a stray key re-show the hidden UI.
+			if not xr_active:
+				ui.toggle_menu()
+				_sync_mouse_mode()
 		KEY_TAB:
 			cycle_camera_mode()
 		KEY_SPACE:
@@ -1331,7 +1339,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			set_phi_max(phi_max + 15.0)
 			_ui_refresh()
 		KEY_H:
-			ui.visible = not ui.visible
+			if not xr_active:   # never re-show the flat UI inside the headset
+				ui.visible = not ui.visible
 		KEY_0:
 			set_all_groups(true)
 		_:

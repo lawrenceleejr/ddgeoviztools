@@ -19,6 +19,13 @@ on:
       - ".github/workflows/godot-build.yml"
   workflow_dispatch:
 
+# Supersede in-flight builds of the same branch so a rapid series of pushes
+# doesn't tie up four runners each. (Manual dispatch uploads aren't cancelled
+# mid-flight by a later push to a different ref.)
+concurrency:
+  group: godot-build-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GODOT_VERSION: "4.6"
 
@@ -213,10 +220,17 @@ jobs:
 
       - name: Install OpenXR vendors addon
         run: |
-          curl -sSL -o /tmp/vendors.zip \
+          set -euo pipefail
+          curl -fsSL -o /tmp/vendors.zip \
             "https://github.com/GodotVR/godot_openxr_vendors/releases/download/5.1.0-stable/godotopenxrvendorsaddon.zip"
           unzip -q /tmp/vendors.zip -d /tmp/vendors
           cp -r /tmp/vendors/asset/addons ColliderVisGodot/
+          # Fail loudly if the zip layout changed and the addon didn't land —
+          # otherwise gradle happily builds a valid-looking NON-XR APK.
+          test -d ColliderVisGodot/addons/godotopenxrvendors \
+            || { echo "ERROR: godotopenxrvendors addon missing after copy (zip layout changed?)"; exit 1; }
+          test -f ColliderVisGodot/addons/godotopenxrvendors/plugin.cfg \
+            || ls -R ColliderVisGodot/addons/godotopenxrvendors | head
 
       - name: Configure Android SDK + release keystore
         env:
@@ -294,10 +308,11 @@ jobs:
       - name: Export Quest APK
         run: |
           mkdir -p ColliderVisGodot/build
-          # Meta requires a higher Android version code on every upload.
-          # Stamp a unique, monotonically-increasing code from the CI run
-          # number (offset so it's safely above any earlier manual upload).
-          VCODE=$(( 1000 + GITHUB_RUN_NUMBER ))
+          # Meta requires a strictly higher Android version code on every
+          # upload. Fold in run_attempt so a *re-run* of the same workflow
+          # (which reuses GITHUB_RUN_NUMBER) still bumps the code instead of
+          # colliding. Offset keeps it above any earlier manual upload.
+          VCODE=$(( 1000 + GITHUB_RUN_NUMBER * 10 + GITHUB_RUN_ATTEMPT ))
           sed -i "s|^version/code=.*|version/code=${VCODE}|" ColliderVisGodot/export_presets.cfg
           sed -i "s|^version/name=.*|version/name=\"1.0.${GITHUB_RUN_NUMBER}\"|" ColliderVisGodot/export_presets.cfg
           # Inject the release keystore into the preset — Godot's
@@ -338,11 +353,19 @@ jobs:
           rm -rf /tmp/dec
           java -jar /tmp/apktool.jar d -f -s -o /tmp/dec "$APK"
           MAN=/tmp/dec/AndroidManifest.xml
+          # Patch 1: excludeFromRecents on the launcher alias (Godot only sets
+          # it on the target activity). Then ASSERT it took — a silent no-op
+          # from a manifest-format change must fail the build, not ship.
           grep -q 'activity-alias[^>]*excludeFromRecents' "$MAN" \
             || sed -i 's|<activity-alias |<activity-alias android:excludeFromRecents="true" |' "$MAN"
-          # Force headtracking required=true (only on the headtracking feature line).
+          grep -q 'activity-alias[^>]*android:excludeFromRecents="true"' "$MAN" \
+            || { echo "ERROR: excludeFromRecents patch did not apply (manifest format changed?)"; exit 1; }
+          # Patch 2: headtracking required=true. Assert it, too.
           sed -i '/android.hardware.vr.headtracking/ s/android:required="false"/android:required="true"/' "$MAN"
+          grep -q 'android.hardware.vr.headtracking[^/]*android:required="true"' "$MAN" \
+            || { echo "ERROR: headtracking required=true not present after patch"; exit 1; }
           java -jar /tmp/apktool.jar b /tmp/dec -o /tmp/cv_patched.apk --use-aapt2
+          test -s /tmp/cv_patched.apk || { echo "ERROR: apktool rebuild produced no APK"; exit 1; }
           "$BT/zipalign" -p -f 4 /tmp/cv_patched.apk "$APK"
           # Re-sign with the stable release key. v2 scheme only (v3 disabled):
           # Meta validates against v1/v2, and a v3-only signature reads as
@@ -353,42 +376,33 @@ jobs:
             --v2-signing-enabled true --v3-signing-enabled false --v4-signing-enabled false \
             "$APK"
 
-          # Verify the final APK meets Meta Horizon's Application Manifest
-          # Requirements. These checks FAIL the build if violated, so a bad
-          # APK never reaches an upload:
-          #   - minSdkVersion must be 29-34   (we set 29)
-          #   - targetSdkVersion must be 32-34 (we set 34)
-          #   - android.hardware.vr.headtracking must be required="true"
-          #     (forced by the apktool post-patch above)
-          #   - the launcher activity-alias must have excludeFromRecents=true
+          # ---- Hard validation on the FINAL signed APK (NEVER skippable) ----
+          # aapt is mandatory: if it's missing we fail rather than ship an
+          # unvalidated APK.
           AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1)
-          if [ -n "$AAPT" ]; then
-            BADGING=$("$AAPT" dump badging "$APK" 2>/dev/null)
-            echo "$BADGING" | grep -oE "versionCode='[0-9]*'|sdkVersion:'[0-9]*'|targetSdkVersion:'[0-9]*'" || true
-            MINSDK=$(echo "$BADGING" | grep -oE "sdkVersion:'[0-9]*'" | grep -oE "[0-9]+")
-            if [ "${MINSDK:-0}" -lt 29 ]; then
-              echo "ERROR: minSdkVersion ${MINSDK} < 29 — Meta will reject the manifest."; exit 1
-            fi
-            echo "--- vr.headtracking required attribute (must be true) ---"
-            HT=$("$AAPT" dump xmltree "$APK" AndroidManifest.xml 2>/dev/null \
-              | grep -A1 'android.hardware.vr.headtracking' | grep -i 'required')
-            echo "$HT"
-            # required="true" encodes as 0xffffffff; required="false" as 0x0.
-            if echo "$HT" | grep -q '0x0$'; then
-              echo "ERROR: vr.headtracking is required=false — apktool headtracking patch failed."; exit 1
-            fi
-            echo "--- launcher activity-alias excludeFromRecents (must be true) ---"
-            ALIAS_EFR=$("$AAPT" dump xmltree "$APK" AndroidManifest.xml 2>/dev/null \
-              | sed -n '/E: activity-alias/,/E: intent-filter/p' \
-              | grep -o 'excludeFromRecents.*0x[0-9a-f]*' | grep -o '0x[0-9a-f]*$')
-            echo "alias excludeFromRecents = ${ALIAS_EFR:-<absent>}"
-            if [ "$ALIAS_EFR" != "0xffffffff" ]; then
-              echo "ERROR: launcher alias excludeFromRecents is not true — apktool patch failed."; exit 1
-            fi
-            echo "--- other Meta manifest entries ---"
-            "$AAPT" dump xmltree "$APK" AndroidManifest.xml 2>/dev/null \
-              | grep -E '(oculus|supportedDevices|BOUNDARYLESS)' || true
-          fi
+          [ -n "$AAPT" ] || { echo "ERROR: aapt not found in build-tools — cannot validate APK"; exit 1; }
+          TREE=$("$AAPT" dump xmltree "$APK" AndroidManifest.xml 2>/dev/null)
+          BADGING=$("$AAPT" dump badging "$APK" 2>/dev/null)
+          echo "$BADGING" | grep -oE "versionCode='[0-9]*'|sdkVersion:'[0-9]*'|targetSdkVersion:'[0-9]*'" || true
+          MINSDK=$(echo "$BADGING" | grep -oE "sdkVersion:'[0-9]*'" | grep -oE "[0-9]+")
+          [ "${MINSDK:-0}" -ge 29 ] || { echo "ERROR: minSdkVersion ${MINSDK:-?} < 29 — Meta rejects."; exit 1; }
+          # vr.headtracking must be PRESENT and required=true (0xffffffff).
+          # An absent attribute (empty match) must fail, not pass.
+          HT=$(echo "$TREE" | grep -A1 'android.hardware.vr.headtracking' | grep -oE '0x[0-9a-f]+$' | head -1)
+          echo "headtracking required = ${HT:-<absent>}"
+          [ "$HT" = "0xffffffff" ] || { echo "ERROR: vr.headtracking not required=true (got ${HT:-absent})"; exit 1; }
+          # launcher activity-alias excludeFromRecents=true
+          ALIAS_EFR=$(echo "$TREE" | sed -n '/E: activity-alias/,/E: intent-filter/p' | grep -o 'excludeFromRecents.*0x[0-9a-f]*' | grep -o '0x[0-9a-f]*$' | head -1)
+          echo "alias excludeFromRecents = ${ALIAS_EFR:-<absent>}"
+          [ "$ALIAS_EFR" = "0xffffffff" ] || { echo "ERROR: launcher alias excludeFromRecents not true (${ALIAS_EFR:-absent})"; exit 1; }
+          # Must actually BE a Meta VR app + carry the OpenXR runtime, or the
+          # vendors addon silently didn't apply and we'd ship a non-XR APK.
+          echo "$TREE" | grep -q 'com.oculus.intent.category.VR' \
+            || { echo "ERROR: com.oculus.intent.category.VR missing — not a VR app (vendors addon not applied?)"; exit 1; }
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libopenxr_loader.so' \
+            || { echo "ERROR: libopenxr_loader.so missing from APK — OpenXR runtime not bundled"; exit 1; }
+          echo "--- validated Meta manifest entries ---"
+          echo "$TREE" | grep -E '(oculus|supportedDevices|headtracking)' || true
           # Confirm the APK is signed with v2 (Meta requires v1 or v2) and
           # print the signing certificate digest — it MUST be identical on
           # every build, or Meta rejects/hangs the upload.

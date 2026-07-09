@@ -37,13 +37,12 @@ var cam_pitch := -0.12
 # Touch controls (set by the UI's virtual joystick / jump button).
 var touch_move := Vector2.ZERO   # x = strafe, y = forward
 var _touch_jump := false
-var _is_mobile := OS.has_feature("mobile")
+var _phase := 0.0
+var _speed_blend := 0.0   # 0 idle .. 1 run, smoothed
 
 
 func request_jump() -> void:
 	_touch_jump = true
-var _phase := 0.0
-var _speed_blend := 0.0   # 0 idle .. 1 run, smoothed
 
 # Rig pivots (model front = +Z).
 var rig: Node3D
@@ -273,12 +272,15 @@ func _build_camera() -> void:
 	camera.fov = 65.0
 	camera.near = 0.05
 	camera.position = Vector3(0.45, 0.15, 0)   # slight shoulder offset
-	var attrs := CameraAttributesPractical.new()
-	attrs.dof_blur_far_enabled = true
-	attrs.dof_blur_far_distance = 18.0
-	attrs.dof_blur_far_transition = 14.0
-	attrs.dof_blur_amount = 0.04
-	camera.attributes = attrs
+	# Depth-of-field is a full-screen blur pass — too costly for the phone
+	# tiler (matches the guard in orbit_camera.gd). Desktop only.
+	if not OS.has_feature("mobile"):
+		var attrs := CameraAttributesPractical.new()
+		attrs.dof_blur_far_enabled = true
+		attrs.dof_blur_far_distance = 18.0
+		attrs.dof_blur_far_transition = 14.0
+		attrs.dof_blur_amount = 0.04
+		camera.attributes = attrs
 	spring.add_child(camera)
 
 

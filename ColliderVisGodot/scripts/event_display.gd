@@ -11,6 +11,12 @@ extends Node3D
 
 const MM_TO_M := 0.001
 
+# Preloaded once at parse time and reused across all per-track/hit/line
+# materials — avoids a load() lookup per track inside the build loop.
+const TRACK_SHADER := preload("res://shaders/track.gdshader")
+const CALO_SHADER := preload("res://shaders/calo_hit.gdshader")
+const MC_SHADER := preload("res://shaders/mc_line.gdshader")
+
 const POSITIVE_TRACK_COLOR := Color(1.0, 0.4, 0.1)   # red-orange
 const NEGATIVE_TRACK_COLOR := Color(0.1, 0.7, 1.0)   # cyan-blue
 const NEUTRAL_TRACK_COLOR := Color(1.0, 1.0, 1.0)
@@ -118,7 +124,7 @@ func _build_tracks(tracks: Variant) -> int:
 		var mi := MeshInstance3D.new()
 		mi.mesh = mesh
 		var mat := ShaderMaterial.new()
-		mat.shader = load("res://shaders/track.gdshader")
+		mat.shader = TRACK_SHADER
 		mat.set_shader_parameter("albedo", Color(color, 1.0).darkened(0.85))
 		mat.set_shader_parameter("emission_color", color)
 		# Momentum-scaled glow (UE: EmissiveIntensity = p * scale, clamped).
@@ -270,7 +276,7 @@ func _build_calo_hits(hits: Variant) -> int:
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	var mat := ShaderMaterial.new()
-	mat.shader = load("res://shaders/calo_hit.gdshader")
+	mat.shader = CALO_SHADER
 	mmi.material_override = mat
 	add_child(mmi)
 	return positions.size()
@@ -315,7 +321,7 @@ func _build_mc_particles(parts: Variant) -> int:
 	var mi := MeshInstance3D.new()
 	mi.mesh = st.commit()
 	var mat := ShaderMaterial.new()
-	mat.shader = load("res://shaders/mc_line.gdshader")
+	mat.shader = MC_SHADER
 	mat.set_shader_parameter("line_color", Color(MC_COLOR, 0.55))
 	mat.set_shader_parameter("emission_energy", 1.4)
 	mi.material_override = mat
