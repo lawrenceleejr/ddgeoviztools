@@ -96,7 +96,7 @@ picture keeps its proportions.
 |---|---|---|
 | Renderer | three.js r185, WebGL2 | Real geometry, per-layer explode, crisp at any DPR. Cycles frames would need hours of CPU render per revision in CI and give no interactivity. |
 | Bundler / dev | Vite 8 | Zero-config ES modules, `base` for the Pages subpath, fast preview. |
-| Assets | `@gltf-transform` + `meshoptimizer` (`scripts/build-models.mjs`) | Strip VTK point/line primitives, split into named parts, flat normals, 14-bit quantisation, meshopt compression. 46 MB → about 5 MB. |
+| Assets | `@gltf-transform` + `meshoptimizer` (`scripts/build-models.mjs`) | Strip VTK point/line primitives, split into 90 named parts, 14-bit quantisation, meshopt compression. 46.8 MB → 4.7 MB. No normals are stored: the page uses flat shading, which derives them in the fragment shader. |
 | Scroll | Hand-rolled: `scrollY` → chapter progress → damped spring | ~60 lines, no dependency, deterministic, works with native inertia. GSAP ScrollTrigger and Lenis were considered and rejected for licence and weight. |
 | Fonts | Google Fonts, self-hosted woff2 | No runtime CDN request. |
 | Labels | DOM elements projected from 3D each frame | Selectable text, real fonts, hairlines as SVG. |
@@ -114,9 +114,26 @@ holds one node per part:
 - endcaps: `pz` and `nz` halves (the VTK export already emits them as
   two primitives; tracker disks that span both sides are split by
   triangle);
-- trackers: `layer0..2` by radius, `disks_pz` / `disks_nz`, `support`.
+- trackers and vertex: `layerN` by radius (radial clustering of module
+  centroids), `disks_pz` / `disks_nz` (two-sided primitives split by
+  triangle), `shell` for thin service tubes, `support` for the rest.
 
-`parts.json` rows: `{ id, group, role, sign, tris, bbox, rMid, zMid }`.
+`parts.json` rows: `{ id, system, group, role, sign, tris, bbox, rMin, rMax, rMid, zMid, center }`.
+
+## Testing without a GPU
+
+Software GL (SwiftShader in headless Chromium) takes seconds per frame on
+the physical shader, so the page has test-only query flags:
+
+| Flag | Effect |
+|---|---|
+| `?still` | no idle rotation; the scroll spring snaps (also implied by reduced motion) |
+| `?fast` | cheap material, no environment map, no MSAA |
+| `?lite` | skip systems over 100 k triangles |
+| `?cam=x,y,z[,tx,ty,tz]` | pin the camera (metres) |
+
+`npm run shots` drives the built site through every chapter and writes
+`shots/NN-<chapter>.png`; `--full 1` keeps the full geometry.
 
 ## Budgets
 

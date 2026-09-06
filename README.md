@@ -12,6 +12,11 @@ CLI tools for working with ddsim/DD4hep GDML detector geometries:
 Everything runs inside a Docker container — no local Python environment or
 library installation required.
 
+There is also a **web page**: a scroll-driven exploded view of MAIA built
+with three.js from the converted meshes, deployed to GitHub Pages from
+`web/`. See [`web/DESIGN.md`](web/DESIGN.md) for the look, the stack and
+the asset pipeline, and the *Web page* section at the end of this file.
+
 ---
 
 ## Prerequisites
@@ -498,3 +503,24 @@ stacks.
 > to bake it into the mesh. You can also hide sub-detectors you are not
 > currently working with (H key in the viewport, or the eye icon in the
 > outliner).
+
+---
+
+## Web page (exploded view)
+
+`web/` is a small Vite + three.js site that takes the detector apart one
+system at a time as you scroll. It is published to GitHub Pages by
+`.github/workflows/pages.yml` on every push to `main` that touches `web/`.
+
+```bash
+cd web
+npm ci
+npm run models      # data/output/*.gltf → public/models/*.glb + parts.json (4.7 MB)
+npm run dev         # http://localhost:5173/ddgeoviztools/
+npm run build && npm run preview
+npm run shots       # Playwright screenshots of every chapter → web/shots/
+```
+
+One-time setup in the GitHub repository: **Settings → Pages → Source →
+GitHub Actions**. The site URL is then
+`https://lawrenceleejr.github.io/ddgeoviztools/`.
