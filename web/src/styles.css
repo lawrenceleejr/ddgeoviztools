@@ -94,6 +94,16 @@ body {
   pointer-events: none;
 }
 .chapter:first-of-type { min-height: 100vh; }
+/* Legibility scrim behind the copy, fading toward the model. */
+.chapter::before {
+  content: '';
+  position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  opacity: 0; transition: opacity 600ms ease;
+  background: linear-gradient(90deg, rgba(7, 8, 10, 0.86) 0%, rgba(7, 8, 10, 0.55) 30%, rgba(7, 8, 10, 0) 58%);
+}
+.chapter[data-side='right']::before { background: linear-gradient(270deg, rgba(7, 8, 10, 0.86) 0%, rgba(7, 8, 10, 0.55) 30%, rgba(7, 8, 10, 0) 58%); }
+.chapter[data-side='center']::before { background: linear-gradient(0deg, rgba(7, 8, 10, 0.9) 0%, rgba(7, 8, 10, 0.5) 28%, rgba(7, 8, 10, 0) 50%); }
+.chapter.active::before { opacity: 1; }
 .chapter:last-of-type { min-height: 120vh; }
 
 .copy {
@@ -177,6 +187,7 @@ body {
 }
 @media (max-width: 720px) {
   :root { --chapter-h: 130vh; }
+  .chapter::before, .chapter[data-side='right']::before { background: linear-gradient(0deg, rgba(7, 8, 10, 0.92) 0%, rgba(7, 8, 10, 0.6) 35%, rgba(7, 8, 10, 0) 60%); }
   .chapter[data-side='right'], .chapter[data-side='center'] { justify-items: start; }
   .chapter[data-side='center'] .copy { text-align: left; }
   .chapter[data-side='center'] .facts { grid-template-columns: max-content 1fr; justify-content: start; }

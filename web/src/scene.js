@@ -3,7 +3,7 @@
 import {
   WebGLRenderer, Scene, PerspectiveCamera, Group, Vector3, Color,
   ACESFilmicToneMapping, SRGBColorSpace, PMREMGenerator, DirectionalLight,
-  HemisphereLight, Mesh,
+  HemisphereLight, Mesh, MeshStandardMaterial, FrontSide, DoubleSide,
 } from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
@@ -16,7 +16,11 @@ const BASE = import.meta.env.BASE_URL;
 export class DetectorScene {
   constructor(canvas) {
     this.canvas = canvas;
-    this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
+    // ?fast: cheap materials, no environment map, no MSAA. For software-GL
+    // test runners (SwiftShader) where the physical shader takes seconds per
+    // frame; never used by real visitors.
+    this.fast = new URLSearchParams(location.search).has('fast');
+    this.renderer = new WebGLRenderer({ canvas, antialias: !this.fast, alpha: true, powerPreference: 'high-performance' });
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
@@ -33,9 +37,11 @@ export class DetectorScene {
 
     // Environment: procedural room through PMREM (no HDR file needed) plus a
     // warm key / cool fill echoing the Blender colour-temperature rig.
-    const pmrem = new PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    pmrem.dispose();
+    if (!this.fast) {
+      const pmrem = new PMREMGenerator(this.renderer);
+      this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.dispose();
+    }
     const key = new DirectionalLight(new Color(1.0, 0.78, 0.55), 2.2);
     key.position.set(8, 12, 6);
     const fill = new DirectionalLight(new Color(0.72, 0.82, 1.0), 0.9);
@@ -61,8 +67,16 @@ export class DetectorScene {
   /** Load every system GLB listed in parts.json. onProgress(0..1). */
   async load(onProgress = () => {}) {
     const manifest = await (await fetch(`${BASE}models/parts.json`)).json();
+    // ?lite skips the heaviest systems (>100k triangles) — used for quick
+    // visual checks on software-GL test runners, never in production.
+    if (new URLSearchParams(location.search).has('lite')) {
+      manifest.systems = manifest.systems.filter((s) => s.tris < 100000);
+    }
     this.manifest = manifest;
-    const rows = new Map(manifest.parts.map((p) => [p.id, p]));
+    // GLTFLoader sanitises node names (drops '/', '.', ':' …), so index the
+    // manifest under both the raw id and its sanitised form.
+    const sanitize = (n) => n.replace(/[\[\]\.:\/]/g, '');
+    const rows = new Map(manifest.parts.flatMap((p) => [[p.id, p], [sanitize(p.id), p]]));
     const loader = new GLTFLoader();
     loader.setMeshoptDecoder(MeshoptDecoder);
     const total = manifest.systems.reduce((s, x) => s + x.bytes, 0);
@@ -78,12 +92,14 @@ export class DetectorScene {
               (gltf) => {
                 got.set(sys.system, sys.bytes);
                 report();
+                // Collect first: addPart() re-parents the mesh, which would
+                // mutate the children array traverse() is walking.
+                const found = [];
                 gltf.scene.traverse((o) => {
-                  if (!(o instanceof Mesh)) return;
-                  const row = rows.get(o.name);
-                  if (!row) return;
-                  this.addPart(o, row);
+                  if (o instanceof Mesh && rows.has(o.name)) found.push([o, rows.get(o.name)]);
                 });
+                for (const [o, row] of found) this.addPart(o, row);
+                if (!found.length) console.warn(`no manifest parts matched in ${sys.file}`);
                 res();
               },
               (ev) => { got.set(sys.system, Math.min(ev.loaded, sys.bytes)); report(); },
@@ -98,12 +114,18 @@ export class DetectorScene {
 
   addPart(mesh, row) {
     const base = this.materials[row.group] ?? this.materials.other;
-    const mat = base.clone();
+    const mat = this.fast
+      ? new MeshStandardMaterial({ color: base.color, metalness: 0.2, roughness: 0.7, flatShading: true, transparent: true })
+      : base.clone();
     mat.userData.group = row.group;
     mesh.material = mat;
-    mesh.frustumCulled = false; // parts move; cheap enough with 76 draws
-    mesh.matrixAutoUpdate = true;
-    this.root.add(mesh);
+    mesh.frustumCulled = false; // parts move; cheap enough with ~90 draws
+    // The GLB node carries a de-quantisation translation/scale from
+    // KHR_mesh_quantization, so never touch mesh.position. Animate a pivot.
+    const pivot = new Group();
+    pivot.name = row.id;
+    pivot.add(mesh);
+    this.root.add(pivot);
 
     // Explode direction & amplitude (mm), from the geometry itself.
     const c = row.center;
@@ -123,7 +145,7 @@ export class DetectorScene {
     } else {
       dir.set(0, 0, 0);
     }
-    this.parts.push({ id: row.id, system: row.system, group: row.group, role: row.role, sign: row.sign, mesh, dir, amp, row });
+    this.parts.push({ id: row.id, system: row.system, group: row.group, role: row.role, sign: row.sign, mesh, pivot, dir, amp, row });
     this.indexLayers(row.system);
   }
 
@@ -167,13 +189,18 @@ export class DetectorScene {
       } else {
         a = ease.inOut(a);
       }
-      p.mesh.position.copy(p.dir).multiplyScalar(a * p.amp);
+      p.pivot.position.copy(p.dir).multiplyScalar(a * p.amp);
 
-      const op = state.opacity[p.group] ?? 1;
+      // Service tubes and supports stay quiet even when their system is the subject.
+      const quiet = /^(shell|support)/.test(p.role) ? 0.35 : 1;
+      const op = (state.opacity[p.group] ?? 1) * quiet;
       const m = p.mesh.material;
       m.opacity = op;
       m.depthWrite = op > 0.5;
       m.transparent = op < 0.999;
+      // Ghosts render front faces only, so a sight line through several
+      // nested shells does not accumulate into a muddy veil.
+      m.side = op < 0.5 ? FrontSide : DoubleSide;
     }
   }
 

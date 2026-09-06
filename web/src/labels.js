@@ -3,11 +3,12 @@
 import { Vector3 } from 'three';
 
 export class Labels {
-  constructor(container, svg, camera, root) {
+  constructor(container, svg, camera, root, partsById = new Map()) {
     this.container = container;
     this.svg = svg;
     this.camera = camera;
     this.root = root;
+    this.partsById = partsById; // id → part (with .pivot) so anchors ride along
     this.items = [];
     this.v = new Vector3();
   }
@@ -37,7 +38,12 @@ export class Labels {
     const w = innerWidth;
     const h = innerHeight;
     for (const it of this.items) {
-      this.v.set(...it.def.at).applyMatrix4(this.root.matrixWorld).project(this.camera);
+      // Anchor: model-space point, optionally offset by a part's pivot so the
+      // label follows the part as it explodes.
+      this.v.set(...it.def.at);
+      const part = it.def.part ? this.partsById.get(it.def.part) : null;
+      if (part) this.v.add(part.pivot.position);
+      this.v.applyMatrix4(this.root.matrixWorld).project(this.camera);
       const behind = this.v.z > 1;
       const x = (this.v.x * 0.5 + 0.5) * w;
       const y = (-this.v.y * 0.5 + 0.5) * h;

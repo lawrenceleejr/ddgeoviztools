@@ -1,13 +1,18 @@
 // main.js — bootstrap: build the story DOM from chapters, load the models,
 // then run one animation loop that turns smoothed scroll progress into
 // camera, explode, emphasis, copy and callouts.
-import { Vector3 } from 'three';
+import { Vector3, Box3 } from 'three';
 import { chapters, RULES, GROUPS } from './chapters.js';
 import { ScrollEngine, ease } from './scroll.js';
 import { DetectorScene } from './scene.js';
 import { Labels } from './labels.js';
 
+const params = new URLSearchParams(location.search);
+// ?still disables the hero idle rotation (deterministic screenshots); reduced
+// motion does the same and also makes the scroll spring snap.
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const still = params.has('still') || reduced;
+window.__maia = { frameMs: 0, frames: 0 };
 
 // ---------- story DOM ----------
 const story = document.getElementById('story');
@@ -47,7 +52,8 @@ function hasWebGL() {
   } catch { return false; }
 }
 
-const engine = new ScrollEngine(sections, { reduced });
+const engine = new ScrollEngine(sections, { reduced: still });
+window.__maia.engine = engine;
 
 if (!hasWebGL()) {
   loader.classList.add('done');
@@ -96,8 +102,9 @@ function transitionWeight(f) {
 
 async function boot() {
   const scene = new DetectorScene(canvas);
-  const labels = new Labels(document.getElementById('labels'), document.getElementById('leaders'), scene.camera, scene.root);
+  window.__maia.scene = scene; // debug / test hook
   await scene.load((p) => { fill.style.width = `${Math.round(p * 100)}%`; });
+  const labels = new Labels(document.getElementById('labels'), document.getElementById('leaders'), scene.camera, scene.root, new Map(scene.parts.map((p) => [p.id, p])));
   note.textContent = '';
   loader.classList.add('done');
   addEventListener('resize', () => scene.resize());
@@ -108,11 +115,20 @@ async function boot() {
   const b = new Vector3();
   let last = performance.now();
   let idle = 0;
+  let warm = 3; // always draw the first few frames
+  let lastT = -1;
+  // ?cam=x,y,z[,tx,ty,tz] pins the camera (debug / framing checks).
+  const camOverride = params.get('cam')?.split(',').map(Number);
+  {
+    const box = new Box3().setFromObject(scene.root);
+    console.log('[maia] root bbox (m)', box.min.toArray().map((v) => v.toFixed(2)), box.max.toArray().map((v) => v.toFixed(2)));
+  }
 
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    const t = engine.step(dt);
+    // The spring may briefly undershoot 0 or overshoot the end; clamp.
+    const t = Math.min(chapters.length - 1e-6, Math.max(0, engine.step(dt)));
     const i = Math.min(chapters.length - 1, Math.floor(t));
     const f = t - i;
     const j = Math.min(chapters.length - 1, i + 1);
@@ -126,13 +142,35 @@ async function boot() {
     scene.camera.fov = ease.lerp(ca.fov, cb.fov, w);
     scene.camera.position.copy(pos);
     scene.camera.lookAt(tgt);
+    // Screen-space shift: slide the camera along its own right axis so the
+    // model sits opposite the copy. On narrow screens the copy is below, so
+    // no shift.
+    const shift = innerWidth > 720 ? ease.lerp(ca.shift ?? 0, cb.shift ?? 0, w) : 0;
+    if (shift) {
+      const dist = pos.distanceTo(tgt);
+      const visW = 2 * dist * Math.tan((scene.camera.fov * Math.PI) / 360) * scene.camera.aspect;
+      scene.camera.translateX(-shift * visW);
+    }
+    if (camOverride) {
+      scene.camera.position.set(camOverride[0], camOverride[1], camOverride[2]);
+      scene.camera.lookAt(camOverride[3] ?? 0, camOverride[4] ?? 0, camOverride[5] ?? 0);
+      scene.camera.fov = 40;
+    }
     scene.camera.updateProjectionMatrix();
 
     // Hero idle rotation, blended out as we leave the first chapter.
-    if (!reduced) idle += dt * 0.06;
     const heroW = 1 - ease.inOut(t / 0.8);
+    const spinning = !still && heroW > 0.001;
+    if (spinning) idle += dt * 0.06;
     scene.root.rotation.y = idle * heroW;
     scene.root.updateMatrixWorld();
+
+    // Render on demand: skip the GPU when nothing moved (scroll at rest, no
+    // idle spin). Copy and label DOM updates are cheap and always run.
+    const moving = t !== lastT || engine.velocity !== 0 || engine.value !== engine.target;
+    lastT = t;
+    const draw = moving || spinning || warm > 0;
+    if (warm > 0) warm--;
 
     scene.apply(blendState(states[i], states[j], w));
     setActive(t);
@@ -142,7 +180,12 @@ async function boot() {
     labels.set(chapters[li].labels, li);
     labels.update(Math.abs(t - li) < 0.45 || (li === i && f < 0.55));
 
-    scene.render(dt);
+    if (draw) {
+      const t0 = performance.now();
+      scene.render(dt);
+      window.__maia.frameMs = performance.now() - t0;
+      window.__maia.frames++;
+    }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

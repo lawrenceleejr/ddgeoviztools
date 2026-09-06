@@ -16,6 +16,7 @@ export class ScrollEngine {
     this.measure();
     addEventListener('scroll', () => this.read(), { passive: true });
     addEventListener('resize', () => { this.measure(); this.read(); });
+    if (document.fonts?.ready) document.fonts.ready.then(() => { this.measure(); this.read(); });
     this.read();
     this.value = this.target;
   }
@@ -28,20 +29,19 @@ export class ScrollEngine {
     });
   }
 
-  /** Raw scroll → target progress. Chapter i is "in view" while its section
-   *  centre travels from viewport bottom to viewport top; progress within a
-   *  chapter is measured on the section's own travel through the centre line. */
+  /** Raw scroll → target progress. Chapter i owns the scroll range from its
+   *  section top to the next section top (the last one: to its own bottom
+   *  minus a viewport), so t = 0 exactly at the top of the page. */
   read() {
-    const mid = scrollY + innerHeight * 0.5;
+    const y = scrollY;
     const n = this.bounds.length;
     let t = 0;
     for (let i = 0; i < n; i++) {
       const b = this.bounds[i];
-      const start = b.top;            // section top hits viewport centre
-      const end = b.top + b.height;   // section bottom hits viewport centre
-      if (mid < start) break;
-      if (mid >= end) { t = i + 1; continue; }
-      t = i + (mid - start) / (end - start);
+      const start = b.top;
+      const end = i < n - 1 ? this.bounds[i + 1].top : b.top + Math.max(1, b.height - innerHeight);
+      if (y >= end) { t = i + 1; continue; }
+      t = i + Math.max(0, (y - start) / (end - start));
       break;
     }
     this.target = Math.min(Math.max(t, 0), n - 1e-6);
@@ -49,6 +49,12 @@ export class ScrollEngine {
 
   /** Advance the spring by dt seconds. Returns smoothed progress. */
   step(dt) {
+    if (this.reduced) {
+      // Reduced motion / test mode: no inertia, follow the scroll exactly.
+      this.value = this.target;
+      this.velocity = 0;
+      return this.value;
+    }
     const w = this.omega;
     const x = this.value - this.target;
     // critically damped: x'' + 2 w x' + w^2 x = 0
