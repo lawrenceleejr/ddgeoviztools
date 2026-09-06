@@ -21,9 +21,9 @@ Builds/
 ue5_meshes/
 renders/
 
-# Web exploded-view site (web/): dependencies and local screenshots.
-# web/public/models/ holds the meshopt-packed GLBs, and docs/ holds the
-# built site that GitHub Pages serves — both are committed.
+# Web exploded-view site (web/): dependencies and build output. The site
+# is built and published by .github/workflows/pages.yml, so nothing built
+# is committed; web/public/models/ holds the packed GLBs and is tracked.
 web/node_modules/
 web/dist/
 web/shots/

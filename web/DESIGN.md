@@ -100,7 +100,7 @@ picture keeps its proportions.
 | Scroll | Hand-rolled: `scrollY` → chapter progress → damped spring | ~60 lines, no dependency, deterministic, works with native inertia. GSAP ScrollTrigger and Lenis were considered and rejected for licence and weight. |
 | Fonts | Google Fonts, self-hosted woff2 | No runtime CDN request. |
 | Labels | DOM elements projected from 3D each frame | Selectable text, real fonts, hairlines as SVG. |
-| Deploy | GitHub Pages, branch source | Pages serves the committed `docs/` folder straight from the branch — no CI step, so what is reviewed is exactly what ships. `npm run build` writes `docs/`. |
+| Deploy | GitHub Actions → Pages (`.github/workflows/pages.yml`) | Rebuilds the models and the site on every push, so the published page can never drift from the committed geometry. Nothing built is committed. |
 | Verification | Playwright (`scripts/screenshots.mjs`) | Scrolls chapter by chapter and screenshots each for visual review. |
 
 ## Assets
@@ -144,21 +144,18 @@ the physical shader, so the page has test-only query flags:
 
 ## Deploy
 
-The site is served by GitHub Pages directly from a branch, with no build
-step in CI: `npm run build` writes the finished site into `docs/` at the
-repository root, and that folder is committed.
+`.github/workflows/pages.yml` runs on every push that touches `web/`: it
+installs, regenerates the packed GLBs from `data/output/`, builds the
+site and publishes `web/dist` to GitHub Pages. No build output is
+committed, so the source is the single record of what ships.
 
-Repository setting (once): **Settings → Pages → Source → Deploy from a
-branch**, branch `claude/maia-exploded-view-webpage-c9t46h`, folder
-`/docs`. The site is then at
+Repository setting (once): **Settings → Pages → Source → GitHub
+Actions**. The `configure-pages` step also sets this itself on its first
+successful run. The site is then at
 `https://lawrenceleejr.github.io/ddgeoviztools/`.
 
-Branch-source Pages only serves the repository root or `/docs`, which is
-why the output lives at `docs/` rather than `web/dist`. `docs/.nojekyll`
-stops Pages running the files through Jekyll. `base` in
-`web/vite.config.js` stays `/ddgeoviztools/` — the project-page URL path
-is the same whichever branch Pages serves.
-
-After changing anything under `web/`, rebuild and commit `docs/` in the
-same commit, or the published site will lag the source. If the work is
-later merged to `main`, repoint the Pages source at `main`.
+The workflow is set to run from `main` and from the branch this work sits
+on. GitHub restricts the `github-pages` environment to the repository's
+default branch, so publishing from any other branch also needs that
+branch added under **Settings → Environments → github-pages → Deployment
+branches**; without it the deploy job stops on a protection rule.
