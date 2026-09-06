@@ -151,7 +151,7 @@ export const chapters = [
     headline: 'Every system, in its place.',
     lede: '',
     facts: [['Systems', '9'], ['Parts', '90'], ['Triangles', '1.9 M']],
-    camera: { pos: [24.0, 14.0, 30.0], target: [0, 0.5, 0], fov: 36, shift: 0.22 },
+    camera: { pos: [33.0, 13.0, 19.0], target: [0, 0.5, 0], fov: 36, shift: 0.22 },
     state: {
       focus: ALL,
       ghost: 1,
