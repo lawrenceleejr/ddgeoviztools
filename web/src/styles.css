@@ -172,7 +172,9 @@ body {
 }
 @keyframes hint { 0%, 100% { transform: scaleY(0.4); transform-origin: top; opacity: .4 } 50% { transform: scaleY(1); opacity: 1 } }
 
-.colophon { color: var(--fg-2); font-size: var(--f-1); font-family: var(--mono); }
+.colophon { color: var(--fg-2); font-size: var(--f-1); font-family: var(--mono); line-height: 1.7; }
+.chapter:has(.colophon) { align-items: end; }
+.chapter:has(.colophon) .copy { padding-bottom: 10vh; }
 .colophon a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--hair); }
 
 .noscript, .fallback-note {

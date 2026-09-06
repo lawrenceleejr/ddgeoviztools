@@ -14,7 +14,9 @@ export class Labels {
   }
 
   /** Replace the set of labels: [{ at:[mm], text, name }]. */
-  set(defs, chapterIndex) {
+  /** `bias` = +1 puts labels to the right of their anchor, -1 to the left
+   *  (away from the chapter's copy). */
+  set(defs, chapterIndex, bias = 1) {
     if (this.chapterIndex === chapterIndex) return;
     this.chapterIndex = chapterIndex;
     for (const it of this.items) { it.el.remove(); it.line.remove(); it.dot.remove(); }
@@ -28,8 +30,10 @@ export class Labels {
       dot.setAttribute('r', '2');
       this.svg.append(line, dot);
       // Alternate label offsets so neighbours do not collide.
-      const side = i % 2 ? -1 : 1;
-      return { def: d, el, line, dot, dx: side * 90, dy: -46 - (i % 3) * 22, on: false };
+      // Fan labels out on the side away from the copy, staggered vertically.
+      const dx = bias * (95 + (i % 2) * 40);
+      const dy = -40 - i * 26;
+      return { def: d, el, line, dot, dx, dy, on: false, x: 0, y: 0, w: 0, h: 0 };
     });
     requestAnimationFrame(() => this.items.forEach((it) => it.el.classList.add('on')));
   }
@@ -51,13 +55,31 @@ export class Labels {
       it.el.classList.toggle('on', show);
       it.line.style.opacity = show ? 1 : 0;
       it.dot.style.opacity = show ? 1 : 0;
+      it.show = show;
       if (!show) continue;
-      const lx = x + it.dx;
-      const ly = y + it.dy;
-      it.el.style.transform = `translate(${lx}px, ${ly}px) translate(-50%, -50%)`;
-      it.line.setAttribute('x1', x); it.line.setAttribute('y1', y);
-      it.line.setAttribute('x2', lx); it.line.setAttribute('y2', ly + 10);
-      it.dot.setAttribute('cx', x); it.dot.setAttribute('cy', y);
+      it.ax = x;
+      it.ay = y;
+      it.x = x + it.dx;
+      it.y = y + it.dy;
+      it.w = it.el.offsetWidth || 120;
+      it.h = it.el.offsetHeight || 18;
+    }
+    // Greedy de-overlap: push later labels down until they clear earlier ones.
+    const shown = this.items.filter((it) => it.show);
+    for (let a = 0; a < shown.length; a++) {
+      for (let b = 0; b < a; b++) {
+        const A = shown[a];
+        const B = shown[b];
+        const dx = Math.abs(A.x - B.x) - (A.w + B.w) / 2 - 12;
+        const dy = Math.abs(A.y - B.y) - (A.h + B.h) / 2 - 6;
+        if (dx < 0 && dy < 0) A.y = B.y + (B.h + A.h) / 2 + 8;
+      }
+    }
+    for (const it of shown) {
+      it.el.style.transform = `translate(${it.x}px, ${it.y}px) translate(-50%, -50%)`;
+      it.line.setAttribute('x1', it.ax); it.line.setAttribute('y1', it.ay);
+      it.line.setAttribute('x2', it.x); it.line.setAttribute('y2', it.y + it.h / 2 - 2);
+      it.dot.setAttribute('cx', it.ax); it.dot.setAttribute('cy', it.ay);
     }
   }
 }

@@ -177,7 +177,7 @@ async function boot() {
 
     // Callouts belong to the chapter whose copy is active.
     const li = f < 0.62 ? i : j;
-    labels.set(chapters[li].labels, li);
+    labels.set(chapters[li].labels, li, chapters[li].side === 'right' ? -1 : 1);
     labels.update(Math.abs(t - li) < 0.45 || (li === i && f < 0.55));
 
     if (draw) {
