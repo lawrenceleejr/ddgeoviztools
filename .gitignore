@@ -20,3 +20,9 @@ ColliderVis/Plugins/MCPUnreal/
 Builds/
 ue5_meshes/
 renders/
+
+# Web exploded-view site (web/): dependencies and Vite build output.
+# web/public/models/ holds the meshopt-packed GLBs and is committed.
+web/node_modules/
+web/dist/
+web/shots/

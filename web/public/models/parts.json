@@ -1,0 +1,2864 @@
+{
+ "units": "mm",
+ "axes": {
+  "beam": "z",
+  "up": "y"
+ },
+ "systems": [
+  {
+   "system": "Beampipe",
+   "file": "Beampipe.glb",
+   "group": "beampipe",
+   "bytes": 12788,
+   "tris": 4096,
+   "parts": [
+    "body"
+   ]
+  },
+  {
+   "system": "ECalBarrel",
+   "file": "ECalBarrel.glb",
+   "group": "ecal",
+   "bytes": 51412,
+   "tris": 14400,
+   "parts": [
+    "stave00",
+    "stave01",
+    "stave02",
+    "stave03",
+    "stave04",
+    "stave05",
+    "stave06",
+    "stave07",
+    "stave08",
+    "stave09",
+    "stave10",
+    "stave11"
+   ]
+  },
+  {
+   "system": "ECalEndcap",
+   "file": "ECalEndcap.glb",
+   "group": "ecal",
+   "bytes": 902056,
+   "tris": 409600,
+   "parts": [
+    "pz_pz",
+    "nz_nz"
+   ]
+  },
+  {
+   "system": "HCalBarrel",
+   "file": "HCalBarrel.glb",
+   "group": "hcal",
+   "bytes": 40292,
+   "tris": 10800,
+   "parts": [
+    "stave00",
+    "stave01",
+    "stave02",
+    "stave03",
+    "stave04",
+    "stave05",
+    "stave06",
+    "stave07",
+    "stave08",
+    "stave09",
+    "stave10",
+    "stave11"
+   ]
+  },
+  {
+   "system": "HCalEndcap",
+   "file": "HCalEndcap.glb",
+   "group": "hcal",
+   "bytes": 679628,
+   "tris": 307200,
+   "parts": [
+    "pz_pz",
+    "nz_nz"
+   ]
+  },
+  {
+   "system": "InnerTrackers",
+   "file": "InnerTrackers.glb",
+   "group": "tracker",
+   "bytes": 558696,
+   "tris": 198512,
+   "parts": [
+    "disks_pz",
+    "disks_nz",
+    "shell",
+    "shell_2",
+    "disks_pz_2",
+    "disks_nz_2",
+    "disks_pz_3",
+    "disks_nz_3",
+    "shell_3",
+    "disks_pz_4",
+    "disks_nz_4",
+    "disks_pz_5",
+    "disks_nz_5",
+    "shell_4",
+    "layer0",
+    "layer1",
+    "layer2",
+    "layer3"
+   ]
+  },
+  {
+   "system": "NozzleBCH_left",
+   "file": "NozzleBCH_left.glb",
+   "group": "bch",
+   "bytes": 12500,
+   "tris": 3072,
+   "parts": [
+    "body_nz"
+   ]
+  },
+  {
+   "system": "NozzleBCH_right",
+   "file": "NozzleBCH_right.glb",
+   "group": "bch",
+   "bytes": 12492,
+   "tris": 3072,
+   "parts": [
+    "body_pz"
+   ]
+  },
+  {
+   "system": "NozzleWCludding_left",
+   "file": "NozzleWCludding_left.glb",
+   "group": "nozzle",
+   "bytes": 8088,
+   "tris": 2048,
+   "parts": [
+    "body_nz"
+   ]
+  },
+  {
+   "system": "NozzleWCludding_right",
+   "file": "NozzleWCludding_right.glb",
+   "group": "nozzle",
+   "bytes": 8100,
+   "tris": 2048,
+   "parts": [
+    "body_pz"
+   ]
+  },
+  {
+   "system": "NozzleW_left",
+   "file": "NozzleW_left.glb",
+   "group": "nozzle",
+   "bytes": 19648,
+   "tris": 5120,
+   "parts": [
+    "body_nz"
+   ]
+  },
+  {
+   "system": "NozzleW_right",
+   "file": "NozzleW_right.glb",
+   "group": "nozzle",
+   "bytes": 19328,
+   "tris": 5120,
+   "parts": [
+    "body_pz"
+   ]
+  },
+  {
+   "system": "OuterTrackers",
+   "file": "OuterTrackers.glb",
+   "group": "tracker",
+   "bytes": 2174784,
+   "tris": 818688,
+   "parts": [
+    "disks_pz",
+    "disks_nz",
+    "disks_pz_2",
+    "disks_nz_2",
+    "disks_pz_3",
+    "disks_nz_3",
+    "layer0",
+    "layer1",
+    "layer2"
+   ]
+  },
+  {
+   "system": "Solenoid",
+   "file": "Solenoid.glb",
+   "group": "solenoid",
+   "bytes": 17656,
+   "tris": 6144,
+   "parts": [
+    "body"
+   ]
+  },
+  {
+   "system": "Vertex",
+   "file": "Vertex.glb",
+   "group": "vertex",
+   "bytes": 80340,
+   "tris": 14152,
+   "parts": [
+    "support",
+    "support_2",
+    "support_3",
+    "support_4",
+    "support_5",
+    "support_6",
+    "layer0",
+    "layer1",
+    "layer2",
+    "layer3",
+    "layer4",
+    "layer5",
+    "layer6"
+   ]
+  },
+  {
+   "system": "YokeBarrel",
+   "file": "YokeBarrel.glb",
+   "group": "yoke",
+   "bytes": 10480,
+   "tris": 576,
+   "parts": [
+    "stave00",
+    "stave01",
+    "stave02",
+    "stave03",
+    "stave04",
+    "stave05",
+    "stave06",
+    "stave07",
+    "stave08",
+    "stave09",
+    "stave10",
+    "stave11"
+   ]
+  },
+  {
+   "system": "YokeEndcap",
+   "file": "YokeEndcap.glb",
+   "group": "yoke",
+   "bytes": 58108,
+   "tris": 24576,
+   "parts": [
+    "pz_pz",
+    "nz_nz"
+   ]
+  }
+ ],
+ "parts": [
+  {
+   "id": "Beampipe/body",
+   "system": "Beampipe",
+   "group": "beampipe",
+   "role": "body",
+   "sign": 0,
+   "tris": 4096,
+   "bbox": {
+    "min": [
+     -24,
+     -24,
+     -60
+    ],
+    "max": [
+     24,
+     24,
+     60
+    ]
+   },
+   "rMin": 23,
+   "rMax": 24,
+   "rMid": 23,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave00",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave00",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     1665,
+     0,
+     -2307
+    ],
+    "max": [
+     2199,
+     1098,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    1923,
+    515,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave01",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave01",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     961,
+     961,
+     -2307
+    ],
+    "max": [
+     1904,
+     1904,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    1408,
+    1408,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave02",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave02",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     0,
+     1665,
+     -2307
+    ],
+    "max": [
+     1098,
+     2199,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    515,
+    1923,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave03",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave03",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     -1098,
+     1665,
+     -2307
+    ],
+    "max": [
+     0,
+     2199,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    -515,
+    1923,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave04",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave04",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     -1904,
+     961,
+     -2307
+    ],
+    "max": [
+     -961,
+     1904,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    -1408,
+    1408,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave05",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave05",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     -2199,
+     0,
+     -2307
+    ],
+    "max": [
+     -1665,
+     1098,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    -1923,
+    515,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave06",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave06",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     -2199,
+     -1098,
+     -2307
+    ],
+    "max": [
+     -1665,
+     0,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    -1923,
+    -515,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave07",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave07",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     -1904,
+     -1904,
+     -2307
+    ],
+    "max": [
+     -961,
+     -961,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    -1408,
+    -1408,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave08",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave08",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     -1098,
+     -2199,
+     -2307
+    ],
+    "max": [
+     0,
+     -1665,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    -515,
+    -1923,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave09",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave09",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     0,
+     -2199,
+     -2307
+    ],
+    "max": [
+     1098,
+     -1665,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    515,
+    -1923,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave10",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave10",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     961,
+     -1904,
+     -2307
+    ],
+    "max": [
+     1904,
+     -961,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    1408,
+    -1408,
+    0
+   ]
+  },
+  {
+   "id": "ECalBarrel/stave11",
+   "system": "ECalBarrel",
+   "group": "ecal",
+   "role": "stave11",
+   "sign": 0,
+   "tris": 1200,
+   "bbox": {
+    "min": [
+     1665,
+     -1098,
+     -2307
+    ],
+    "max": [
+     2199,
+     0,
+     2307
+    ]
+   },
+   "rMin": 1923,
+   "rMax": 2199,
+   "rMid": 2061,
+   "zMid": 0,
+   "center": [
+    1923,
+    -515,
+    0
+   ]
+  },
+  {
+   "id": "ECalEndcap/pz_pz",
+   "system": "ECalEndcap",
+   "group": "ecal",
+   "role": "pz_pz",
+   "sign": 1,
+   "tris": 204800,
+   "bbox": {
+    "min": [
+     -2125,
+     -2125,
+     2307
+    ],
+    "max": [
+     2125,
+     2125,
+     2575
+    ]
+   },
+   "rMin": 310,
+   "rMax": 2125,
+   "rMid": 1217,
+   "zMid": 2441,
+   "center": [
+    0,
+    0,
+    2441
+   ]
+  },
+  {
+   "id": "ECalEndcap/nz_nz",
+   "system": "ECalEndcap",
+   "group": "ecal",
+   "role": "nz_nz",
+   "sign": -1,
+   "tris": 204800,
+   "bbox": {
+    "min": [
+     -2125,
+     -2125,
+     -2575
+    ],
+    "max": [
+     2125,
+     2125,
+     -2307
+    ]
+   },
+   "rMin": 310,
+   "rMax": 2125,
+   "rMid": 1217,
+   "zMid": -2441,
+   "center": [
+    0,
+    0,
+    -2441
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave00",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave00",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     1906,
+     0,
+     -2574
+    ],
+    "max": [
+     4232,
+     2116,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    3001,
+    804,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave01",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave01",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     1100,
+     1100,
+     -2574
+    ],
+    "max": [
+     3665,
+     3665,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    2197,
+    2197,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave02",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave02",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     0,
+     1906,
+     -2574
+    ],
+    "max": [
+     2116,
+     4232,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    804,
+    3001,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave03",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave03",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     -2116,
+     1906,
+     -2574
+    ],
+    "max": [
+     0,
+     4232,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    -804,
+    3001,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave04",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave04",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     -3665,
+     1100,
+     -2574
+    ],
+    "max": [
+     -1100,
+     3665,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    -2197,
+    2197,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave05",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave05",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     -4232,
+     0,
+     -2574
+    ],
+    "max": [
+     -1906,
+     2116,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    -3001,
+    804,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave06",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave06",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     -4232,
+     -2116,
+     -2574
+    ],
+    "max": [
+     -1906,
+     0,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    -3001,
+    -804,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave07",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave07",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     -3665,
+     -3665,
+     -2574
+    ],
+    "max": [
+     -1100,
+     -1100,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    -2197,
+    -2197,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave08",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave08",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     -2116,
+     -4232,
+     -2574
+    ],
+    "max": [
+     0,
+     -1906,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    -804,
+    -3001,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave09",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave09",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     0,
+     -4232,
+     -2574
+    ],
+    "max": [
+     2116,
+     -1906,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    804,
+    -3001,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave10",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave10",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     1100,
+     -3665,
+     -2574
+    ],
+    "max": [
+     3665,
+     -1100,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    2197,
+    -2197,
+    0
+   ]
+  },
+  {
+   "id": "HCalBarrel/stave11",
+   "system": "HCalBarrel",
+   "group": "hcal",
+   "role": "stave11",
+   "sign": 0,
+   "tris": 900,
+   "bbox": {
+    "min": [
+     1906,
+     -2116,
+     -2574
+    ],
+    "max": [
+     4232,
+     0,
+     2575
+    ]
+   },
+   "rMin": 2201,
+   "rMax": 4232,
+   "rMid": 3216,
+   "zMid": 0,
+   "center": [
+    3001,
+    -804,
+    0
+   ]
+  },
+  {
+   "id": "HCalEndcap/pz_pz",
+   "system": "HCalEndcap",
+   "group": "hcal",
+   "role": "pz_pz",
+   "sign": 1,
+   "tris": 153600,
+   "bbox": {
+    "min": [
+     -4114,
+     -4114,
+     2576
+    ],
+    "max": [
+     4114,
+     4114,
+     4537
+    ]
+   },
+   "rMin": 338,
+   "rMax": 4114,
+   "rMid": 2226,
+   "zMid": 3557,
+   "center": [
+    0,
+    0,
+    3557
+   ]
+  },
+  {
+   "id": "HCalEndcap/nz_nz",
+   "system": "HCalEndcap",
+   "group": "hcal",
+   "role": "nz_nz",
+   "sign": -1,
+   "tris": 153600,
+   "bbox": {
+    "min": [
+     -4114,
+     -4114,
+     -4537
+    ],
+    "max": [
+     4114,
+     4114,
+     -2576
+    ]
+   },
+   "rMin": 338,
+   "rMax": 4114,
+   "rMid": 2226,
+   "zMid": -3557,
+   "center": [
+    0,
+    0,
+    -3557
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_pz",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_pz",
+   "sign": 1,
+   "tris": 7176,
+   "bbox": {
+    "min": [
+     -559,
+     -563,
+     518
+    ],
+    "max": [
+     559,
+     563,
+     2196
+    ]
+   },
+   "rMin": 96,
+   "rMax": 563,
+   "rMid": 330,
+   "zMid": 1357,
+   "center": [
+    0,
+    0,
+    1310
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_nz",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_nz",
+   "sign": -1,
+   "tris": 7176,
+   "bbox": {
+    "min": [
+     -559,
+     -563,
+     -2196
+    ],
+    "max": [
+     559,
+     563,
+     -518
+    ]
+   },
+   "rMin": 96,
+   "rMax": 563,
+   "rMid": 330,
+   "zMid": -1357,
+   "center": [
+    0,
+    0,
+    -1310
+   ]
+  },
+  {
+   "id": "InnerTrackers/shell",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "shell",
+   "sign": 0,
+   "tris": 2048,
+   "bbox": {
+    "min": [
+     -132,
+     -132,
+     -482
+    ],
+    "max": [
+     132,
+     132,
+     482
+    ]
+   },
+   "rMin": 132,
+   "rMax": 132,
+   "rMid": 132,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "InnerTrackers/shell_2",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "shell_2",
+   "sign": 0,
+   "tris": 2048,
+   "bbox": {
+    "min": [
+     -345,
+     -345,
+     -482
+    ],
+    "max": [
+     345,
+     345,
+     482
+    ]
+   },
+   "rMin": 345,
+   "rMax": 345,
+   "rMid": 345,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_pz_2",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_pz_2",
+   "sign": 1,
+   "tris": 20480,
+   "bbox": {
+    "min": [
+     -570,
+     -570,
+     502
+    ],
+    "max": [
+     570,
+     570,
+     2181
+    ]
+   },
+   "rMin": 95,
+   "rMax": 570,
+   "rMid": 333,
+   "zMid": 1341,
+   "center": [
+    0,
+    0,
+    1131
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_nz_2",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_nz_2",
+   "sign": -1,
+   "tris": 20480,
+   "bbox": {
+    "min": [
+     -570,
+     -570,
+     -2181
+    ],
+    "max": [
+     570,
+     570,
+     -502
+    ]
+   },
+   "rMin": 95,
+   "rMax": 570,
+   "rMid": 333,
+   "zMid": -1341,
+   "center": [
+    0,
+    0,
+    -1131
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_pz_3",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_pz_3",
+   "sign": 1,
+   "tris": 2048,
+   "bbox": {
+    "min": [
+     -536,
+     -536,
+     502
+    ],
+    "max": [
+     536,
+     536,
+     712
+    ]
+   },
+   "rMin": 534,
+   "rMax": 536,
+   "rMid": 535,
+   "zMid": 607,
+   "center": [
+    0,
+    0,
+    607
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_nz_3",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_nz_3",
+   "sign": -1,
+   "tris": 2048,
+   "bbox": {
+    "min": [
+     -536,
+     -536,
+     -712
+    ],
+    "max": [
+     536,
+     536,
+     -502
+    ]
+   },
+   "rMin": 534,
+   "rMax": 536,
+   "rMid": 535,
+   "zMid": -607,
+   "center": [
+    0,
+    0,
+    -607
+   ]
+  },
+  {
+   "id": "InnerTrackers/shell_3",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "shell_3",
+   "sign": 0,
+   "tris": 4096,
+   "bbox": {
+    "min": [
+     -116,
+     -116,
+     -495
+    ],
+    "max": [
+     116,
+     116,
+     495
+    ]
+   },
+   "rMin": 115,
+   "rMax": 116,
+   "rMid": 116,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_pz_4",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_pz_4",
+   "sign": 1,
+   "tris": 4096,
+   "bbox": {
+    "min": [
+     -289,
+     -289,
+     500
+    ],
+    "max": [
+     289,
+     289,
+     2306
+    ]
+   },
+   "rMin": 89,
+   "rMax": 289,
+   "rMid": 189,
+   "zMid": 1403,
+   "center": [
+    0,
+    0,
+    1202
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_nz_4",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_nz_4",
+   "sign": -1,
+   "tris": 4096,
+   "bbox": {
+    "min": [
+     -289,
+     -289,
+     -2306
+    ],
+    "max": [
+     289,
+     289,
+     -500
+    ]
+   },
+   "rMin": 89,
+   "rMax": 289,
+   "rMid": 189,
+   "zMid": -1403,
+   "center": [
+    0,
+    0,
+    -1201
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_pz_5",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_pz_5",
+   "sign": 1,
+   "tris": 4096,
+   "bbox": {
+    "min": [
+     -115,
+     -115,
+     495
+    ],
+    "max": [
+     115,
+     115,
+     500
+    ]
+   },
+   "rMin": 89,
+   "rMax": 115,
+   "rMid": 102,
+   "zMid": 497,
+   "center": [
+    0,
+    0,
+    497
+   ]
+  },
+  {
+   "id": "InnerTrackers/disks_nz_5",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "disks_nz_5",
+   "sign": -1,
+   "tris": 4096,
+   "bbox": {
+    "min": [
+     -115,
+     -115,
+     -500
+    ],
+    "max": [
+     115,
+     115,
+     -495
+    ]
+   },
+   "rMin": 89,
+   "rMax": 115,
+   "rMid": 102,
+   "zMid": -497,
+   "center": [
+    0,
+    0,
+    -497
+   ]
+  },
+  {
+   "id": "InnerTrackers/shell_4",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "shell_4",
+   "sign": 0,
+   "tris": 2048,
+   "bbox": {
+    "min": [
+     -116,
+     -116,
+     -500
+    ],
+    "max": [
+     116,
+     116,
+     500
+    ]
+   },
+   "rMin": 116,
+   "rMax": 116,
+   "rMid": 116,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "InnerTrackers/layer0",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "layer0",
+   "sign": 0,
+   "tris": 10752,
+   "bbox": {
+    "min": [
+     -130,
+     -130,
+     -482
+    ],
+    "max": [
+     130,
+     130,
+     482
+    ]
+   },
+   "rMin": 127,
+   "rMax": 131,
+   "rMid": 129,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "InnerTrackers/layer1",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "layer1",
+   "sign": 0,
+   "tris": 29184,
+   "bbox": {
+    "min": [
+     -343,
+     -343,
+     -482
+    ],
+    "max": [
+     343,
+     343,
+     482
+    ]
+   },
+   "rMin": 340,
+   "rMax": 344,
+   "rMid": 342,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "InnerTrackers/layer2",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "layer2",
+   "sign": 0,
+   "tris": 68448,
+   "bbox": {
+    "min": [
+     -557,
+     -557,
+     -692
+    ],
+    "max": [
+     557,
+     557,
+     692
+    ]
+   },
+   "rMin": 553,
+   "rMax": 558,
+   "rMid": 555,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "InnerTrackers/layer3",
+   "system": "InnerTrackers",
+   "group": "tracker",
+   "role": "layer3",
+   "sign": 0,
+   "tris": 4096,
+   "bbox": {
+    "min": [
+     -573,
+     -573,
+     -2306
+    ],
+    "max": [
+     573,
+     573,
+     2306
+    ]
+   },
+   "rMin": 559,
+   "rMax": 573,
+   "rMid": 566,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "NozzleBCH_left/body_nz",
+   "system": "NozzleBCH_left",
+   "group": "bch",
+   "role": "body_nz",
+   "sign": -1,
+   "tris": 3072,
+   "bbox": {
+    "min": [
+     -510,
+     -510,
+     -5950
+    ],
+    "max": [
+     510,
+     510,
+     -1000
+    ]
+   },
+   "rMin": 135,
+   "rMax": 510,
+   "rMid": 322,
+   "zMid": -3475,
+   "center": [
+    0,
+    0,
+    -2998
+   ]
+  },
+  {
+   "id": "NozzleBCH_right/body_pz",
+   "system": "NozzleBCH_right",
+   "group": "bch",
+   "role": "body_pz",
+   "sign": 1,
+   "tris": 3072,
+   "bbox": {
+    "min": [
+     -510,
+     -510,
+     1000
+    ],
+    "max": [
+     510,
+     510,
+     5950
+    ]
+   },
+   "rMin": 135,
+   "rMax": 510,
+   "rMid": 322,
+   "zMid": 3475,
+   "center": [
+    0,
+    0,
+    2998
+   ]
+  },
+  {
+   "id": "NozzleWCludding_left/body_nz",
+   "system": "NozzleWCludding_left",
+   "group": "nozzle",
+   "role": "body_nz",
+   "sign": -1,
+   "tris": 2048,
+   "bbox": {
+    "min": [
+     -550,
+     -550,
+     -5950
+    ],
+    "max": [
+     550,
+     550,
+     -1000
+    ]
+   },
+   "rMin": 136,
+   "rMax": 550,
+   "rMid": 343,
+   "zMid": -3475,
+   "center": [
+    0,
+    0,
+    -3475
+   ]
+  },
+  {
+   "id": "NozzleWCludding_right/body_pz",
+   "system": "NozzleWCludding_right",
+   "group": "nozzle",
+   "role": "body_pz",
+   "sign": 1,
+   "tris": 2048,
+   "bbox": {
+    "min": [
+     -550,
+     -550,
+     1000
+    ],
+    "max": [
+     550,
+     550,
+     5950
+    ]
+   },
+   "rMin": 136,
+   "rMax": 550,
+   "rMid": 343,
+   "zMid": 3475,
+   "center": [
+    0,
+    0,
+    3475
+   ]
+  },
+  {
+   "id": "NozzleW_left/body_nz",
+   "system": "NozzleW_left",
+   "group": "nozzle",
+   "role": "body_nz",
+   "sign": -1,
+   "tris": 5120,
+   "bbox": {
+    "min": [
+     -430,
+     -430,
+     -5950
+    ],
+    "max": [
+     430,
+     430,
+     -60
+    ]
+   },
+   "rMin": 3,
+   "rMax": 430,
+   "rMid": 217,
+   "zMid": -3005,
+   "center": [
+    0,
+    0,
+    -1935
+   ]
+  },
+  {
+   "id": "NozzleW_right/body_pz",
+   "system": "NozzleW_right",
+   "group": "nozzle",
+   "role": "body_pz",
+   "sign": 1,
+   "tris": 5120,
+   "bbox": {
+    "min": [
+     -430,
+     -430,
+     60
+    ],
+    "max": [
+     430,
+     430,
+     5950
+    ]
+   },
+   "rMin": 3,
+   "rMax": 430,
+   "rMid": 217,
+   "zMid": 3005,
+   "center": [
+    0,
+    0,
+    1935
+   ]
+  },
+  {
+   "id": "OuterTrackers/disks_pz",
+   "system": "OuterTrackers",
+   "group": "tracker",
+   "role": "disks_pz",
+   "sign": 1,
+   "tris": 6912,
+   "bbox": {
+    "min": [
+     -1434,
+     -1434,
+     1304
+    ],
+    "max": [
+     1434,
+     1434,
+     2196
+    ]
+   },
+   "rMin": 620,
+   "rMax": 1435,
+   "rMid": 1028,
+   "zMid": 1750,
+   "center": [
+    0,
+    0,
+    1750
+   ]
+  },
+  {
+   "id": "OuterTrackers/disks_nz",
+   "system": "OuterTrackers",
+   "group": "tracker",
+   "role": "disks_nz",
+   "sign": -1,
+   "tris": 6912,
+   "bbox": {
+    "min": [
+     -1434,
+     -1434,
+     -2196
+    ],
+    "max": [
+     1434,
+     1434,
+     -1304
+    ]
+   },
+   "rMin": 620,
+   "rMax": 1435,
+   "rMid": 1028,
+   "zMid": -1750,
+   "center": [
+    0,
+    0,
+    -1750
+   ]
+  },
+  {
+   "id": "OuterTrackers/disks_pz_2",
+   "system": "OuterTrackers",
+   "group": "tracker",
+   "role": "disks_pz_2",
+   "sign": 1,
+   "tris": 3072,
+   "bbox": {
+    "min": [
+     -1476,
+     -1476,
+     -1264
+    ],
+    "max": [
+     1476,
+     1476,
+     1264
+    ]
+   },
+   "rMin": 829,
+   "rMax": 1476,
+   "rMid": 1153,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    843
+   ]
+  },
+  {
+   "id": "OuterTrackers/disks_nz_2",
+   "system": "OuterTrackers",
+   "group": "tracker",
+   "role": "disks_nz_2",
+   "sign": -1,
+   "tris": 3072,
+   "bbox": {
+    "min": [
+     -1476,
+     -1476,
+     -1264
+    ],
+    "max": [
+     1476,
+     1476,
+     1264
+    ]
+   },
+   "rMin": 829,
+   "rMax": 1476,
+   "rMid": 1153,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    -843
+   ]
+  },
+  {
+   "id": "OuterTrackers/disks_pz_3",
+   "system": "OuterTrackers",
+   "group": "tracker",
+   "role": "disks_pz_3",
+   "sign": 1,
+   "tris": 12288,
+   "bbox": {
+    "min": [
+     -1500,
+     -1500,
+     1284
+    ],
+    "max": [
+     1500,
+     1500,
+     2181
+    ]
+   },
+   "rMin": 580,
+   "rMax": 1500,
+   "rMid": 1040,
+   "zMid": 1733,
+   "center": [
+    0,
+    0,
+    1595
+   ]
+  },
+  {
+   "id": "OuterTrackers/disks_nz_3",
+   "system": "OuterTrackers",
+   "group": "tracker",
+   "role": "disks_nz_3",
+   "sign": -1,
+   "tris": 12288,
+   "bbox": {
+    "min": [
+     -1500,
+     -1500,
+     -2181
+    ],
+    "max": [
+     1500,
+     1500,
+     -1284
+    ]
+   },
+   "rMin": 580,
+   "rMax": 1500,
+   "rMid": 1040,
+   "zMid": -1733,
+   "center": [
+    0,
+    0,
+    -1595
+   ]
+  },
+  {
+   "id": "OuterTrackers/layer0",
+   "system": "OuterTrackers",
+   "group": "tracker",
+   "role": "layer0",
+   "sign": 0,
+   "tris": 185472,
+   "bbox": {
+    "min": [
+     -827,
+     -827,
+     -1264
+    ],
+    "max": [
+     827,
+     827,
+     1264
+    ]
+   },
+   "rMin": 816,
+   "rMax": 827,
+   "rMid": 822,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "OuterTrackers/layer1",
+   "system": "OuterTrackers",
+   "group": "tracker",
+   "role": "layer1",
+   "sign": 0,
+   "tris": 258048,
+   "bbox": {
+    "min": [
+     -1161,
+     -1161,
+     -1264
+    ],
+    "max": [
+     1161,
+     1161,
+     1264
+    ]
+   },
+   "rMin": 1150,
+   "rMax": 1161,
+   "rMid": 1156,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "OuterTrackers/layer2",
+   "system": "OuterTrackers",
+   "group": "tracker",
+   "role": "layer2",
+   "sign": 0,
+   "tris": 330624,
+   "bbox": {
+    "min": [
+     -1494,
+     -1494,
+     -1264
+    ],
+    "max": [
+     1494,
+     1494,
+     1264
+    ]
+   },
+   "rMin": 1483,
+   "rMax": 1494,
+   "rMid": 1489,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Solenoid/body",
+   "system": "Solenoid",
+   "group": "solenoid",
+   "role": "body",
+   "sign": 0,
+   "tris": 6144,
+   "bbox": {
+    "min": [
+     -1857,
+     -1857,
+     -2307
+    ],
+    "max": [
+     1857,
+     1857,
+     2307
+    ]
+   },
+   "rMin": 1500,
+   "rMax": 1857,
+   "rMid": 1678,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/support",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "support",
+   "sign": 0,
+   "tris": 384,
+   "bbox": {
+    "min": [
+     -39,
+     -39,
+     -204
+    ],
+    "max": [
+     39,
+     39,
+     204
+    ]
+   },
+   "rMin": 25,
+   "rMax": 39,
+   "rMid": 32,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/support_2",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "support_2",
+   "sign": 0,
+   "tris": 896,
+   "bbox": {
+    "min": [
+     -114,
+     -114,
+     -284
+    ],
+    "max": [
+     114,
+     114,
+     284
+    ]
+   },
+   "rMin": 25,
+   "rMax": 114,
+   "rMid": 70,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/support_3",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "support_3",
+   "sign": 0,
+   "tris": 256,
+   "bbox": {
+    "min": [
+     -114,
+     -114,
+     -284
+    ],
+    "max": [
+     114,
+     114,
+     284
+    ]
+   },
+   "rMin": 54,
+   "rMax": 114,
+   "rMid": 84,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/support_4",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "support_4",
+   "sign": 0,
+   "tris": 1024,
+   "bbox": {
+    "min": [
+     -114,
+     -114,
+     -284
+    ],
+    "max": [
+     114,
+     114,
+     284
+    ]
+   },
+   "rMin": 25,
+   "rMax": 114,
+   "rMid": 70,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/support_5",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "support_5",
+   "sign": 0,
+   "tris": 1024,
+   "bbox": {
+    "min": [
+     -114,
+     -114,
+     -66
+    ],
+    "max": [
+     114,
+     114,
+     66
+    ]
+   },
+   "rMin": 30,
+   "rMax": 115,
+   "rMid": 72,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/support_6",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "support_6",
+   "sign": 0,
+   "tris": 1024,
+   "bbox": {
+    "min": [
+     -114,
+     -114,
+     -66
+    ],
+    "max": [
+     115,
+     115,
+     66
+    ]
+   },
+   "rMin": 30,
+   "rMax": 115,
+   "rMid": 72,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/layer0",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "layer0",
+   "sign": 0,
+   "tris": 1024,
+   "bbox": {
+    "min": [
+     -30,
+     -30,
+     -66
+    ],
+    "max": [
+     30,
+     30,
+     66
+    ]
+   },
+   "rMin": 30,
+   "rMax": 30,
+   "rMid": 30,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/layer1",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "layer1",
+   "sign": 0,
+   "tris": 2304,
+   "bbox": {
+    "min": [
+     -33,
+     -33,
+     -65
+    ],
+    "max": [
+     33,
+     33,
+     65
+    ]
+   },
+   "rMin": 30,
+   "rMax": 33,
+   "rMid": 32,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/layer2",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "layer2",
+   "sign": 0,
+   "tris": 1080,
+   "bbox": {
+    "min": [
+     -53,
+     -52,
+     -65
+    ],
+    "max": [
+     52,
+     53,
+     65
+    ]
+   },
+   "rMin": 52,
+   "rMax": 53,
+   "rMid": 52,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/layer3",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "layer3",
+   "sign": 0,
+   "tris": 1512,
+   "bbox": {
+    "min": [
+     -75,
+     -75,
+     -65
+    ],
+    "max": [
+     75,
+     75,
+     65
+    ]
+   },
+   "rMin": 75,
+   "rMax": 75,
+   "rMid": 75,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/layer4",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "layer4",
+   "sign": 0,
+   "tris": 2088,
+   "bbox": {
+    "min": [
+     -103,
+     -103,
+     -65
+    ],
+    "max": [
+     103,
+     103,
+     65
+    ]
+   },
+   "rMin": 102,
+   "rMax": 103,
+   "rMid": 103,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/layer5",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "layer5",
+   "sign": 0,
+   "tris": 512,
+   "bbox": {
+    "min": [
+     -114,
+     -114,
+     -284
+    ],
+    "max": [
+     114,
+     114,
+     284
+    ]
+   },
+   "rMin": 114,
+   "rMax": 114,
+   "rMid": 114,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "Vertex/layer6",
+   "system": "Vertex",
+   "group": "vertex",
+   "role": "layer6",
+   "sign": 0,
+   "tris": 1024,
+   "bbox": {
+    "min": [
+     -114,
+     -114,
+     -66
+    ],
+    "max": [
+     115,
+     115,
+     66
+    ]
+   },
+   "rMin": 114,
+   "rMax": 115,
+   "rMid": 115,
+   "zMid": 0,
+   "center": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave00",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave00",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     3721,
+     0,
+     -4600
+    ],
+    "max": [
+     5652,
+     2826,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    4641,
+    1243,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave01",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave01",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     2148,
+     2148,
+     -4600
+    ],
+    "max": [
+     4894,
+     4894,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    3397,
+    3397,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave02",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave02",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     0,
+     3721,
+     -4600
+    ],
+    "max": [
+     2826,
+     5652,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    1243,
+    4641,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave03",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave03",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     -2826,
+     3721,
+     -4600
+    ],
+    "max": [
+     0,
+     5652,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    -1243,
+    4641,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave04",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave04",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     -4894,
+     2148,
+     -4600
+    ],
+    "max": [
+     -2148,
+     4894,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    -3397,
+    3397,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave05",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave05",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     -5652,
+     0,
+     -4600
+    ],
+    "max": [
+     -3721,
+     2826,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    -4641,
+    1243,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave06",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave06",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     -5652,
+     -2826,
+     -4600
+    ],
+    "max": [
+     -3721,
+     0,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    -4641,
+    -1243,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave07",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave07",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     -4894,
+     -4894,
+     -4600
+    ],
+    "max": [
+     -2148,
+     -2148,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    -3397,
+    -3397,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave08",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave08",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     -2826,
+     -5652,
+     -4600
+    ],
+    "max": [
+     0,
+     -3721,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    -1243,
+    -4641,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave09",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave09",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     0,
+     -5652,
+     -4600
+    ],
+    "max": [
+     2826,
+     -3721,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    1243,
+    -4641,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave10",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave10",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     2148,
+     -4894,
+     -4600
+    ],
+    "max": [
+     4894,
+     -2148,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    3397,
+    -3397,
+    0
+   ]
+  },
+  {
+   "id": "YokeBarrel/stave11",
+   "system": "YokeBarrel",
+   "group": "yoke",
+   "role": "stave11",
+   "sign": 0,
+   "tris": 48,
+   "bbox": {
+    "min": [
+     3721,
+     -2826,
+     -4600
+    ],
+    "max": [
+     5652,
+     0,
+     4600
+    ]
+   },
+   "rMin": 4296,
+   "rMax": 5652,
+   "rMid": 4974,
+   "zMid": 0,
+   "center": [
+    4641,
+    -1243,
+    0
+   ]
+  },
+  {
+   "id": "YokeEndcap/pz_pz",
+   "system": "YokeEndcap",
+   "group": "yoke",
+   "role": "pz_pz",
+   "sign": 1,
+   "tris": 12288,
+   "bbox": {
+    "min": [
+     -5895,
+     -5895,
+     4826
+    ],
+    "max": [
+     5895,
+     5895,
+     5962
+    ]
+   },
+   "rMin": 469,
+   "rMax": 5895,
+   "rMid": 3182,
+   "zMid": 5394,
+   "center": [
+    0,
+    0,
+    5394
+   ]
+  },
+  {
+   "id": "YokeEndcap/nz_nz",
+   "system": "YokeEndcap",
+   "group": "yoke",
+   "role": "nz_nz",
+   "sign": -1,
+   "tris": 12288,
+   "bbox": {
+    "min": [
+     -5895,
+     -5895,
+     -5962
+    ],
+    "max": [
+     5895,
+     5895,
+     -4826
+    ]
+   },
+   "rMin": 469,
+   "rMax": 5895,
+   "rMid": 3182,
+   "zMid": -5394,
+   "center": [
+    0,
+    0,
+    -5394
+   ]
+  }
+ ]
+}
