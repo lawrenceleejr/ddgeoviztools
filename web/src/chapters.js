@@ -84,7 +84,7 @@ export const chapters = [
     labels: [
       { part: 'OuterTrackers/layer2', at: [0, 1486, 0], text: 'r = 1 486 mm', name: 'Layer 3' },
       { part: 'OuterTrackers/layer1', at: [0, 1153, 0], text: 'r = 1 153 mm', name: 'Layer 2' },
-      { part: 'OuterTrackers/layer0', at: [0, 819, 0], text: 'r = 819 mm', name: 'Layer 1' },
+      { part: 'OuterTrackers/layer0', at: [0, -819, -900], text: 'r = 819 mm', name: 'Layer 1' },
     ],
   },
   {

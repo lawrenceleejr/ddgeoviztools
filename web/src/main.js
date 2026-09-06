@@ -153,7 +153,7 @@ async function boot() {
     const visH = 2 * dist * Math.tan((scene.camera.fov * Math.PI) / 360);
     if (shift) scene.camera.translateX(-shift * visH * scene.camera.aspect);
     // Phones: copy sits at the bottom, so lift the model into the top half.
-    if (narrow) scene.camera.translateY(-0.26 * visH);
+    if (narrow) scene.camera.translateY(-0.32 * visH);
     if (camOverride) {
       scene.camera.position.set(camOverride[0], camOverride[1], camOverride[2]);
       scene.camera.lookAt(camOverride[3] ?? 0, camOverride[4] ?? 0, camOverride[5] ?? 0);
