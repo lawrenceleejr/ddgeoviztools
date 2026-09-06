@@ -191,7 +191,7 @@ export class DetectorScene {
     layers.forEach((p, i) => {
       const len = p.row.bbox.max[2] - p.row.bbox.min[2];
       const k = i - (n - 1) / 2; // …, -1, 0, +1, …
-      p.amp = Math.abs(k) * (len * 1.15);
+      p.amp = Math.abs(k) * (len * 0.85);
       p.dir.set(0, 0, Math.sign(k) || 0);
     });
   }

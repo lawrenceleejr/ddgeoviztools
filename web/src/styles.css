@@ -194,7 +194,8 @@ body {
   .chapter[data-side='center'] .copy { text-align: left; }
   .chapter[data-side='center'] .facts { grid-template-columns: max-content 1fr; justify-content: start; }
   .copy { max-width: none; align-self: end; padding-bottom: 12vh; }
-  .facts { grid-template-columns: 1fr; gap: 2px; }
-  .facts dt { margin-top: 8px; }
+  .facts { grid-template-columns: max-content 1fr; gap: 4px 14px; }
+  .lede { font-size: var(--f-1); line-height: 1.5; }
+  .headline { font-size: var(--f4); }
   .label { display: none; }
 }

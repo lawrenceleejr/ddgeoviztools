@@ -79,7 +79,7 @@ export const chapters = [
     headline: 'The last measurement before the magnet.',
     lede: 'Three cylinders of silicon strips, a metre and a half across, and four pairs of disks. Together with the inner tracker they fix each track to a few tens of microns.',
     facts: [['Barrel layers', 'r 819 · 1 153 · 1 486 mm'], ['Barrel length', '2.5 m'], ['Disks', '4 pairs · |z| 1.31–2.19 m']],
-    camera: { pos: [11.5, 4.6, 10.5], target: [0, 0, 0], fov: 32, shift: -0.24 },
+    camera: { pos: [14.5, 5.2, 8.0], target: [0, 0, 0], fov: 32, shift: -0.2 },
     state: { focus: ['OuterTrackers'], ghost: 0.035, explode: { 'layers.OuterTrackers': 1, 'disks.OuterTrackers': 1 } },
     labels: [
       { part: 'OuterTrackers/layer2', at: [0, 1486, 0], text: 'r = 1 486 mm', name: 'Layer 3' },

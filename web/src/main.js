@@ -140,6 +140,8 @@ async function boot() {
     pos.lerpVectors(a.set(...ca.pos), b.set(...cb.pos), w);
     tgt.lerpVectors(a.set(...ca.target), b.set(...cb.target), w);
     scene.camera.fov = ease.lerp(ca.fov, cb.fov, w);
+    // Phones: back the camera off so the model fits the narrow frame.
+    if (innerWidth <= 720) pos.sub(tgt).multiplyScalar(1.4).add(tgt);
     scene.camera.position.copy(pos);
     scene.camera.lookAt(tgt);
     // Screen-space shift: slide the camera along its own right axis so the
@@ -151,7 +153,7 @@ async function boot() {
     const visH = 2 * dist * Math.tan((scene.camera.fov * Math.PI) / 360);
     if (shift) scene.camera.translateX(-shift * visH * scene.camera.aspect);
     // Phones: copy sits at the bottom, so lift the model into the top half.
-    if (narrow) scene.camera.translateY(-0.2 * visH);
+    if (narrow) scene.camera.translateY(-0.26 * visH);
     if (camOverride) {
       scene.camera.position.set(camOverride[0], camOverride[1], camOverride[2]);
       scene.camera.lookAt(camOverride[3] ?? 0, camOverride[4] ?? 0, camOverride[5] ?? 0);
