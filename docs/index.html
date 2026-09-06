@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#07080a" />
+    <title>MAIA — the detector, taken apart</title>
+    <meta name="description" content="A scroll-driven exploded view of the MAIA muon-collider detector, built from its DD4hep geometry." />
+    <link rel="stylesheet" href="/ddgeoviztools/fonts/fonts.css" />
+    <script type="module" crossorigin src="/ddgeoviztools/assets/index-BG0w_oUA.js"></script>
+    <link rel="stylesheet" crossorigin href="/ddgeoviztools/assets/index-Bg1eHuqT.css">
+  </head>
+  <body>
+    <div id="stage" aria-hidden="true">
+      <canvas id="gl"></canvas>
+      <div id="labels"></div>
+      <svg id="leaders" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+
+    <div id="loader" role="status" aria-live="polite">
+      <div class="loader-name">MAIA</div>
+      <div class="loader-bar"><div class="loader-fill"></div></div>
+      <div class="loader-note">Loading geometry</div>
+    </div>
+
+    <main id="story">
+      <!-- Chapters are generated from src/chapters.js so copy and camera live together. -->
+    </main>
+
+    <noscript>
+      <p class="noscript">This page needs JavaScript and WebGL to show the MAIA detector.</p>
+    </noscript>
+  </body>
+</html>

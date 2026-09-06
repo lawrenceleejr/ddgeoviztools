@@ -517,10 +517,17 @@ cd web
 npm ci
 npm run models      # data/output/*.gltf → public/models/*.glb + parts.json (4.7 MB)
 npm run dev         # http://localhost:5173/ddgeoviztools/
-npm run build && npm run preview
+npm run build       # writes the finished site to ../docs/ (committed)
+npm run preview
 npm run shots       # Playwright screenshots of every chapter → web/shots/
 ```
 
+`npm run build` writes into `docs/` at the repository root, and GitHub
+Pages serves that folder straight from the branch — there is no build
+step in CI, so **commit `docs/` alongside any change under `web/`** or
+the published site will lag the source.
+
 One-time setup in the GitHub repository: **Settings → Pages → Source →
-GitHub Actions**. The site URL is then
+Deploy from a branch**, choosing the branch that holds this work and the
+`/docs` folder. The site URL is then
 `https://lawrenceleejr.github.io/ddgeoviztools/`.
