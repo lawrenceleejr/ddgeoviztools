@@ -154,8 +154,8 @@ Actions**. The `configure-pages` step also sets this itself on its first
 successful run. The site is then at
 `https://lawrenceleejr.github.io/ddgeoviztools/`.
 
-The workflow is set to run from `main` and from the branch this work sits
-on. GitHub restricts the `github-pages` environment to the repository's
-default branch, so publishing from any other branch also needs that
-branch added under **Settings → Environments → github-pages → Deployment
-branches**; without it the deploy job stops on a protection rule.
+The workflow runs from `main` and from the branch this work sits on, and
+has deployed successfully from the branch. Some repositories restrict the
+`github-pages` environment to the default branch; if a deploy ever stops
+on a protection rule, add the branch under **Settings → Environments →
+github-pages → Deployment branches**.

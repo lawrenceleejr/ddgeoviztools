@@ -524,8 +524,6 @@ npm run shots       # Playwright screenshots of every chapter → web/shots/
 The site is built and published by GitHub Actions on every push that
 touches `web/`, so no build output is committed.
 
-One-time setup in the GitHub repository: **Settings → Pages → Source →
-GitHub Actions**. Publishing from a branch other than the default one
-also needs that branch listed under **Settings → Environments →
-github-pages → Deployment branches**. The site URL is then
-`https://lawrenceleejr.github.io/ddgeoviztools/`.
+Pages is configured with **Settings → Pages → Source → GitHub Actions**,
+which the workflow's `configure-pages` step sets on its first run. The
+site is live at <https://lawrenceleejr.github.io/ddgeoviztools/>.
