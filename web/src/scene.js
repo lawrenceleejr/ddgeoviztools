@@ -227,7 +227,7 @@ export class DetectorScene {
 
       // Service tubes and supports stay quiet even when their system is the subject.
       const quiet = /^(shell|support)/.test(p.role) ? 0.35 : 1;
-      const op = (state.opacity[p.group] ?? 1) * quiet;
+      const op = (state.opacity[p.system] ?? state.opacity[p.group] ?? 1) * quiet;
       const m = p.mesh.material;
       if (op >= 0.5) {
         // Subject: main pass; transparent only while partially dimmed.

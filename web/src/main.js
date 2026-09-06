@@ -2,7 +2,7 @@
 // then run one animation loop that turns smoothed scroll progress into
 // camera, explode, emphasis, copy and callouts.
 import { Vector3, Box3 } from 'three';
-import { chapters, RULES, GROUPS } from './chapters.js';
+import { chapters, RULES, SYSTEMS, SYSTEM_GROUP } from './chapters.js';
 import { ScrollEngine, ease } from './scroll.js';
 import { DetectorScene } from './scene.js';
 import { Labels } from './labels.js';
@@ -82,7 +82,7 @@ function setActive(t) {
 // ---------- state interpolation ----------
 function denseState(c) {
   const explode = Object.fromEntries(RULES.map((r) => [r, c.state.explode[r] ?? 0]));
-  const opacity = Object.fromEntries(GROUPS.map((g) => [g, c.state.focus.includes(g) ? 1 : c.state.ghost]));
+  const opacity = Object.fromEntries(SYSTEMS.map((sys) => [sys, c.state.focus.includes(sys) || c.state.focus.includes(SYSTEM_GROUP[sys]) ? 1 : c.state.ghost]));
   return { explode, opacity };
 }
 const states = chapters.map(denseState);
@@ -91,7 +91,7 @@ function blendState(a, b, w) {
   const explode = {};
   for (const r of RULES) explode[r] = ease.lerp(a.explode[r], b.explode[r], w);
   const opacity = {};
-  for (const g of GROUPS) opacity[g] = ease.lerp(a.opacity[g], b.opacity[g], w);
+  for (const sys of SYSTEMS) opacity[sys] = ease.lerp(a.opacity[sys], b.opacity[sys], w);
   return { explode, opacity };
 }
 
@@ -145,12 +145,13 @@ async function boot() {
     // Screen-space shift: slide the camera along its own right axis so the
     // model sits opposite the copy. On narrow screens the copy is below, so
     // no shift.
-    const shift = innerWidth > 720 ? ease.lerp(ca.shift ?? 0, cb.shift ?? 0, w) : 0;
-    if (shift) {
-      const dist = pos.distanceTo(tgt);
-      const visW = 2 * dist * Math.tan((scene.camera.fov * Math.PI) / 360) * scene.camera.aspect;
-      scene.camera.translateX(-shift * visW);
-    }
+    const narrow = innerWidth <= 720;
+    const shift = narrow ? 0 : ease.lerp(ca.shift ?? 0, cb.shift ?? 0, w);
+    const dist = pos.distanceTo(tgt);
+    const visH = 2 * dist * Math.tan((scene.camera.fov * Math.PI) / 360);
+    if (shift) scene.camera.translateX(-shift * visH * scene.camera.aspect);
+    // Phones: copy sits at the bottom, so lift the model into the top half.
+    if (narrow) scene.camera.translateY(-0.2 * visH);
     if (camOverride) {
       scene.camera.position.set(camOverride[0], camOverride[1], camOverride[2]);
       scene.camera.lookAt(camOverride[3] ?? 0, camOverride[4] ?? 0, camOverride[5] ?? 0);

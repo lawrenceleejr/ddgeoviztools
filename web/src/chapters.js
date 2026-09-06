@@ -8,13 +8,26 @@
 //
 // `state` is a full description of the scene at the START of the chapter;
 // the renderer interpolates between consecutive states. Keys:
-//   focus     : palette groups drawn at full opacity (others are ghosted)
+//   focus     : palette groups or system names drawn at full opacity
+//               (everything else is ghosted)
 //   ghost     : opacity for non-focused groups
 //   explode   : { <rule>: amount 0..1 } — see scene.js applyExplode()
 // Rules: staves.<group>, endcaps.<group>, layers.<system>, disks.<system>,
 //        nozzles, solenoidLift.
 
 const ALL = ['beampipe', 'vertex', 'tracker', 'solenoid', 'ecal', 'hcal', 'yoke', 'nozzle', 'bch'];
+// One opacity channel per system (matches parts.json `system`).
+export const SYSTEMS = [
+  'Beampipe', 'Vertex', 'InnerTrackers', 'OuterTrackers', 'Solenoid',
+  'ECalBarrel', 'ECalEndcap', 'HCalBarrel', 'HCalEndcap', 'YokeBarrel', 'YokeEndcap',
+  'NozzleW_left', 'NozzleW_right', 'NozzleBCH_left', 'NozzleBCH_right', 'NozzleWCludding_left', 'NozzleWCludding_right',
+];
+export const SYSTEM_GROUP = {
+  Beampipe: 'beampipe', Vertex: 'vertex', InnerTrackers: 'tracker', OuterTrackers: 'tracker', Solenoid: 'solenoid',
+  ECalBarrel: 'ecal', ECalEndcap: 'ecal', HCalBarrel: 'hcal', HCalEndcap: 'hcal', YokeBarrel: 'yoke', YokeEndcap: 'yoke',
+  NozzleW_left: 'nozzle', NozzleW_right: 'nozzle', NozzleBCH_left: 'bch', NozzleBCH_right: 'bch',
+  NozzleWCludding_left: 'nozzle', NozzleWCludding_right: 'nozzle',
+};
 
 export const chapters = [
   {
@@ -52,7 +65,7 @@ export const chapters = [
     lede: 'Silicon modules on carbon-fibre shells measure the curve of every charged track in the 5 T field. The disks carry that coverage forward toward the beam.',
     facts: [['Barrel layers', 'r 127 · 340 · 554 mm'], ['Disks', '7 pairs · |z| 0.52–2.19 m'], ['Length', '4.6 m']],
     camera: { pos: [5.0, 2.4, 7.4], target: [0, 0, 0.3], fov: 30, shift: 0.2 },
-    state: { focus: ['tracker', 'vertex', 'beampipe'], ghost: 0.035, explode: { 'layers.InnerTrackers': 1, 'disks.InnerTrackers': 1 } },
+    state: { focus: ['InnerTrackers', 'vertex', 'beampipe'], ghost: 0.035, explode: { 'layers.InnerTrackers': 1, 'disks.InnerTrackers': 1 } },
     labels: [
       { part: 'InnerTrackers/layer2', at: [0, 554, 0], text: 'r = 554 mm', name: 'Layer 3' },
       { part: 'InnerTrackers/layer0', at: [0, 127, 0], text: 'r = 127 mm', name: 'Layer 1' },
@@ -66,8 +79,8 @@ export const chapters = [
     headline: 'The last measurement before the magnet.',
     lede: 'Three cylinders of silicon strips, a metre and a half across, and four pairs of disks. Together with the inner tracker they fix each track to a few tens of microns.',
     facts: [['Barrel layers', 'r 819 · 1 153 · 1 486 mm'], ['Barrel length', '2.5 m'], ['Disks', '4 pairs · |z| 1.31–2.19 m']],
-    camera: { pos: [9.5, 3.8, 9.0], target: [0, 0, 0], fov: 32, shift: -0.2 },
-    state: { focus: ['tracker'], ghost: 0.035, explode: { 'layers.OuterTrackers': 1, 'disks.OuterTrackers': 1 } },
+    camera: { pos: [11.5, 4.6, 10.5], target: [0, 0, 0], fov: 32, shift: -0.24 },
+    state: { focus: ['OuterTrackers'], ghost: 0.035, explode: { 'layers.OuterTrackers': 1, 'disks.OuterTrackers': 1 } },
     labels: [
       { part: 'OuterTrackers/layer2', at: [0, 1486, 0], text: 'r = 1 486 mm', name: 'Layer 3' },
       { part: 'OuterTrackers/layer1', at: [0, 1153, 0], text: 'r = 1 153 mm', name: 'Layer 2' },
@@ -183,3 +196,4 @@ export const chapters = [
 /** Every explode rule key used anywhere, so state vectors are dense. */
 export const RULES = [...new Set(chapters.flatMap((c) => Object.keys(c.state.explode)))];
 export const GROUPS = ALL;
+
